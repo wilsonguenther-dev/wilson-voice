@@ -49,6 +49,7 @@ import { useGovernor } from "./pill/GovernorChip";
 import { usePartialTranscript } from "./pill/usePartialTranscript";
 import { forcedPartial, partialShows, partialTail } from "./pill/partialTranscript";
 import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
+import { startPillControlTargets } from "./pill/hitTargets";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -345,6 +346,10 @@ window.addEventListener("contextmenu", (e) => {
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
+  // yap-1106-fb-02-pill-first-click — every `[data-pill-control]` publishes
+  // its own drawn rect as hit area, holds the panel through a press, and logs
+  // `pill.click {control, handled}` (pill/hitTargets.ts).
+  useEffect(() => startPillControlTargets(), []);
   const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;

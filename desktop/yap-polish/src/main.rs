@@ -242,6 +242,20 @@ RULES
    address that is not in it, and never add a status nobody stated
    (\"is complete\", \"is done\", \"was a success\").";
 
+/// yap-audit-notes-guards (DO 11) — the repetition penalty on NOTES decoding:
+/// repeat 1.1 over the last 64 tokens, chained ahead of greedy. Greedy alone
+/// produced the audit's runaway and its ten near-identical actions from one
+/// segment. Dictation polish never gets it: its golden fixtures are greedy,
+/// byte for byte.
+const NOTES_PENALTY_LAST_N: i32 = 64;
+const NOTES_PENALTY_REPEAT: f32 = 1.1;
+
+/// `Some((last_n, repeat))` for a notes (summarize) request, `None` for every
+/// other kind — dictation polish stays bare greedy.
+fn notes_repetition_penalty(req: &PolishRequest) -> Option<(i32, f32)> {
+    (req.kind == KIND_SUMMARIZE).then_some((NOTES_PENALTY_LAST_N, NOTES_PENALTY_REPEAT))
+}
+
 /// The system turn for a summarize request, by stage.
 fn summarize_prompt(stage: &str) -> Option<String> {
     Some(match stage {
@@ -637,11 +651,27 @@ fn handle(
     // greedy then picks from what survives; the other order picks a token the
     // grammar forbids. Greedy alone is still what an unconstrained rewrite gets,
     // and greedy is what keeps the golden fixtures meaningful.
+    // yap-audit-notes-guards: notes requests add a penalties sampler AHEAD of
+    // greedy (after the grammar mask); dictation keeps exactly the old chain.
+    let penalty = notes_repetition_penalty(req);
     let mut sampler = match sampler_plan(req) {
-        SamplerPlan::Greedy => LlamaSampler::greedy(),
+        SamplerPlan::Greedy => match penalty {
+            Some((last_n, repeat)) => LlamaSampler::chain_simple([
+                LlamaSampler::penalties(last_n, repeat, 0.0, 0.0),
+                LlamaSampler::greedy(),
+            ]),
+            None => LlamaSampler::greedy(),
+        },
         SamplerPlan::GrammarThenGreedy { grammar, root } => {
             match LlamaSampler::grammar(model, &grammar, &root) {
-                Ok(grammar) => LlamaSampler::chain_simple([grammar, LlamaSampler::greedy()]),
+                Ok(grammar) => match penalty {
+                    Some((last_n, repeat)) => LlamaSampler::chain_simple([
+                        grammar,
+                        LlamaSampler::penalties(last_n, repeat, 0.0, 0.0),
+                        LlamaSampler::greedy(),
+                    ]),
+                    None => LlamaSampler::chain_simple([grammar, LlamaSampler::greedy()]),
+                },
                 // A grammar this build cannot parse is a caller bug, not a
                 // reason to emit unconstrained JSON the parent would then have
                 // to trust.
@@ -784,6 +814,23 @@ mod tests {
         // Code mode never reaches the model — there is no prompt for it.
         assert_eq!(system_prompt("code", "default"), None);
         assert_eq!(system_prompt("wat", "default"), None);
+    }
+
+    /// yap-audit-notes-guards (DO 11) — the repetition penalty is for notes
+    /// only. A dictation request's plan is unchanged (bare greedy, no
+    /// penalty), so its golden fixtures cannot move; every summarize stage
+    /// gets repeat 1.1 over the last 64 tokens.
+    #[test]
+    fn dictation_plan_is_unchanged_and_only_notes_get_the_penalty() {
+        let dictation = PolishRequest::polish(1, "document", "default", 64, 1200, "a b c d".into());
+        assert_eq!(sampler_plan(&dictation), SamplerPlan::Greedy);
+        assert_eq!(notes_repetition_penalty(&dictation), None);
+        for stage in [SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARIZE_HEADLINE] {
+            let notes = PolishRequest::summarize(2, stage, 64, 30_000, "x y z".to_string(), None);
+            assert_eq!(notes_repetition_penalty(&notes), Some((64, 1.1)), "{stage}");
+        }
+        assert_eq!(NOTES_PENALTY_LAST_N, 64);
+        assert!((NOTES_PENALTY_REPEAT - 1.1).abs() < f32::EPSILON);
     }
 
     /// Y9-A — a request carrying a transform instruction gets the transform

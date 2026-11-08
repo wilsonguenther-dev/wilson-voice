@@ -1035,8 +1035,17 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   gap: 6px;
   width: max-content;
   max-width: 96%;
-  padding: 5px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  /* yap-1106-fb-02 (batch-8 bounce) — the 1pt edge is an INSET SHADOW, not a
+     border, and the padding grows by the 1pt it gave back (same 26pt chip).
+     The square hit layer (`[data-pill-control]::after`, inset 0) covers the
+     PADDING box; with a real border its right and bottom edges sat exactly on
+     the probe's inner corners, which hit-test half-open, so the press fell
+     into the rounded border and through to Yappy's canvas (top-right,
+     bottom-left, bottom-right missed; top-left alone landed). With no border
+     the padding box IS the drawn box and every corner is 1pt inside the layer. */
+  padding: 6px 11px;
+  border: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   border-radius: 999px;
   background: rgba(24, 24, 27, 0.92);
   color: rgba(255, 255, 255, 0.78);
@@ -1045,6 +1054,7 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   -webkit-app-region: no-drag;
 }
 .kami-blocked svg {
+  flex: none;
   width: 14px;
   height: 14px;
   fill: none;
@@ -1054,12 +1064,23 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   stroke-linejoin: round;
 }
 .kami-blocked .slash { stroke: var(--status-blocked); }
+/* The chip is clamped to Yappy's width (one-pill rule below). Its label gives
+   way inside it rather than spilling past the chip's right edge, where the
+   drawn text would sit outside the hit layer. The chip itself never clips:
+   an overflow clip on a 999px stadium would round the square layer off again. */
+.kami-blocked > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Y2-C — Yappy's refused-press chip, same capsule as the mic refusal above. */
 .kami-blocked.gated {
-  border-color: rgba(251, 191, 36, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.28);
   color: rgba(255, 255, 255, 0.86);
 }
 .kami-gated-glyph {
+  flex: none;
   font-style: normal;
   font-size: 13px;
   line-height: 1;
@@ -1067,9 +1088,8 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
 }
 /* yap-1106-pill-trial-clickable — the refusal IS the Buy button. Hover (or
    keyboard focus, which sets is-hover) swaps the label to "Buy a license" and
-   lifts the border; the focus ring is the global one in a11y/focus.css. */
+   lifts the edge (an inset shadow, fb-02: no border, so the hit layer covers it); the focus ring is the global one in a11y/focus.css. */
 .kami-blocked.gated.is-hover {
-  border-color: rgba(251, 191, 36, 0.6);
   color: rgba(255, 255, 255, 0.96);
 }
 /* pill.html §13, measured: the chip is the 32 px pill with "Trial ended" on the
@@ -2787,4 +2807,165 @@ html[data-dock="right"] .friend-visit {
 @media (prefers-reduced-motion: reduce) {
   .who-card { animation: none; }
   .who-wave-bar { animation: none; transform: scaleY(0.6); }
+}
+
+/* yap-1106-fb-23 — the pill's compact People stepper "− 4 +": pointer-only,
+   never takes focus from the call, hidden during a screen share.
+   Batch 5 bounce fix: it never adds width to the clock row. The 208 px row is
+   8 + scene 112 + 7 + ONE 46 px column + 7 + Stop 20 + 8, and the badge is
+   centred with overflow hidden, so anything wider clipped the clock and Stop
+   at every dock. The stepper now shares that one column with the speaker /
+   call-audio chip (.rec-swap): at rest the swap is display: contents, so the
+   row is exactly the approved one; pointing at the clock (or focus inside it)
+   shows the stepper in the chip's place, capped at PILL_PEOPLE_MAX_W (46) and
+   the only item allowed to shrink — the scene and Stop are flex: none. */
+.rec-swap {
+  display: contents;
+}
+.rec-swap > .rec-people {
+  display: none;
+}
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 46px;
+  min-width: 0;
+  max-width: 46px;
+  overflow: hidden;
+}
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > :not(.rec-people) {
+  display: none;
+}
+.meeting-badge:is(:hover, :focus-within) > .rec-swap:has(> .rec-people) > .rec-people {
+  display: inline-flex;
+  min-width: 0;
+}
+/* The call app's name steps aside while the stepper shows (it is still on
+   the Stop button's label and returns when the pointer leaves). */
+.meeting-badge:is(:hover, :focus-within):has(> .rec-swap > .rec-people) > .rec-app {
+  display: none;
+}
+.meeting-badge > .rec-stop {
+  flex: none;
+}
+.rec-people .people-stepper.is-compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: 46px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.rec-people .people-stepper.is-compact .people-label,
+.rec-people .people-stepper.is-compact .people-suggest-reason {
+  display: none;
+}
+.rec-people .people-stepper.is-compact button {
+  min-width: 12px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--pill-text);
+  font: 600 10px/1 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  cursor: pointer;
+}
+.rec-people .people-stepper.is-compact button:hover:not(:disabled) {
+  background: var(--surface-glass);
+}
+.rec-people .people-stepper.is-compact button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.rec-people .people-stepper.is-compact .people-value {
+  min-width: 18px;
+  padding: 0 1px;
+}
+.rec-people .people-stepper.is-compact .people-value.is-auto {
+  font-size: 9px;
+  background: var(--accent-action-soft);
+}
+
+/* yap-1106-fb-02-pill-first-click — every clickable control on the pill is
+   at least 24 x 24 pt where it is DRAWN, not only where it is hit: the meeting
+   stop was a 20 pt square the eye aimed at and the hand missed. The hit area is
+   the same rect (pill/hitTargets.ts publishes it, float_pill.rs pads anything
+   that still comes in smaller), so what you see is exactly what takes the click.
+   Last in the file so a component's own width/height can only ever grow it.
+   The retired Classic pill's 20 pt flow-bar slots keep their drawn size (the
+   slot layout is measured in SLOT_PX); their HIT area is still padded to 24. */
+[data-pill-control]:not(.slot) {
+  min-width: 24px;
+  min-height: 24px;
+}
+
+/* yap-1106-fb-02 (batch-6 bounce) — the WHOLE drawn rect takes the click.
+   WebKit and Chrome hit-test a box against its ROUNDED border, so a press in
+   the corner of a round control (the 999px mic/Trial chip, the 6px meeting
+   stop) fell through to the badge or Yappy's canvas — while the NSPanel, whose
+   hit rects are plain rectangles, had already taken the mouse. That is one
+   swallowed click. A transparent, square layer over each control makes the
+   control's hit shape the rectangle the panel was told about. The control
+   must be its containing block, so it is made `position: relative` at zero
+   specificity: any rule that already places it (the absolute chip, the
+   absolute after-badge) wins. Classic's `.ctrl`/`.slot` are left alone — their
+   tooltips are positioned against the bar, not the button. */
+:where([data-pill-control]:not(.slot, .ctrl)) {
+  position: relative;
+}
+[data-pill-control]:not(.slot, .ctrl)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  pointer-events: auto;
+}
+
+/* The after-meeting badge IS a control and a 14px-radius stadium. Its own
+   overflow clip would round the square layer above off again; its label
+   already ellipsizes itself, so the badge does not need to clip. */
+.kami-stage .meeting-badge.meeting-after {
+  overflow: visible;
+}
+
+/* The live clock clips to its rounded 26pt row. With the stop drawn at 24pt
+   the row is padded so the stop sits wholly inside the straight part: 1pt
+   above and below, 6pt from the trailing edge (its inner corners stay within
+   the 14px corner arc), and the row's gaps give back the 4pt the stop grew. */
+.kami-stage .meeting-badge:not(.meeting-after) {
+  padding: 1px 6px 1px 8px;
+  gap: 6px;
+}
+
+/* The refused-press chip (mic blocked / Trial ended) sits INSIDE Yappy's own
+   box in the one pill: centred on him, 6pt up from his bottom edge. It used
+   to hang off the window's bottom edge, which is where the meeting clock row
+   lives at a side dock and where the clock's trailing slot reaches at the
+   bottom dock — the chip and the stop sat on top of each other, so one of
+   the two never got its click. */
+html[data-one-pill="true"] .kami-blocked {
+  inset: auto;
+  left: calc(var(--char-x) + var(--char-w) / 2);
+  top: calc(var(--char-y) + var(--char-h) - 6px);
+  translate: -50% -100%;
+  margin: 0;
+  max-width: var(--char-w);
+}
+
+/* The live clock row, again: the stop is never the thing an over-long row pushes past that clip:
+   the call app's name is the one item that gives way (its full name is on its
+   tooltip); the dot, the clock, the audio chip and the stop keep their size. */
+.kami-stage .meeting-badge:not(.meeting-after) > .rec-app {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kami-stage .meeting-badge:not(.meeting-after) > :is(.rec-time, .rec-sysaudio),
+.kami-stage .meeting-badge:not(.meeting-after) > .rec-swap > .rec-sysaudio {
+  /* yap-1106-fb-23 moved the call-audio chip into .rec-swap (display:
+     contents at rest, so it is still a flex item of this row). */
+  flex: none;
 }
