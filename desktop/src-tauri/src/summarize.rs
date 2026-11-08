@@ -65,7 +65,7 @@
 //! do, which is the point of the seam.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -75,9 +75,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::meeting_echo::{word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD};
 use crate::meetings::{
     diarization_target, format_offset, is_two_track, speaker_label, DiarizationTarget, MeetingKind,
-    MeetingSegment, UNCLUSTERED_SPEAKER_LABEL,
+    MeetingSegment, MIC_TRACK, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
     fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
@@ -136,6 +137,91 @@ const MAX_ITEM_WORDS: usize = 40;
 /// (the V3 retention floor, inverted for a summary — see [`grounded`]).
 const GROUNDEDNESS_FLOOR: f64 = 0.80;
 
+/// yap-audit-notes-guards (audit #2, DO 1) — the highest share of a
+/// narrative's distinct word 4-grams that may also occur in its source. On the
+/// three meetings PR 250 summarized on Wilson's Mac the Summary paragraph was
+/// 0.91-0.97 contained: a re-transcript, not a summary. Above this the
+/// narrative is refused (reason `v8_verbatim`), never trimmed. Groundedness
+/// (`GROUNDEDNESS_FLOOR`) is the floor; this is the ceiling.
+pub const VERBATIM_NARRATIVE_MAX: f64 = 0.6;
+
+/// The shortest narrative (words) the verbatim ceiling judges. A re-transcript
+/// is a paragraph of copied speech; one sentence that restates the meeting's
+/// one line of substance (a stated price, a single decision) is a quote, and
+/// 4-gram containment over fewer than ~20 4-grams is noise, not evidence.
+/// The audit's re-transcripts were 90-200 words; the planted fixture is 33.
+pub const VERBATIM_MIN_WORDS: usize = 25;
+
+/// The Summary section, word for word, when every narrative was refused as a
+/// re-transcript. Said out loud rather than left blank: a missing paragraph
+/// looks like a bug, this reads as what happened.
+pub const NO_SUMMARY_VERBATIM: &str =
+    "No summary this time: the notes model could only repeat the transcript.";
+
+/// yap-audit-notes-guards (DO 4) — at most this many items may cite one seg
+/// label (one segment produced 10 near-identical actions on the audit run).
+pub const MAX_ITEMS_PER_SEGMENT: usize = 2;
+
+/// yap-audit-notes-guards (DO 9) — a Them-track segment this close (seconds,
+/// either side) to a Me-track segment is a candidate source of its echo.
+pub const ECHO_OWNER_WINDOW_SECONDS: f64 = 1.5;
+
+/// yap-audit-notes-guards (DO 9) — trigram containment at or above this but
+/// under `ECHO_CONTAINMENT_THRESHOLD` is a partial echo: neither track is
+/// clearly the speaker, so the owner is left blank rather than guessed.
+pub const ECHO_OWNER_UNCLEAR_MIN: f64 = 0.15;
+
+/// yap-audit-notes-guards (DO 10) — what a mic-track action reads when the
+/// mic may carry more than one local voice. Never "Me" on a guess.
+pub const MIC_SHARED_OWNER: &str = "Someone here";
+
+/// The verbatim measure: the share of `narrative`'s distinct word 4-grams that
+/// occur in `source` (`meeting_echo::word_ngram_containment` at n = 4).
+pub fn narrative_containment(source: &str, narrative: &str) -> f64 {
+    word_ngram_containment(narrative, source, 4)
+}
+
+/// Whether `narrative` repeats `source` past [`VERBATIM_NARRATIVE_MAX`]: a
+/// paragraph (at least [`VERBATIM_MIN_WORDS`] words) whose word 4-grams are
+/// mostly lifted from the source.
+pub fn is_verbatim_narrative(source: &str, narrative: &str) -> bool {
+    narrative.split_whitespace().count() >= VERBATIM_MIN_WORDS
+        && narrative_containment(source, narrative) > VERBATIM_NARRATIVE_MAX
+}
+
+/// yap-audit-notes-guards (DO 2) — `Me: we shipped it` → `we shipped it`.
+/// Strips ONE leading speaker tag (`Me:`, `Them:`, `Speaker:`, `Speaker N:`,
+/// any case). A colon after anything else (`Pricing: ...`) is the meeting's.
+pub fn strip_speaker_tag(text: &str) -> &str {
+    let t = text.trim_start();
+    let Some((head, rest)) = t.split_once(':') else {
+        return t;
+    };
+    let head = head.trim().to_ascii_lowercase();
+    let numbered = head
+        .strip_prefix("speaker")
+        .map(|n| {
+            let n = n.trim();
+            n.is_empty() || n.chars().all(|c| c.is_ascii_digit())
+        })
+        .unwrap_or(false);
+    if head == "me" || head == "them" || numbered {
+        rest.trim_start()
+    } else {
+        t
+    }
+}
+
+/// v1 has no voice-count source (diarization, NT5, is deferred), so the mic is
+/// never KNOWN to carry a single voice: every mic-track action reads
+/// [`MIC_SHARED_OWNER`] unless its own words name a person. A deliberate v1
+/// loss, taken over a wrong "Me" (c6187806: three real commitments came from a
+/// second local voice and were filed under Me). NT5 replaces the body.
+pub fn mic_is_single_voice(meeting: &[MeetingSegment]) -> bool {
+    let _ = meeting;
+    false
+}
+
 /// Rejections so far, by the ported gate. Kept SEPARATE from
 /// `polish_rejected_total`: mixing summary rejections into a dictation metric
 /// would make both numbers mean nothing.
@@ -168,6 +254,16 @@ fn reject(reason: &'static str) -> Option<String> {
     // one INFO line with the counts by reason (see [`summary_run_line`]).
     log::debug!("summary rejected: {reason}");
     None
+}
+
+/// Whether the run in progress on this thread rejected anything for `reason`.
+fn run_rejected(reason: &str) -> bool {
+    RUN_REJECTIONS.with(|tally| {
+        tally
+            .borrow()
+            .as_ref()
+            .is_some_and(|t| t.get(reason).copied().unwrap_or(0) > 0)
+    })
 }
 
 /// What one summary run cost and threw away — the one INFO line per notes run.
@@ -1599,7 +1695,7 @@ fn recover_items(raw: &str) -> Vec<(Bucket, ExtractedItem)> {
 /// content-word RETENTION floor becomes a ≥80% GROUNDEDNESS floor — the share of
 /// the summary's own content words that actually occur in the source.
 pub fn validate_item(source: &str, item: &str) -> Option<String> {
-    let item = item.trim();
+    let item = strip_speaker_tag(item.trim()).trim();
     // V1 — never store nothing.
     if item.is_empty() {
         return reject("v1_empty");
@@ -1614,7 +1710,7 @@ pub fn validate_item(source: &str, item: &str) -> Option<String> {
 
 /// The same gate over the narrative, plus the summary-shaped length checks.
 pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
-    let narrative = drop_unsaid_status(source, narrative.trim());
+    let narrative = drop_unsaid_status(source, strip_speaker_tag(narrative.trim()));
     let narrative = narrative.as_str();
     if narrative.is_empty() {
         return reject("v1_empty");
@@ -1628,6 +1724,15 @@ pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
     let source_words = source.split_whitespace().count();
     if source_words > MAX_NARRATIVE_WORDS && words >= source_words {
         return reject("v2_not_a_summary");
+    }
+    // V8 (yap-audit-notes-guards) — a narrative that repeats its source is a
+    // re-transcript wearing a Summary heading. Refused, never trimmed.
+    if is_verbatim_narrative(source, narrative) {
+        let containment = narrative_containment(source, narrative);
+        log::info!(
+            "summarize narrative_refused reason=v8_verbatim containment={containment:.2} max={VERBATIM_NARRATIVE_MAX}"
+        );
+        return reject("v8_verbatim");
     }
     common_gates(source, narrative)?;
     Some(clamp_words(narrative, MAX_NARRATIVE_WORDS))
@@ -2191,8 +2296,30 @@ fn summarize_run(
     if client.cancelled() {
         return Err(SummaryError::Cancelled);
     }
+    // V8 on the FINAL paragraph, against the plain transcript: whichever
+    // path produced it, a re-transcript never ships as the Summary, and the
+    // MAP fallback text never stands in for a refused one.
+    let plain_text = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let narrative = strip_speaker_tag(&narrative).to_string();
+    let narrative = if !narrative.trim().is_empty() && is_verbatim_narrative(&plain_text, &narrative) {
+        log::info!(
+            "summarize narrative_refused reason=v8_verbatim stage=final containment={:.2}",
+            narrative_containment(&plain_text, &narrative)
+        );
+        let _ = reject("v8_verbatim");
+        String::new()
+    } else {
+        narrative
+    };
+    let verbatim_refused = narrative.trim().is_empty() && run_rejected("v8_verbatim");
     if headline.title.trim().is_empty() {
-        headline.title = fallback_title(&narrative);
+        headline.title = fallback_title(
+            meeting_started_at(segments).map(|t| t.with_timezone(&chrono::Local)),
+        );
     }
     // The evidence table: for every citable id, the two facts about it that are
     // already known here — when it was said, and (YV133) who said it. Both are
@@ -2215,7 +2342,7 @@ fn summarize_run(
             .map(|i| {
                 let cited = evidence.iter().find(|(label, _, _)| label == &i.segment);
                 SummaryItem {
-                    text: i.text.clone(),
+                    text: strip_speaker_tag(&i.text).to_string(),
                     segment: i.segment.clone(),
                     start_seconds: cited.map(|(_, at, _)| *at).unwrap_or(0.0),
                     // Never `i.<anything>`: the model's answer supplies the id
@@ -2225,10 +2352,12 @@ fn summarize_run(
             })
             .collect()
     };
-    let actions = resolve(&merged.actions);
-    let decisions = resolve(&merged.decisions);
-    let questions = resolve(&merged.questions);
-    let markdown = render_notes(
+    let mut actions = resolve(&merged.actions);
+    let mut decisions = resolve(&merged.decisions);
+    let mut questions = resolve(&merged.questions);
+    apply_item_guards(&mut actions, &mut decisions, &mut questions, &lines);
+    attribute_owners(&mut actions, &mut decisions, &mut questions, segments, &lines);
+    let markdown = render_notes_with(
         &headline,
         &names,
         &narrative,
@@ -2238,6 +2367,7 @@ fn summarize_run(
         truncated_chunks,
         chunks.len(),
         truncated,
+        verbatim_refused,
     );
     let summary = MeetingSummary {
         markdown,
@@ -2267,6 +2397,290 @@ fn summarize_run(
         return Err(SummaryError::Empty);
     }
     Ok(summary)
+}
+
+// ── yap-audit-notes-guards: items and owners (deterministic, no model) ──────
+
+/// Openers that describe or feel rather than commit: "I'm excited", "It's
+/// really dope", "That was great". An action needs a commitment; these are
+/// narration (reason `v9_not_action`).
+fn describes_rather_than_commits(lower: &str) -> bool {
+    let first = lower
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
+        .replace('\u{2019}', "'");
+    matches!(first.as_str(), "i'm" | "im" | "it's" | "its" | "that's" | "thats" | "wow")
+        || [
+            "i am ", "i feel", "i love", "i like", "i was ", "i've been", "that was ", "it was ",
+            "this was ", "this is ", "what a ",
+        ]
+        .iter()
+        .any(|p| lower.starts_with(p))
+}
+
+/// "Jeisil, send the deck" — an imperative addressed to a person by name.
+fn addressed_imperative(text: &str) -> bool {
+    let Some((head, rest)) = text.trim().split_once(',') else {
+        return false;
+    };
+    let head = head.trim();
+    !head.contains(char::is_whitespace)
+        && head.chars().next().is_some_and(char::is_uppercase)
+        && is_name_word(head)
+        && starts_imperative(rest.trim())
+}
+
+/// DO 5 — an action needs a commitment: an owner + commitment verb
+/// (`owner_commitment`, which also takes "I'll" + verb), an explicit
+/// obligation (`generic_commitment`: "need to", "will"), an imperative, or an
+/// imperative addressed to a person. First-person feelings and descriptions
+/// ("I'm excited", "It's really dope") never qualify. Everything else reaching
+/// here was already vetted by [`classify_item`] (which drops statements whose
+/// subject is a thing and small talk), so it keeps the model's word: this
+/// guard adds the feelings rule, it does not re-litigate the classifier.
+pub fn action_has_commitment(text: &str) -> bool {
+    let t = strip_speaker_tag(text).trim();
+    let lower = t.to_lowercase();
+    if owner_commitment(t) || generic_commitment(&lower) {
+        return true;
+    }
+    if describes_rather_than_commits(&lower) {
+        return false;
+    }
+    true
+}
+
+/// Shapes that settle or change something without a formal decision marker:
+/// "the launch moves to May", "pushing the launch to May", "the free trial
+/// will be dropped". Review rounds 1-4 (tests/summary_classify.rs) made these
+/// binding decisions; a description ("The weather was nice") has none.
+const DECISION_SHAPES: &[&str] = &[
+    "moves to", "moved to", "move to", "moving", "pushing", "pushed", "push ", "pushes",
+    "drop", "cut ", "switch", "will ", "won't", "stays", "stay ", "remain", "going to",
+    "is now", "are now", "from now on", "no longer", "instead", "starts", "start ",
+    "launch", "ship", "postpone", "delay", "cancel", "keep ", "skip",
+];
+
+/// DO 5 — a decision needs a decision marker, in its own words or in the line
+/// it cites (the model shortens "We decided to drop X" to "Drop X").
+pub fn decision_has_marker(text: &str, cited_line: &str) -> bool {
+    let marked = [text, cited_line].iter().any(|t| {
+        let lower = t.to_lowercase();
+        DECISION_MARKERS.iter().any(|m| lower.contains(m)) || passive_settled(&lower)
+    });
+    if marked {
+        return true;
+    }
+    let lower = strip_speaker_tag(text).trim().to_lowercase();
+    !describes_rather_than_commits(&lower) && DECISION_SHAPES.iter().any(|m| lower.contains(m))
+}
+
+/// DO 5 — a statement is not an open question: it needs a "?" (its own or
+/// its cited line's) or an explicit question shape ("whether ...", "open
+/// question", "still unclear").
+pub fn question_is_open(text: &str, cited_line: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    text.contains('?')
+        || cited_line.trim_end().ends_with('?')
+        || is_strong_question(&lower)
+        || is_weak_question(&lower)
+        || open_about_decision(&lower)
+}
+
+/// DO 4 — how strongly an item commits someone; the two strongest per seg
+/// label are the ones kept.
+pub fn commitment_score(text: &str) -> u8 {
+    let t = strip_speaker_tag(text).trim();
+    let lower = t.to_lowercase();
+    if owner_commitment(t) {
+        3
+    } else if starts_imperative(t) || addressed_imperative(t) {
+        2
+    } else if generic_commitment(&lower)
+        || DECISION_MARKERS.iter().any(|m| lower.contains(m))
+    {
+        1
+    } else {
+        0
+    }
+}
+
+fn retain_indexed(items: &mut Vec<SummaryItem>, section: usize, drop: &BTreeSet<(usize, usize)>) {
+    let mut i = 0usize;
+    items.retain(|_| {
+        let keep = !drop.contains(&(section, i));
+        i += 1;
+        keep
+    });
+}
+
+/// DO 3, 4 and 5 over the resolved lists, in that order of evidence:
+/// 1. each list keeps only what its kind requires (commitment / decision
+///    marker / question shape);
+/// 2. one item lives in exactly one section — actions over decisions over open
+///    questions ([`same_item`]);
+/// 3. at most [`MAX_ITEMS_PER_SEGMENT`] items cite one seg label, the
+///    strongest commitments kept (ties: actions first, then meeting order).
+pub fn apply_item_guards(
+    actions: &mut Vec<SummaryItem>,
+    decisions: &mut Vec<SummaryItem>,
+    questions: &mut Vec<SummaryItem>,
+    lines: &[TranscriptLine],
+) {
+    let cited = |seg: &str| -> String {
+        lines
+            .iter()
+            .find(|l| l.label == seg)
+            .map(|l| l.text.clone())
+            .unwrap_or_default()
+    };
+    let before = (actions.len(), decisions.len(), questions.len());
+    actions.retain(|i| {
+        let keep = action_has_commitment(&i.text);
+        if !keep {
+            let _ = reject("v9_not_action");
+        }
+        keep
+    });
+    decisions.retain(|i| {
+        let keep = decision_has_marker(&i.text, &cited(&i.segment));
+        if !keep {
+            let _ = reject("v9_not_decision");
+        }
+        keep
+    });
+    questions.retain(|i| {
+        let keep = question_is_open(&i.text, &cited(&i.segment));
+        if !keep {
+            let _ = reject("v9_not_question");
+        }
+        keep
+    });
+    let kind_dropped = (before.0 - actions.len()) + (before.1 - decisions.len()) + (before.2 - questions.len());
+
+    let pre_dedupe = decisions.len() + questions.len();
+    decisions.retain(|d| !actions.iter().any(|a| same_item(&a.text, &d.text)));
+    questions.retain(|q| {
+        !actions.iter().any(|a| same_item(&a.text, &q.text))
+            && !decisions.iter().any(|d| same_item(&d.text, &q.text))
+    });
+    let cross_section = pre_dedupe - (decisions.len() + questions.len());
+
+    let mut by_segment: BTreeMap<String, Vec<(u8, usize, usize)>> = BTreeMap::new();
+    for (section, list) in [&*actions, &*decisions, &*questions].into_iter().enumerate() {
+        for (idx, item) in list.iter().enumerate() {
+            by_segment
+                .entry(item.segment.clone())
+                .or_default()
+                .push((commitment_score(&item.text), section, idx));
+        }
+    }
+    let mut drop: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for group in by_segment.values_mut() {
+        if group.len() <= MAX_ITEMS_PER_SEGMENT {
+            continue;
+        }
+        group.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        for &(_, section, idx) in &group[MAX_ITEMS_PER_SEGMENT..] {
+            drop.insert((section, idx));
+        }
+    }
+    retain_indexed(actions, 0, &drop);
+    retain_indexed(decisions, 1, &drop);
+    retain_indexed(questions, 2, &drop);
+    log::info!(
+        "summarize item_guards kind_dropped={kind_dropped} cross_section={cross_section} per_segment={}",
+        drop.len()
+    );
+}
+
+/// Who a cited segment belongs to, judged from the tracks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackOwner {
+    /// The mic track, and not an echo of the far side.
+    Mic,
+    /// The system (far-side) track, or a mic segment that echoes it.
+    Them,
+    /// A partial echo: neither track is clearly the speaker.
+    Unclear,
+}
+
+/// DO 9 — the echo-owner rule. A mic-track segment whose word trigrams are at
+/// least [`ECHO_CONTAINMENT_THRESHOLD`] contained in a system-track segment
+/// within [`ECHO_OWNER_WINDOW_SECONDS`] is the far side leaking into the mic:
+/// it is Them's. The SAME pure fn `echo_dup_rate` uses
+/// (`meeting_echo::word_trigram_containment`).
+pub fn echo_owner(cited: &MeetingSegment, segments: &[MeetingSegment]) -> TrackOwner {
+    if cited.track != MIC_TRACK {
+        return TrackOwner::Them;
+    }
+    let best = segments
+        .iter()
+        .filter(|s| s.track != MIC_TRACK)
+        .filter(|s| {
+            s.start_seconds <= cited.end_seconds + ECHO_OWNER_WINDOW_SECONDS
+                && s.end_seconds >= cited.start_seconds - ECHO_OWNER_WINDOW_SECONDS
+        })
+        .map(|s| word_trigram_containment(&cited.text, &s.text))
+        .fold(0.0_f64, f64::max);
+    if best >= ECHO_CONTAINMENT_THRESHOLD {
+        TrackOwner::Them
+    } else if best >= ECHO_OWNER_UNCLEAR_MIN {
+        TrackOwner::Unclear
+    } else {
+        TrackOwner::Mic
+    }
+}
+
+/// DO 9 and 10 over the resolved lists. Only lines a [`SpeakerSource`]
+/// attributed are touched (a `None` speaker renders as it always did), and an
+/// enrolled, NAMED speaker is a person and is kept. For a track label:
+/// an echoed mic line reads "Them"; a partial echo has its speaker left blank;
+/// a mic-track ACTION reads [`MIC_SHARED_OWNER`] unless
+/// [`mic_is_single_voice`]; a far-side line reads "Them".
+pub fn attribute_owners(
+    actions: &mut [SummaryItem],
+    decisions: &mut [SummaryItem],
+    questions: &mut [SummaryItem],
+    segments: &[MeetingSegment],
+    lines: &[TranscriptLine],
+) {
+    // The same numbering `transcript_lines_with` gave the lines.
+    let spoken: Vec<&MeetingSegment> = segments.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    let single_voice = mic_is_single_voice(segments);
+    let (mut echo_them, mut blank, mut shared) = (0usize, 0usize, 0usize);
+    for (section, list) in [actions, decisions, questions].into_iter().enumerate() {
+        for item in list.iter_mut() {
+            let Some(idx) = lines.iter().position(|l| l.label == item.segment) else {
+                continue;
+            };
+            if !matches!(lines[idx].speaker, Some(SegmentSpeaker::Anonymous(_))) {
+                continue;
+            }
+            let Some(seg) = spoken.get(idx) else { continue };
+            match echo_owner(seg, segments) {
+                TrackOwner::Them => {
+                    if seg.track == MIC_TRACK {
+                        echo_them += 1;
+                    }
+                    item.speaker = Some("Them".to_string());
+                }
+                TrackOwner::Unclear => {
+                    blank += 1;
+                    item.speaker = None;
+                }
+                TrackOwner::Mic => {
+                    if section == 0 && !single_voice {
+                        shared += 1;
+                        item.speaker = Some(MIC_SHARED_OWNER.to_string());
+                    }
+                }
+            }
+        }
+    }
+    log::info!("summarize owners echo_them={echo_them} owner_blank={blank} mic_shared={shared}");
 }
 
 /// Pack `narratives` into fold groups that each fit `budget` measured tokens.
@@ -2650,19 +3064,48 @@ fn sentences(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The mechanical title: the narrative's first sentence, cut to 8 words.
-pub fn fallback_title(narrative: &str) -> String {
-    sentences(narrative)
-        .first()
-        .map(|s| {
-            s.trim_end_matches(['.', '!', '?'])
-                .split_whitespace()
-                .take(8)
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_else(|| "Meeting notes".to_string())
+/// The mechanical title when the headline title fails (DO 6): never raw
+/// transcript words (the first 8 words of a transcript are a fragment, not a
+/// title) — `Meeting, <weekday> <HH:MM>` from when the meeting started.
+pub fn fallback_title<Tz: chrono::TimeZone>(started_at: Option<chrono::DateTime<Tz>>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    match started_at {
+        Some(at) => format!("Meeting, {}", at.format("%A %H:%M")),
+        None => "Meeting notes".to_string(),
+    }
 }
+
+/// When the meeting started, from its segments: each segment's write time
+/// minus its offset into the meeting, earliest wins. `None` without segments.
+pub fn meeting_started_at(segments: &[MeetingSegment]) -> Option<chrono::DateTime<chrono::Utc>> {
+    segments
+        .iter()
+        .map(|s| s.created_at - chrono::Duration::milliseconds((s.start_seconds.max(0.0) * 1000.0) as i64))
+        .min()
+}
+
+/// DO 12 (F5) — every part contributes, each cut to an even share of
+/// `budget_words` from its own end. Never a prefix of the whole: a prefix
+/// clamp is how the last 4 minutes of a 31-minute meeting (its 3 real
+/// commitments) never reached the Summary.
+pub fn even_shrink(parts: &[String], budget_words: usize) -> String {
+    let parts: Vec<&String> = parts.iter().filter(|p| !p.trim().is_empty()).collect();
+    if parts.is_empty() {
+        return String::new();
+    }
+    let per = (budget_words / parts.len()).max(1);
+    parts
+        .iter()
+        .map(|p| clamp_words(p, per))
+        .filter(|p| !p.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Transcript lines per part when there are no MAP narratives to shrink.
+const HEADLINE_FALLBACK_LINES_PER_PART: usize = 20;
 
 /// What the HEADLINE pass reads: the transcript itself as `Speaker: text`
 /// lines (no ids — a point never needs one), or, when the transcript does not
@@ -2683,17 +3126,25 @@ pub fn headline_source(
     match counter.count_tokens(&plain) {
         Ok(n) if n <= REDUCE_CHUNK_TOKENS => plain,
         _ => {
-            let joined = narratives
+            // Over budget: EVERY MAP chunk contributes, each shrunk evenly
+            // (yap-audit-notes-guards DO 12) — never a prefix clamp.
+            let parts: Vec<String> = narratives
                 .iter()
                 .filter(|n| !n.trim().is_empty())
                 .cloned()
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            if joined.trim().is_empty() {
-                clamp_words(&plain, MAX_NARRATIVE_WORDS * 3)
+                .collect();
+            let parts = if parts.is_empty() {
+                plain
+                    .lines()
+                    .collect::<Vec<_>>()
+                    .chunks(HEADLINE_FALLBACK_LINES_PER_PART)
+                    .map(|c| c.join(" "))
+                    .collect::<Vec<_>>()
             } else {
-                clamp_words(&joined, MAX_NARRATIVE_WORDS * 3)
-            }
+                parts
+            };
+            log::info!("summarize headline_source parts={} even_shrink=true", parts.len());
+            even_shrink(&parts, MAX_NARRATIVE_WORDS * 3)
         }
     }
 }
@@ -2828,10 +3279,21 @@ pub fn backfill_key_points(
     names: &[String],
     source: &str,
 ) -> Vec<String> {
-    let mut kept = dedupe_key_points(points);
-    if kept.len() >= MIN_KEY_POINTS {
-        return kept;
+    // yap-audit-notes-guards DO 8 (F2): never pad with transcript sentences.
+    // Fewer than MIN_KEY_POINTS validated points render as they are; zero
+    // renders no Key points section. Raw transcript lines under a "Key points"
+    // heading are a re-transcript, the failure this item exists to stop.
+    let kept = dedupe_key_points(points);
+    if kept.len() < MIN_KEY_POINTS {
+        log::info!("summarize key_points_short count={} min={MIN_KEY_POINTS} padded=false", kept.len());
     }
+    let _ = (lines, names, source);
+    kept
+}
+
+/// The pre-F2 padding candidates, kept for diagnostics only: the transcript's
+/// most informative non-question sentences, best first. Never rendered.
+pub fn key_point_candidates(lines: &[TranscriptLine], names: &[String]) -> Vec<String> {
     let mut candidates: Vec<(usize, usize, String)> = Vec::new();
     for l in lines {
         for s in sentences(&l.text) {
@@ -2849,17 +3311,7 @@ pub fn backfill_key_points(
     }
     // Most informative first; the meeting's order breaks ties.
     candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    for (_, _, s) in candidates {
-        if kept.len() >= MIN_KEY_POINTS {
-            break;
-        }
-        let Some(ok) = validate_item(source, &s) else { continue };
-        if kept.iter().any(|k| point_overlap(k, &ok) >= KEY_POINT_OVERLAP_MAX) {
-            continue;
-        }
-        kept.push(ok);
-    }
-    kept
+    candidates.into_iter().map(|(_, _, s)| s).collect()
 }
 
 /// "Owner" of an action item, ONLY when the item's own words name one at the
@@ -2911,6 +3363,28 @@ pub fn render_notes(
     chunks: usize,
     truncated: bool,
 ) -> String {
+    render_notes_with(
+        headline, names, narrative, actions, decisions, questions, truncated_chunks, chunks,
+        truncated, false,
+    )
+}
+
+/// [`render_notes`], told whether every narrative was refused as a
+/// re-transcript (`v8_verbatim`): then the Summary section reads exactly
+/// [`NO_SUMMARY_VERBATIM`] and no paragraph, never the MAP fallback text.
+#[allow(clippy::too_many_arguments)]
+pub fn render_notes_with(
+    headline: &Headline,
+    names: &[String],
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    truncated_chunks: usize,
+    chunks: usize,
+    truncated: bool,
+    verbatim_refused: bool,
+) -> String {
     let body = render_summary(
         narrative,
         &[],
@@ -2935,6 +3409,10 @@ pub fn render_notes(
     if !summary_para.is_empty() {
         out.push_str("### Summary\n\n");
         out.push_str(&summary_para);
+        out.push_str("\n\n");
+    } else if verbatim_refused {
+        out.push_str("### Summary\n\n");
+        out.push_str(NO_SUMMARY_VERBATIM);
         out.push_str("\n\n");
     }
     // review-opus2: one lone point is not a section — fewer than two and
