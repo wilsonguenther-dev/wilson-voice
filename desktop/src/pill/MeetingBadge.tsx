@@ -372,6 +372,7 @@ export default function MeetingBadge({
         <button
           type="button"
           className="rec-stop"
+          data-pill-control="meeting-stop"
           aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
           onClick={(e) => {
             e.stopPropagation();
@@ -432,6 +433,7 @@ export default function MeetingBadge({
       <button
         type="button"
         className="rec-stop"
+        data-pill-control="meeting-stop"
         aria-label={`Stop meeting — recording for ${elapsedLabel(status)}`}
         onClick={(e) => {
           e.stopPropagation();
@@ -479,6 +481,7 @@ function MeetingAfter({ view, onOpen }: { view: MeetingAfterView; onOpen?: (id: 
         type="button"
         className={`meeting-badge meeting-after ${view.kind}`}
       data-pill-slot="clock"
+        data-pill-control="meeting-open"
         data-meeting-phase={view.kind}
         title={view.title}
         aria-label={view.title}

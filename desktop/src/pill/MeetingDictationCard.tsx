@@ -70,6 +70,7 @@ export function MeetingDictationView({
             key={b.action}
             type="button"
             className={`meeting-dictation-${b.action}${b.primary ? " is-primary" : ""}`}
+            data-pill-control={`meeting-dictation-${b.action}`}
             disabled={busy}
             aria-keyshortcuts={b.chord === "⌃⌘M" ? "Control+Meta+M" : undefined}
             onClick={(e) => {
