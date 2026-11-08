@@ -47,8 +47,7 @@
  *       "app": { "page": "float.html", "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
  *                "selector": ".yappy-shell", "capture": "idle__yappy__bottom__none.png" },
  *          or { "page": "index.html", "view": "home", "selector": ".home", "width": 980, "height": 700,
- *               "fixtures": "scripts/smoke-fixtures.json", "capture": "home-980x700.png",
- *               "clicks": ["<optional selectors clicked in order after the view>"] },
+ *               "fixtures": "scripts/smoke-fixtures.json", "capture": "home-980x700.png" },
  *       "expect": { "w": 120, "h": 40, "fontPx": [13], "padding": {"t":6,"r":12,"b":6,"l":12}, "gap": {"row":0,"col":8} } } ] }
  *
  * USAGE
@@ -379,15 +378,6 @@ export async function measureApp(cdp, base, st, tones) {
     if (a.view) {
       await evaluate(cdp, s, `(() => { const want = ${JSON.stringify(a.view)}; const b = [...document.querySelectorAll("nav.nav button, nav button, .nav-item")].find(b => (b.innerText||"").trim().toLowerCase().startsWith(want)); if (b) b.click(); return !!b; })()`);
       await sleep(1500);
-    }
-    /* yap-1107-parity-news — "clicks": CSS selectors clicked in order after the
-       view (a Settings tab, an onboarding primary button), so a state behind a
-       click is measured in the same bundle the capture walks. A selector that
-       matches nothing is reported, never skipped. */
-    for (const sel of a.clicks || []) {
-      const hit = await evaluate(cdp, s, `(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b || b.disabled) return false; b.click(); return true; })()`);
-      if (!hit) return { found: false, error: "click target " + JSON.stringify(sel) + " matched nothing or was disabled" };
-      await sleep(900);
     }
     return await measureSelector(cdp, s, a.selector, opts);
   } finally {

@@ -50,11 +50,6 @@ const TOPIC_WORDS: Record<string, string> = {
   world: "World news",
   sports: "Sports news",
   culture: "Culture news",
-  ai: "AI news",
-  design: "Design news",
-  startups: "Startup news",
-  crypto: "Crypto news",
-  local: "Local news",
 };
 
 function clip(s: string, max: number): string {
