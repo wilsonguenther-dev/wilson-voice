@@ -274,7 +274,7 @@ pub const SUMMARY_VERBATIM_CEILING: f64 = 0.5;
 /// lifted 4-gram is 7.7 points of ratio, so without the allowance a real
 /// paraphrase at 7 of 13 (0.54) read as a re-transcript and the clean planted
 /// fixture of tests/summary_audit_guards.rs lost its Summary. Over a paragraph
-/// the allowance vanishes (40 words: 0.54 max; 100 words: 0.51 max), and a
+/// the allowance vanishes (40 words: 0.53 max; 100 words: 0.51 max), and a
 /// pasted line pair (13 of 16) is still refused. The NT4 eval keeps reporting
 /// the RAW ratio ([`narrative_containment`]); this only judges.
 pub const SUMMARY_VERBATIM_SLACK_NGRAMS: usize = 1;

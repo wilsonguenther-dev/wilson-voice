@@ -46,7 +46,7 @@ pilot") and the items it is written from are the transcript's own lines. On a on
 single 4-gram moves the ratio 7.7 points, so a flat 0.5 refused it as a re-transcript. The gate now
 forgives one lifted 4-gram before it applies the ceiling: that paragraph judges 6 of 13 (0.46) and is
 kept; two transcript lines pasted together (13 of 16) still judge 12 of 16 and are refused; over a
-real 40-word paragraph the allowance is worth at most 0.04, over 100 words 0.01. The eval keeps
+real 40-word paragraph the allowance is worth 0.03 (37 distinct 4-grams), over 100 words 0.01. The eval keeps
 reporting the RAW ratio (`support::eval_metrics::summary_verbatim_ratio`), so the table below is not
 softened by the allowance. Test: `summary_items_first::the_summary_gate_forgives_one_lifted_phrase_and_no_more`.
 
