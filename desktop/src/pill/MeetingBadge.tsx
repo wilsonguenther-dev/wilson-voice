@@ -18,7 +18,8 @@
  */
 import { useCallRecordingView } from "./CallOffer";
 import { badgeCallLabel } from "./callOfferModel";
-import { useCallback, useEffect, useReducer, useRef, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import PeopleStepper, { type People } from "../meetings/PeopleStepper";
 import MeetingWorld from "./MeetingWorld";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -216,6 +217,8 @@ export default function MeetingBadge({
   onOpen,
   stacked = false,
   live,
+  screenSharing = false,
+  attendees = null,
 }: {
   status: MeetingStatus;
   /** yap24-NT7 — the post-stop phase, already ranked below dictation by the shell. */
@@ -236,6 +239,10 @@ export default function MeetingBadge({
    * badge listens to `meeting:live` itself while the meeting records.
    */
   live?: LiveSnapshot | null;
+  /** yap-1106-fb-23 — the People stepper hides during a screen share. */
+  screenSharing?: boolean;
+  /** yap-1106-fb-23 — the invite's attendee count, when the calendar is on. */
+  attendees?: number | null;
 }) {
   // yap-call-1 — the pill never lies: a recording that started from a call
   // offer names the app ("Zoom"), and FaceTime / Phone say "your side".
@@ -344,6 +351,9 @@ export default function MeetingBadge({
       {/* fix-l3b4-1 — who is talking: one word stacked OVER the call-audio
           chip, so the clock row (CLOCK_W 208) gains no width. */}
       {speakerSlot("row", audioChip)}
+      {/* yap-1106-fb-23 — "People: Auto · − 4 +", never during a screen share.
+          (The stacked branch returned above, so the 96 px stack never gets it.) */}
+      {!screenSharing && <MeetingPeopleSlot meetingId={status.id ?? null} attendees={attendees} />}
       <button
         type="button"
         className="rec-stop"
@@ -493,6 +503,29 @@ function LiveSpeakerView({
         {speaker.word}
       </span>
       {children}
+    </span>
+  );
+}
+
+/**
+ * yap-1106-fb-23 — "How many people are in this meeting?" (Auto = null). Its
+ * own component so MeetingBadge stays hook-free beyond the call-offer view
+ * (tests call the badge as a plain function). The count applies from the next
+ * live window and is stored on the meeting row; a failed save rolls back.
+ */
+export function MeetingPeopleSlot({ meetingId, attendees = null }: { meetingId: string | null; attendees?: number | null }) {
+  const [people, setPeople] = useState<People>(null);
+  const changePeople = (next: People) => {
+    const prev = people;
+    setPeople(next);
+    invoke("meeting_set_expected_speakers", { meetingId, count: next }).catch(() => {
+      setPeople(prev);
+      console.warn("meeting_people set_failed");
+    });
+  };
+  return (
+    <span className="rec-people" onClick={(e) => e.stopPropagation()}>
+      <PeopleStepper compact value={people} attendees={attendees} onChange={changePeople} />
     </span>
   );
 }

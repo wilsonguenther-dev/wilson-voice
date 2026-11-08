@@ -772,6 +772,14 @@ export default function Meetings() {
                   )
                 }
                 toast={toast}
+                voiceCount={
+                  new Set(
+                    openMeeting.segments
+                      .filter((s) => s.clusterIndex !== null && s.clusterIndex !== undefined)
+                      .map((s) => `${s.track}:${s.clusterIndex}`),
+                  ).size || null
+                }
+                onLabelRows={(rows) => mergeLabelRows(openMeeting.meeting.id, rows)}
               />
               <header className="meeting-detail-head">
                 <div className="meeting-detail-bar">
