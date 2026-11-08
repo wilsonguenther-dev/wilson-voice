@@ -11,11 +11,10 @@ mod support;
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::summarize::{
     cited_window, commitment_lines, ground_items_in_window, invented_name, lemma_grounded,
-    map_grammar, map_grammar_items_first, notes_strategy, recover_topic,
-    render_notes_items_first, summarize_segments, transcript_lines, validate_items_first_summary,
-    validate_topic, CommitmentLine, Headline, NotesStrategy, SummaryItem, TopicLabel,
-    COMMITMENT_LINES_HEADING, NOTES_FOOTER, NOTES_STRATEGY, NO_SUMMARY_VERBATIM,
-    SUMMARY_VERBATIM_CEILING, TOPICS_HEADING,
+    map_grammar, map_grammar_items_first, notes_strategy, recover_topic, render_notes_items_first,
+    summarize_segments, transcript_lines, validate_items_first_summary, validate_topic,
+    CommitmentLine, Headline, NotesStrategy, SummaryItem, TopicLabel, COMMITMENT_LINES_HEADING,
+    NOTES_FOOTER, NOTES_STRATEGY, NO_SUMMARY_VERBATIM, SUMMARY_VERBATIM_CEILING, TOPICS_HEADING,
 };
 
 const FIXTURE: &[&str] = &[
@@ -82,7 +81,11 @@ fn model(summary: &'static str) -> StubModel {
 #[test]
 fn items_first_is_the_shipped_default() {
     assert_eq!(NOTES_STRATEGY, NotesStrategy::E);
-    assert_eq!(notes_strategy(), NotesStrategy::E, "nothing in this binary overrides it");
+    assert_eq!(
+        notes_strategy(),
+        NotesStrategy::E,
+        "nothing in this binary overrides it"
+    );
     assert_eq!(NotesStrategy::E.tag(), "E");
     assert_eq!(SUMMARY_VERBATIM_CEILING, 0.5);
 }
@@ -96,7 +99,10 @@ fn the_items_first_grammar_swaps_the_narrative_for_a_short_topic() {
     assert!(!e.contains("\\\"narrative\\\""), "{e}");
     assert!(e.contains("topic ::="), "{e}");
     for label in &labels {
-        assert!(e.contains(label.as_str()), "the id allowlist is unchanged: {e}");
+        assert!(
+            e.contains(label.as_str()),
+            "the id allowlist is unchanged: {e}"
+        );
     }
     // The item rules are the same rules.
     let rule = |g: &str, name: &str| g.lines().find(|l| l.starts_with(name)).map(str::to_string);
@@ -118,19 +124,36 @@ fn a_topic_label_is_three_to_eight_grounded_words() {
     );
     assert_eq!(validate_topic(&src, "Pilot"), None, "too short");
     assert_eq!(
-        validate_topic(&src, "the pilot and the contract and the students and the price"),
+        validate_topic(
+            &src,
+            "the pilot and the contract and the students and the price"
+        ),
         None,
         "too long"
     );
-    assert_eq!(validate_topic(&src, "Pricing for Acme Corp renewal"), None, "invented name");
+    assert_eq!(
+        validate_topic(&src, "Pricing for Acme Corp renewal"),
+        None,
+        "invented name"
+    );
 }
 
 #[test]
 fn paraphrase_grounds_at_lemma_level_and_names_stay_hard_gated() {
     let said = "We discussed the plans and agreed on the pricing.";
-    assert_eq!(lemma_grounded(said, "discussing plan, agreeing pricing"), 1.0);
-    assert_eq!(invented_name(said, "They discussed the plans with Priya."), Some("Priya".to_string()));
-    assert_eq!(invented_name(said, "We discussed the plans."), None, "a sentence opener is not a name");
+    assert_eq!(
+        lemma_grounded(said, "discussing plan, agreeing pricing"),
+        1.0
+    );
+    assert_eq!(
+        invented_name(said, "They discussed the plans with Priya."),
+        Some("Priya".to_string())
+    );
+    assert_eq!(
+        invented_name(said, "We discussed the plans."),
+        None,
+        "a sentence opener is not a name"
+    );
 }
 
 #[test]
@@ -141,7 +164,11 @@ fn items_are_grounded_against_the_cited_segment_plus_or_minus_one() {
     assert!(window.contains("contract review") && window.contains("Jeisil will send"));
     assert!(!window.contains("onboarding deck"), "+-1 only: {window}");
     let mut actions = vec![
-        item("Jeisil will send the signed contract to Liberty by Friday.", &l(1), 4.0),
+        item(
+            "Jeisil will send the signed contract to Liberty by Friday.",
+            &l(1),
+            4.0,
+        ),
         // Grounded in the transcript, but not near the line it cites.
         item("The second semester pilot price is open.", &l(1), 4.0),
         item("Priya will send the onboarding deck.", &l(2), 8.0),
@@ -158,9 +185,19 @@ fn items_are_grounded_against_the_cited_segment_plus_or_minus_one() {
 #[test]
 fn the_summary_gate_refuses_invented_facts_and_re_transcripts() {
     let src = plain();
-    assert!(validate_items_first_summary(&src, "The Liberty pilot starts with two hundred students and the contract goes out this week.").is_some());
-    assert!(validate_items_first_summary(&src, "Priya will run the Liberty pilot.").is_none(), "invented name");
-    assert!(validate_items_first_summary(&src, "The pilot costs 400 dollars.").is_none(), "invented digits");
+    assert!(validate_items_first_summary(
+        &src,
+        "The Liberty pilot starts with two hundred students and the contract goes out this week."
+    )
+    .is_some());
+    assert!(
+        validate_items_first_summary(&src, "Priya will run the Liberty pilot.").is_none(),
+        "invented name"
+    );
+    assert!(
+        validate_items_first_summary(&src, "The pilot costs 400 dollars.").is_none(),
+        "invented digits"
+    );
     assert!(
         validate_items_first_summary(&src, "Jeisil will send the signed contract to Liberty by Friday. We decided the pilot starts with two hundred students.").is_none(),
         "a re-transcript"
@@ -175,7 +212,11 @@ fn fallback_no_summary_shows_topics_and_no_paragraph() {
         &headline(),
         &[],
         "",
-        &[item("Jeisil will send the signed contract to Liberty by Friday.", "seg_0002", 4.0)],
+        &[item(
+            "Jeisil will send the signed contract to Liberty by Friday.",
+            "seg_0002",
+            4.0,
+        )],
         &[],
         &[],
         &topics(),
@@ -188,16 +229,34 @@ fn fallback_no_summary_shows_topics_and_no_paragraph() {
     println!("{md}");
     assert!(!md.contains("### Summary"), "no paragraph: {md}");
     assert!(
-        md.contains(&format!("### {TOPICS_HEADING}\n\n- Liberty pilot contract review (00:00:00)")),
+        md.contains(&format!(
+            "### {TOPICS_HEADING}\n\n- Liberty pilot contract review (00:00:00)"
+        )),
         "{md}"
     );
     let topics_at = md.find("### Topics").unwrap();
     let actions_at = md.find("### Action items").unwrap();
-    assert!(topics_at < actions_at, "Topics stand where the Summary would: {md}");
+    assert!(
+        topics_at < actions_at,
+        "Topics stand where the Summary would: {md}"
+    );
     assert!(md.ends_with(NOTES_FOOTER), "{md}");
 
     // A refused re-transcript says so, and Topics still follow.
-    let refused = render_notes_items_first(&headline(), &[], "", &[], &[], &[], &topics(), &[], 0, 1, false, true);
+    let refused = render_notes_items_first(
+        &headline(),
+        &[],
+        "",
+        &[],
+        &[],
+        &[],
+        &topics(),
+        &[],
+        0,
+        1,
+        false,
+        true,
+    );
     assert!(refused.contains(NO_SUMMARY_VERBATIM), "{refused}");
     assert!(refused.contains("### Topics"), "{refused}");
 }
@@ -231,8 +290,14 @@ fn fallback_failed_items_are_quoted_commitment_lines_never_action_items() {
         )),
         "{md}"
     );
-    assert!(md.contains("### Summary\n\nThe Liberty pilot contract was reviewed."), "{md}");
-    assert!(!md.contains("### Topics"), "a Summary passed, so no Topics: {md}");
+    assert!(
+        md.contains("### Summary\n\nThe Liberty pilot contract was reviewed."),
+        "{md}"
+    );
+    assert!(
+        !md.contains("### Topics"),
+        "a Summary passed, so no Topics: {md}"
+    );
     assert!(md.ends_with(NOTES_FOOTER), "{md}");
 }
 
@@ -242,7 +307,20 @@ fn fallback_every_card_ends_with_the_footer() {
         NOTES_FOOTER,
         "Written on this Mac by a small model. Check owners against the transcript."
     );
-    let empty = render_notes_items_first(&Headline::default(), &[], "", &[], &[], &[], &[], &[], 0, 1, false, false);
+    let empty = render_notes_items_first(
+        &Headline::default(),
+        &[],
+        "",
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        0,
+        1,
+        false,
+        false,
+    );
     assert!(empty.ends_with(NOTES_FOOTER), "{empty}");
     let s = summarize_segments(&segments_from(FIXTURE), &model("The Liberty pilot starts with two hundred students and the contract goes out this week.")).expect("notes");
     assert!(s.markdown.ends_with(NOTES_FOOTER), "{}", s.markdown);
@@ -252,30 +330,60 @@ fn fallback_every_card_ends_with_the_footer() {
 
 #[test]
 fn the_summary_is_one_pass_over_the_surviving_items_and_topics() {
-    let m = model("The Liberty pilot starts with two hundred students and the contract goes out this week.");
+    let m = model(
+        "The Liberty pilot starts with two hundred students and the contract goes out this week.",
+    );
     let s = summarize_segments(&segments_from(FIXTURE), &m).expect("notes");
     let md = &s.markdown;
     println!("{md}");
     // MAP asked for a topic, not a narrative.
     let map = m.stage("map");
     assert!(!map.is_empty());
-    assert!(map[0].grammar_text().unwrap_or_default().contains("topic ::="));
+    assert!(map[0]
+        .grammar_text()
+        .unwrap_or_default()
+        .contains("topic ::="));
     // ONE Summary pass; its input is items + topics, never transcript lines.
     let reduce = m.stage("reduce");
     assert_eq!(reduce.len(), 1, "one Summary pass");
     let sent = &reduce[0].text;
-    assert!(sent.contains("Topics:") && sent.contains("Liberty University pilot contract review"), "{sent}");
-    assert!(sent.contains("Jeisil will send the signed contract to Liberty by Friday."), "{sent}");
-    assert!(sent.contains("We decided the pilot starts with two hundred students."), "{sent}");
+    assert!(
+        sent.contains("Topics:") && sent.contains("Liberty University pilot contract review"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("Jeisil will send the signed contract to Liberty by Friday."),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("We decided the pilot starts with two hundred students."),
+        "{sent}"
+    );
     assert!(!sent.contains("seg_"), "no transcript ids: {sent}");
-    assert!(!sent.contains("Priya"), "a failed item never reaches the Summary: {sent}");
+    assert!(
+        !sent.contains("Priya"),
+        "a failed item never reaches the Summary: {sent}"
+    );
     // The headline's own paragraph is not the Summary under arm E.
     assert!(!md.contains("Ignored under items first."), "{md}");
-    assert!(md.contains("### Summary\n\nThe Liberty pilot starts"), "{md}");
+    assert!(
+        md.contains("### Summary\n\nThe Liberty pilot starts"),
+        "{md}"
+    );
     // The invented-owner action is a quoted line, not an action item.
-    assert!(s.actions.iter().all(|a| !a.text.contains("Priya")), "{:?}", s.actions);
-    assert!(md.contains(&format!("### {COMMITMENT_LINES_HEADING}")), "{md}");
-    assert!(md.contains("\"Maybe someone could look at the onboarding deck at some point.\""), "{md}");
+    assert!(
+        s.actions.iter().all(|a| !a.text.contains("Priya")),
+        "{:?}",
+        s.actions
+    );
+    assert!(
+        md.contains(&format!("### {COMMITMENT_LINES_HEADING}")),
+        "{md}"
+    );
+    assert!(
+        md.contains("\"Maybe someone could look at the onboarding deck at some point.\""),
+        "{md}"
+    );
     assert_eq!(s.decisions.len(), 1, "{:?}", s.decisions);
     assert_eq!(s.questions.len(), 1, "{:?}", s.questions);
     assert!(md.ends_with(NOTES_FOOTER), "{md}");
@@ -290,6 +398,9 @@ fn a_refused_summary_leaves_topics_not_a_paragraph() {
     println!("{md}");
     assert!(s.narrative.trim().is_empty(), "{}", s.narrative);
     assert!(md.contains(NO_SUMMARY_VERBATIM), "{md}");
-    assert!(md.contains("### Topics\n\n- Liberty University pilot contract review (00:00:00)"), "{md}");
+    assert!(
+        md.contains("### Topics\n\n- Liberty University pilot contract review (00:00:00)"),
+        "{md}"
+    );
     assert!(md.ends_with(NOTES_FOOTER), "{md}");
 }

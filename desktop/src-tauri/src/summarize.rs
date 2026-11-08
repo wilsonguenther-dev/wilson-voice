@@ -340,21 +340,59 @@ pub fn lemma_grounded(source: &str, output: &str) -> f64 {
 }
 
 /// Hard name gate: a capitalised word that does not open a sentence must be a
-/// word the source contains (any case). "Priya will send it" over a meeting
-/// that never said "Priya" is an invented owner.
+/// word the source contains (any case). A sentence opener is held to the same
+/// rule when it is an owner-shaped subject ("Priya will send it", "Priya to
+/// book …") and not a pronoun: over a meeting that never said "Priya" that is
+/// an invented owner.
 pub fn invented_name(source: &str, output: &str) -> Option<String> {
+    const OWNER_VERBS: &[&str] = &["will", "to", "should", "must", "needs", "owns"];
+    const PRONOUNS: &[&str] = &[
+        "i",
+        "we",
+        "you",
+        "they",
+        "he",
+        "she",
+        "it",
+        "someone",
+        "somebody",
+        "everyone",
+        "everybody",
+        "nobody",
+        "this",
+        "that",
+        "there",
+        "the",
+        "a",
+        "an",
+    ];
     let have: std::collections::HashSet<String> = source
         .split(|c: char| !c.is_alphanumeric() && c != '\'')
         .filter(|w| !w.is_empty())
         .map(|w| w.to_lowercase())
         .collect();
+    let tokens: Vec<&str> = output.split_whitespace().collect();
     let mut sentence_start = true;
-    for raw in output.split_whitespace() {
+    for (i, raw) in tokens.iter().enumerate() {
         let word = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
         let opens = sentence_start;
         sentence_start = raw.ends_with(['.', '!', '?', ':']);
-        if opens || word.chars().count() < 2 {
+        if word.chars().count() < 2 {
             continue;
+        }
+        if opens {
+            let next = tokens
+                .get(i + 1)
+                .map(|t| {
+                    t.trim_matches(|c: char| !c.is_alphanumeric())
+                        .to_lowercase()
+                })
+                .unwrap_or_default();
+            let lower = word.to_lowercase();
+            let owner_shaped = OWNER_VERBS.contains(&next.as_str()) || lower.ends_with("'ll");
+            if !owner_shaped || PRONOUNS.contains(&lower.trim_end_matches("'ll")) {
+                continue;
+            }
         }
         let word = word.trim_end_matches("'s");
         if word.chars().next().is_some_and(char::is_uppercase)
@@ -2087,7 +2125,11 @@ fn common_gates(source: &str, output: &str) -> Option<()> {
                 return reject("v3_ungrounded").map(|_| ());
             }
         }
-        NotesStrategy::B | NotesStrategy::E => lemma_gates(source, output)?,
+        NotesStrategy::B => lemma_gates(source, output)?,
+        // Arm E grounds each item against the segment it CITES (+-1) after
+        // the merge (`ground_items_in_window`), so a failed item can still be
+        // quoted as a commitment line instead of vanishing here.
+        NotesStrategy::E => {}
     }
     content_gates(source, output)
 }
