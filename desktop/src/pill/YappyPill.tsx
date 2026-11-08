@@ -144,7 +144,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle", lowPower = false }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle", lowPower = false, longTake = false }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -196,6 +196,9 @@ export default function YappyPill(
     engineHealth?: EngineHealth;
     /** yap-1107-parity-pill — pill.html row 20 "Saving battery" (shellSegment LOW_POWER_LABEL). */
     lowPower?: boolean;
+    /** yap-1107-parity-pill — pill.html row 5 "Long take": hold the listening
+     * prop at the desk tier (dev/matrix only: float-main passes FORCED.longTake). */
+    longTake?: boolean;
   },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -233,6 +236,8 @@ export default function YappyPill(
   // yap-1107-parity-pill — the side dock's stop (pill.html #vstage .vshell: the
   // 24 px .sbtn.red under the 56 x 180 room). Placed by syncCapsuleBox.
   const vstopRef = useRef<HTMLSpanElement | null>(null);
+  const longTakeRef = useRef(longTake);
+  longTakeRef.current = longTake;
   const [doneWords, setDoneWords] = useState(0);
   // yap-1106-yappy-states-and-motion — the clamped text lives in its own span
   // so the 2-line clamp's overflow never clips the bubble's tail.
@@ -712,7 +717,7 @@ export default function YappyPill(
     // listening → prop comes from the live state machine (escalates with actual
     // speech); thinking/done → keyed off the transcript word count
     const wantPropFor = (p: Phase, w: number): Prop =>
-      p === "listening" ? liveProp
+      p === "listening" ? (longTakeRef.current ? "desk" : liveProp)
         : (p === "thinking" || p === "done") ? propFor(w)
           : "none";
 

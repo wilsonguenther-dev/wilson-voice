@@ -10,7 +10,7 @@
  * horizontal pill — and every pose is chosen so his whole bounding box
  * (characterFit CHICK_EXTENT) sits inside the scene's rounded clip.
  *
- *   open   a 64 x 188 dark shell flush to the screen edge (rounded on the inner
+ *   open   a 64 x 216 dark shell flush to the screen edge (rounded on the inner
  *          side only), 4 px padding, holding the 56 x 180 scene: a window with
  *          the real sky at the top, a shelf with the notepad and word jar, a
  *          shelf with the typewriter, the floor, and a ladder on the INNER side

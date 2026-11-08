@@ -272,7 +272,7 @@ export function pillLayout(input: PillInput): PillLayout {
       bubble: char, hint: char, clock: null, shell: null, sceneCharacter: false, progress: null, card: null, anchor: { x: w / 2, y: h / 2 },
     };
   }
-  // yap-1106-pill-vertical-dock-world — a side dock is a TALL shell (64 x 188
+  // yap-1106-pill-vertical-dock-world — a side dock is a TALL shell (64 x 216
   // open, a 30 x 40 tab at rest), flush to the screen edge; every slot (the
   // clock, the progress row, the bubble, the hint, a card) opens INWARD beside
   // it, so nothing ever reaches across the screen edge side.

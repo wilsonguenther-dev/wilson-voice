@@ -83,6 +83,12 @@ export interface ForcedPill {
    * battery" (Low Power Mode) so the matrix photographs it without a battery.
    */
   battery: boolean;
+  /**
+   * yap-1107-parity-pill — `&take=long` forces pill.html row 5 "Long take":
+   * the listening pill at the essay tier (the desk prop, window 208 x 44),
+   * which a real take only reaches after minutes of speech.
+   */
+  longTake: boolean;
 }
 
 /**
@@ -149,6 +155,7 @@ export function forcedPill(search: string): ForcedPill | null {
     rail: q.get("rail") === "open",
     engine: forcedEngine(q.get("engine")),
     battery: q.get("battery") === "low",
+    longTake: q.get("take") === "long",
   };
 }
 
@@ -389,6 +396,12 @@ export function matrixSilentMicScene(): MatrixOfferRow {
 export function matrixBatteryScene(): MatrixOfferRow {
   const v = phaseVisual("idle");
   return { phase: "idle", id: "battery", phaseId: PHASE_ID.idle, query: "battery=low", offer: "", tone: v.tone, label: v.label };
+}
+
+/** yap-1107-parity-pill — pill.html row 5 "Long take": a hands-free take at the desk tier. */
+export function matrixLongTakeScene(): MatrixOfferRow {
+  const v = phaseVisual("listening-locked");
+  return { phase: "listening-locked", id: "longtake", phaseId: PHASE_ID["listening-locked"], query: "take=long", offer: "", tone: v.tone, label: v.label };
 }
 
 export function matrixRailScene(): MatrixOfferRow {

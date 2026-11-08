@@ -93,6 +93,8 @@ export interface CharacterStageProps {
   engineHealth?: EngineHealth;
   /** yap-1107-parity-pill — Low Power Mode / battery under 20 percent (pill.html row 20). */
   lowPower?: boolean;
+  /** yap-1107-parity-pill — the matrix's forced "Long take" (desk tier, pill.html row 5). */
+  longTake?: boolean;
 }
 
 export interface Character {
