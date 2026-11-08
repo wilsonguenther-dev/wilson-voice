@@ -771,6 +771,16 @@ struct Inner {
     /// on. `None` (always, in the app) is the wall clock. See
     /// [`ManualLeaseClock`].
     lease_clock: Mutex<Option<Arc<ManualLeaseClock>>>,
+    /// yap-1108-timing-idle-watcher-clock — the clock the idle watcher
+    /// measures idleness on: every `last_activity_ms` stamp and the watcher's
+    /// "how long since" comparison read it. `None` (always, in the app) is the
+    /// wall clock, exactly as before. See [`TranscriptionManager::set_idle_clock`].
+    idle_clock: Mutex<Option<Arc<ManualLeaseClock>>>,
+    /// yap-1108-timing-idle-watcher-clock — idle-watcher evaluations completed
+    /// (bumped once per tick, AFTER `unload_if_idle` returns). The sync point
+    /// a test waits on after moving the idle clock, instead of sleeping and
+    /// hoping the watcher thread was scheduled.
+    idle_ticks: AtomicU64,
 }
 
 /// fix-main-red-chunk-timeout — a lease clock a test drives by hand.
@@ -787,6 +797,11 @@ struct Inner {
 /// [`Self::advance`] is called. A decode that never advances it cannot time
 /// out however slowly it is scheduled; one that advances it past its budget
 /// times out every time.
+///
+/// yap-1108-timing-idle-watcher-clock — the same type drives the idle
+/// watcher's clock ([`TranscriptionManager::set_idle_clock`]): an engine can
+/// only go idle by the test advancing it, never by the test thread being
+/// starved past a short wall-clock idle timeout.
 #[derive(Debug, Default)]
 pub struct ManualLeaseClock {
     elapsed: Mutex<Duration>,
@@ -881,6 +896,8 @@ impl TranscriptionManager {
                     crate::engine_owner::JOB_QUEUE_MAX_WAITING,
                 ),
                 lease_clock: Mutex::new(None),
+                idle_clock: Mutex::new(None),
+                idle_ticks: AtomicU64::new(0),
             }),
         };
         manager.spawn_idle_watcher();
@@ -892,6 +909,40 @@ impl TranscriptionManager {
     /// [`Self::with_loader`]: the app never calls it.
     pub fn set_lease_clock(&self, clock: Arc<ManualLeaseClock>) {
         *self.inner.lease_clock.lock() = Some(clock);
+    }
+
+    /// yap-1108-timing-idle-watcher-clock — measure idleness on `clock`
+    /// instead of the wall clock: activity stamps and the watcher's idle
+    /// comparison both read it, so an engine goes idle only when the clock is
+    /// advanced past the idle timeout. A test seam, like
+    /// [`Self::set_lease_clock`]: the app never calls it. The activity stamp is
+    /// restarted on the new clock (a wall-clock stamp means nothing on it);
+    /// this is not a use, so the `engine_touches` counter is left alone.
+    pub fn set_idle_clock(&self, clock: Arc<ManualLeaseClock>) {
+        let now = clock.now().as_millis() as u64;
+        *self.inner.idle_clock.lock() = Some(clock);
+        self.inner.last_activity_ms.store(now, Ordering::Relaxed);
+        log::info!("transcription idle_clock source=manual now_ms={now}");
+    }
+
+    /// yap-1108-timing-idle-watcher-clock — idle-watcher ticks evaluated so far.
+    pub fn idle_watcher_ticks(&self) -> u64 {
+        self.inner.idle_ticks.load(Ordering::Acquire)
+    }
+
+    /// Now, in milliseconds, on the idle clock: the injected clock when a test
+    /// installed one, else the wall clock (the app, always).
+    fn idle_now_ms(&self) -> u64 {
+        let manual = self
+            .inner
+            .idle_clock
+            .lock()
+            .as_ref()
+            .map(|clock| clock.now());
+        match manual {
+            Some(elapsed) => elapsed.as_millis() as u64,
+            None => now_ms(),
+        }
     }
 
     /// Watcher thread: every `idle_check_interval`, unload an engine that has
@@ -908,6 +959,7 @@ impl TranscriptionManager {
             };
             let manager = TranscriptionManager { inner };
             manager.unload_if_idle();
+            manager.inner.idle_ticks.fetch_add(1, Ordering::Release);
         });
     }
 
@@ -922,7 +974,7 @@ impl TranscriptionManager {
         if self.inner.engine.lock().is_none() {
             return;
         }
-        let idle = Duration::from_millis(now_ms().saturating_sub(self.idle_ms_raw()));
+        let idle = Duration::from_millis(self.idle_now_ms().saturating_sub(self.idle_ms_raw()));
         if idle >= self.inner.idle_timeout {
             log::info!("unloading ASR model after {}s idle", idle.as_secs());
             self.unload();
@@ -936,9 +988,8 @@ impl TranscriptionManager {
     /// Reset the idle timer to now.
     pub fn touch(&self) {
         ENGINE_TOUCHES.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .last_activity_ms
-            .store(now_ms(), Ordering::Relaxed);
+        let now = self.idle_now_ms();
+        self.inner.last_activity_ms.store(now, Ordering::Relaxed);
     }
 
     /// True while a model is resident (in the slot OR leased to a transcription).
@@ -963,7 +1014,7 @@ impl TranscriptionManager {
             loading: self.inner.loading.load(Ordering::Acquire),
             transcribing: leases != 0,
             model_id: slot.as_ref().map(|e| e.model_id.clone()),
-            idle_seconds: now_ms().saturating_sub(self.idle_ms_raw()) / 1000,
+            idle_seconds: self.idle_now_ms().saturating_sub(self.idle_ms_raw()) / 1000,
             idle_unload_seconds: self.inner.idle_timeout.as_secs(),
             polish_sidecar: crate::polish::sidecar_status(),
         }
@@ -2704,6 +2755,24 @@ mod tests {
         TranscriptionManager::with_loader(loader, idle, Duration::from_millis(10), transcribe)
     }
 
+    /// yap-1108-timing-idle-watcher-clock — block until the idle watcher has
+    /// run one WHOLE evaluation that began after this call. That is two ticks
+    /// past the count visible now: the next one may belong to an evaluation
+    /// that read the idle clock before the caller advanced it, but the watcher
+    /// is one thread, so the one after it started later. The deadline is a
+    /// hang guard (a healthy watcher ticks every 10 ms), not a timing bound.
+    fn wait_for_a_fresh_idle_tick(m: &TranscriptionManager) {
+        let seen = m.idle_watcher_ticks();
+        let guard = std::time::Instant::now() + Duration::from_secs(60);
+        while m.idle_watcher_ticks() < seen + 2 {
+            assert!(
+                std::time::Instant::now() < guard,
+                "the ASR idle watcher stopped ticking"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn state_transitions_unloaded_to_loaded_to_idle_unloaded() {
         let path = stub_model_file("stub.gguf");
@@ -2712,6 +2781,11 @@ mod tests {
             Duration::from_millis(80),
             Duration::from_secs(5),
         );
+        // yap-1108-timing-idle-watcher-clock: idleness is measured on a clock
+        // this test moves, so a starved test thread can no longer let the
+        // 80 ms watcher unload the engine between the load and the asserts.
+        let idle_clock = ManualLeaseClock::new();
+        m.set_idle_clock(idle_clock.clone());
 
         // Unloaded: nothing resident, and transcribing says so instead of hanging.
         assert!(!m.is_loaded());
@@ -2736,17 +2810,30 @@ mod tests {
         // Still warm after use — the engine is returned to the slot.
         assert!(m.is_loaded());
 
+        // One millisecond short of the idle window: the watcher looks and keeps it.
+        idle_clock.advance(Duration::from_millis(79));
+        wait_for_a_fresh_idle_tick(&m);
+        assert!(
+            m.is_loaded(),
+            "an engine idle for less than the timeout must stay loaded"
+        );
+
         // Idle-unloaded: the watcher drops it once the idle window passes.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while m.is_loaded() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        idle_clock.advance(Duration::from_millis(1));
+        wait_for_a_fresh_idle_tick(&m);
         assert!(!m.is_loaded(), "idle watcher must unload the engine");
         assert!(m.status().model_id.is_none());
 
         // And it reloads on demand after an idle unload.
         m.load("stub/model", &path).expect("reload");
         assert!(m.is_loaded());
+        // The reload restarted the idle window (the #370 stale-stamp case):
+        // a watcher tick right after it, with no time passing, keeps it.
+        wait_for_a_fresh_idle_tick(&m);
+        assert!(
+            m.is_loaded(),
+            "a reload after an idle unload must restart the idle window"
+        );
         m.unload();
         assert!(!m.is_loaded());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
@@ -2984,16 +3071,33 @@ mod tests {
             Duration::from_millis(200),
             Duration::from_secs(5),
         );
+        // yap-1108-timing-idle-watcher-clock: idle time is the clock this test
+        // advances, not how promptly the test thread gets scheduled.
+        let idle_clock = ManualLeaseClock::new();
+        m.set_idle_clock(idle_clock.clone());
         m.load("stub/model", &path).expect("load");
         assert_eq!(m.transcribe(Vec::new(), None, None).unwrap(), "");
 
         // Using it across the idle window keeps it resident (each use touches
-        // the idle timer), unlike the idle-unload test above.
+        // the idle timer), unlike the idle-unload test above: 6 x 50 ms is
+        // 300 ms of idle-clock time against a 200 ms timeout, and the watcher
+        // evaluates after every step.
         for _ in 0..6 {
-            std::thread::sleep(Duration::from_millis(50));
+            idle_clock.advance(Duration::from_millis(50));
+            wait_for_a_fresh_idle_tick(&m);
+            assert!(m.is_loaded(), "50 ms after a use the engine must be warm");
             assert_eq!(m.transcribe(vec![0.4; 8], None, None).unwrap(), "warm");
         }
         assert!(m.is_loaded(), "an actively used engine must stay warm");
+
+        // Control: the same watcher DOES unload it once a full window passes
+        // with no use, so the loop above proved the uses kept it warm.
+        idle_clock.advance(Duration::from_millis(200));
+        wait_for_a_fresh_idle_tick(&m);
+        assert!(
+            !m.is_loaded(),
+            "an engine unused for the whole idle window must unload"
+        );
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
