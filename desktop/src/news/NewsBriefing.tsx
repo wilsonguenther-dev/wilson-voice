@@ -15,7 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppCtx } from "../appShell";
 import { FRIENDS } from "../sprites/art";
 import { domBuffer, paintCrisp } from "../sprites/crisp";
-import { cadenceOf, topicLabel, loadNews, type NewsCadence, type NewsRefreshOutcome, type NewsView } from "./newsPrefs";
+import { TOPIC_CHIPS, cadenceOf, loadNews, type NewsCadence, type NewsRefreshOutcome, type NewsView } from "./newsPrefs";
 import {
   QUOTE_CHECK_MS,
   buildBriefing,
@@ -42,14 +42,8 @@ import { duoAt, duoTurns, skippedArrival, type DuoFrame, type DuoTurn } from "./
 
 export type BriefingPhase = "loading" | "ready" | "empty" | "error";
 
-/**
- * The pair, drawn at a whole-number scale (2x on the design page).
- * yap-1107-parity-news: the approved card draws Cinder + Yappy as ONE 104x44
- * art canvas shown at 208x88; two 104x88 boxes side by side, no gap (App.css
- * .news-briefing-pair), give the same 208x88 footprint, so the header row is
- * as tall as the page's.
- */
-export const PAIR_BOX = { w: 104, h: 88 };
+/** The pair, drawn at a whole-number scale (2x on the design page). */
+const PAIR_BOX = { w: 92, h: 84 };
 
 function PairSprite({ name, talking = false }: { name: "cinder" | "yappy"; talking?: boolean }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
@@ -129,7 +123,7 @@ export function NewsBriefingView({
   const live = phase === "ready" && lines && duo && duo.frame.stage !== "done" ? duo : null;
   const turn = live && live.frame.stage === "turns" && live.frame.turn >= 0 ? (live.turns[live.frame.turn] ?? null) : null;
   const storyCount = live ? Math.ceil(live.turns.length / 2) : 0;
-  const chipLabel = topicLabel;
+  const chipLabel = (id: string) => TOPIC_CHIPS.find((c) => c.id === id)?.label ?? id;
   return (
     <section className="card news-briefing" data-news-briefing={phase} aria-labelledby="news-briefing-title" aria-busy={phase === "loading"}>
       <header className="news-briefing-head">
@@ -138,11 +132,8 @@ export function NewsBriefingView({
           <PairSprite name="yappy" talking={turn?.who === "yappy"} />
         </div>
         <div className="news-briefing-says">
-          {/* yap-1107-parity-news — the approved card draws no title; the
-              heading stays for screen readers and the time moves to the
-              header's third column, as on the page. */}
-          <h3 id="news-briefing-title" className="sr-only">
-            Yappy News{briefing && stories.length > 0 ? ` · ${timeLabel(briefing.deliveredMs)}` : ""}
+          <h3 id="news-briefing-title">
+            Yappy News{briefing && stories.length > 0 ? <span className="muted"> · {timeLabel(briefing.deliveredMs)}</span> : null}
           </h3>
           {phase === "loading" && <p className="muted">Yappy is reading the news…</p>}
           {phase === "empty" && (
@@ -187,9 +178,6 @@ export function NewsBriefingView({
             </>
           )}
         </div>
-        <span className="news-briefing-when" aria-hidden="true" data-news-briefing-when>
-          {briefing && stories.length > 0 ? timeLabel(briefing.deliveredMs) : ""}
-        </span>
       </header>
 
       {phase === "ready" && stories.length > 0 && (
@@ -230,7 +218,7 @@ export function NewsBriefingView({
 
       <footer className="news-briefing-foot">
         <div className="news-briefing-topics" aria-label="Your topics">
-          <span className="muted tiny news-briefing-meta">Your topics</span>
+          <span className="muted tiny">Your topics</span>
           {topics.map((t) => (
             <span key={t} className="news-briefing-chip">
               {chipLabel(t)}
@@ -241,7 +229,7 @@ export function NewsBriefingView({
               {t}
             </span>
           ))}
-          <button type="button" className="news-briefing-chip news-briefing-chip--add" onClick={onEditTopics} data-news-edit-topics>
+          <button type="button" className="link" onClick={onEditTopics} data-news-edit-topics>
             + Add
           </button>
         </div>

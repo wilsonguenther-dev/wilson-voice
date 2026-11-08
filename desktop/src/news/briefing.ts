@@ -149,7 +149,6 @@ export function topicTag(s: Pick<BriefingStory, "topic" | "source">, tickers: re
   if (isMarketStory(s, tickers)) return "STOCK";
   const known: Record<string, string> = {
     developer: "DEV", business: "BIZ", tech: "TECH", science: "SCI", world: "WORLD", sports: "SPORTS", culture: "CULTURE",
-    ai: "AI", design: "DESIGN", startups: "STARTUP", crypto: "CRYPTO", local: "LOCAL",
   };
   return known[s.topic] ?? "MORE";
 }

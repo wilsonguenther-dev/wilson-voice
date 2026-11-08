@@ -457,12 +457,6 @@ pub fn google_query(topic_id: &str) -> Option<&'static str> {
         "world" => Some("world news"),
         "sports" => Some("sports"),
         "culture" => Some("culture"),
-        // yap-1107-parity-news — the chips the approved page added.
-        "ai" => Some("artificial intelligence"),
-        "design" => Some("design"),
-        "startups" => Some("startups"),
-        "crypto" => Some("cryptocurrency"),
-        "local" => Some("local news"),
         _ => None,
     }
 }

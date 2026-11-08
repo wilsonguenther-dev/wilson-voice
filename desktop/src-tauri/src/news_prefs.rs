@@ -30,28 +30,16 @@ pub const LAST_REFRESH_KEY: &str = "news_last_refresh_ms";
 pub const CADENCE_KEY: &str = "news_refresh_cadence";
 
 /// The topic chips. Ids are stable; the UI owns the labels.
-/// yap-1107-parity-news — the ten chips the approved News page draws, in its
-/// order (design-2026-11-06/news.html §01).
-pub const TOPIC_CHIPS: [&str; 10] = [
+pub const TOPIC_CHIPS: [&str; 8] = [
     "developer",
     "stocks",
     "business",
-    "ai",
-    "design",
-    "startups",
-    "crypto",
-    "sports",
+    "tech",
     "science",
-    "local",
+    "world",
+    "sports",
+    "culture",
 ];
-/// Chips an earlier build offered. A saved pick keeps working (it is still
-/// fetched and shown); the picker just no longer offers them.
-pub const LEGACY_TOPIC_CHIPS: [&str; 3] = ["tech", "world", "culture"];
-
-/// True for any chip id a save may carry, current or legacy.
-pub fn is_topic_chip(id: &str) -> bool {
-    TOPIC_CHIPS.contains(&id) || LEGACY_TOPIC_CHIPS.contains(&id)
-}
 pub const MAX_TICKERS: usize = 12;
 pub const MAX_CUSTOM: usize = 10;
 pub const MAX_TICKER_LEN: usize = 10;
@@ -287,7 +275,7 @@ pub fn normalize(p: &NewsPrefs) -> Result<NewsPrefs, NewsPrefsError> {
     let mut topics: Vec<String> = Vec::new();
     for t in &p.topics {
         let id = t.trim().to_ascii_lowercase();
-        if is_topic_chip(&id) && !topics.contains(&id) {
+        if TOPIC_CHIPS.contains(&id.as_str()) && !topics.contains(&id) {
             topics.push(id);
         }
     }
@@ -828,38 +816,5 @@ mod tests {
         assert_eq!(e.tag(), "storage");
         assert!(e.plain().ends_with('.'));
         assert!(!e.plain().contains("disk full"));
-    }
-
-    #[test]
-    fn parity_news_chips_match_the_approved_page_and_keep_legacy_picks() {
-        assert_eq!(
-            TOPIC_CHIPS,
-            [
-                "developer",
-                "stocks",
-                "business",
-                "ai",
-                "design",
-                "startups",
-                "crypto",
-                "sports",
-                "science",
-                "local"
-            ]
-        );
-        let p = prefs(&["AI", "tech", "nonsense", "local"], &[], &[]);
-        let n = normalize(&p).unwrap();
-        assert_eq!(
-            n.topics,
-            vec!["ai".to_string(), "tech".to_string(), "local".to_string()]
-        );
-        for id in TOPIC_CHIPS.iter().chain(LEGACY_TOPIC_CHIPS.iter()) {
-            if *id != "developer" {
-                assert!(
-                    crate::news::feeds::google_query(id).is_some(),
-                    "chip {id} has no search words"
-                );
-            }
-        }
     }
 }
