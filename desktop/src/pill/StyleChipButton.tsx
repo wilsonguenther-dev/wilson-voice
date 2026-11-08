@@ -72,6 +72,7 @@ export default function StyleChipButton({ phase, forced = null }: { phase: LiveP
       ref={ref}
       type="button"
       className="style-chip"
+      data-pill-control="style-chip"
       data-style-chip={chip.mode}
       data-overridden={chip.overridden ? "true" : "false"}
       aria-label={name}

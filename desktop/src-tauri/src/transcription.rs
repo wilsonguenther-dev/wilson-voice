@@ -767,7 +767,48 @@ struct Inner {
     /// one decode at a time, dictation before retry before meeting, a plain
     /// "catching up" sentence instead of a parallel engine, closed at quit.
     jobs: crate::engine_owner::JobQueue,
+    /// fix-main-red-chunk-timeout — the clock a lease's timeout is measured
+    /// on. `None` (always, in the app) is the wall clock. See
+    /// [`ManualLeaseClock`].
+    lease_clock: Mutex<Option<Arc<ManualLeaseClock>>>,
 }
+
+/// fix-main-red-chunk-timeout — a lease clock a test drives by hand.
+///
+/// A lease's timeout is wall-clock time, and in the app that is right: a
+/// decode that has not come back in its budget is wedged. In a test it made
+/// "healthy" and "wedged" a scheduling race — meeting decodes run on a thread
+/// in the Darwin background band, a saturated runner starves such a thread for
+/// seconds, and a healthy stub decode then timed out next to the wedged one
+/// (main run 42432221845: two dead chunks where the test expects one).
+///
+/// Installed with [`TranscriptionManager::set_lease_clock`], every lease's
+/// deadline is measured on this clock instead, and it moves only when
+/// [`Self::advance`] is called. A decode that never advances it cannot time
+/// out however slowly it is scheduled; one that advances it past its budget
+/// times out every time.
+#[derive(Debug, Default)]
+pub struct ManualLeaseClock {
+    elapsed: Mutex<Duration>,
+}
+
+impl ManualLeaseClock {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Time on this clock since it was made.
+    pub fn now(&self) -> Duration {
+        *self.elapsed.lock()
+    }
+
+    /// Move the clock forward. Every lease waiting on it sees the new time
+    /// within one poll.
+    pub fn advance(&self, by: Duration) {
+        *self.elapsed.lock() += by;
+    }
+}
+
 
 /// YV91 (finding #27): how many times a model load has been ASKED for, and how
 /// many times the idle sweeper's clock has been pushed out. Process-global
@@ -840,10 +881,18 @@ impl TranscriptionManager {
                 jobs: crate::engine_owner::JobQueue::new(
                     crate::engine_owner::JOB_QUEUE_MAX_WAITING,
                 ),
+                lease_clock: Mutex::new(None),
             }),
         };
         manager.spawn_idle_watcher();
         manager
+    }
+
+    /// fix-main-red-chunk-timeout — measure every later lease's timeout on
+    /// `clock` instead of the wall clock. A test seam, like
+    /// [`Self::with_loader`]: the app never calls it.
+    pub fn set_lease_clock(&self, clock: Arc<ManualLeaseClock>) {
+        *self.inner.lease_clock.lock() = Some(clock);
     }
 
     /// Watcher thread: every `idle_check_interval`, unload an engine that has
@@ -1848,6 +1897,10 @@ impl TranscriptionManager {
         let abandoned_live = Arc::clone(&self.inner.abandoned_live);
         let worker_fate = Arc::clone(&fate);
         let worker_abandoned = Arc::clone(&abandoned_live);
+        // fix-main-red-chunk-timeout — a manual clock is read BEFORE the worker
+        // exists, so a decode that advances it cannot move this lease's start.
+        let manual_clock = self.inner.lease_clock.lock().clone();
+        let lease_started = manual_clock.as_ref().map(|c| c.now());
         std::thread::spawn(move || {
             if background && !crate::asr_protocol::set_current_thread_background(true) {
                 log::debug!("engine decode background_priority=unavailable");
@@ -1883,7 +1936,19 @@ impl TranscriptionManager {
         // session's measured RTF, 30 s floor, 180 s cap), not a fixed 120 s;
         // yap-1106-sp-01 — a dictation WINDOW gets the window clamp (10–60 s).
         let timeout = self.budget_timeout(budget);
-        let mut outcome = rx.recv_timeout(timeout);
+        let mut outcome = match (&manual_clock, lease_started) {
+            (Some(clock), Some(started)) => loop {
+                match // The handback poll: it bounds only how soon an expiry is
+                // noticed, never whether it happens, and adds no new timer to
+                // the take path's census (long_take_budget.rs).
+                rx.recv_timeout(ENGINE_HANDBACK_POLL) {
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                        if clock.now().saturating_sub(started) < timeout => {}
+                    other => break other,
+                }
+            },
+            _ => rx.recv_timeout(timeout),
+        };
         // yap-1106-engine-owner — an abandoned decode is never left running:
         // it is cancelled the moment the lease gives up on it. For the
         // `yap-asr` helper that cancel escalates to a kill BY ITS PID past the

@@ -73,6 +73,7 @@ function CloseButton({ label, busy, onClick }: { label: string; busy?: boolean; 
     <button
       type="button"
       className="polish-reveal-close"
+      data-pill-control="polish-reveal-close"
       aria-label={label}
       title={label}
       disabled={busy}
@@ -128,10 +129,10 @@ export function PolishRevealView({
       <div className="polish-reveal polish-reveal-toast" role="status" aria-label={lines.aria} data-polish-reveal={reveal.id}>
         <p className="polish-reveal-label">{lines.label}</p>
         <div className="polish-reveal-actions">
-          <button type="button" className="polish-reveal-open" onClick={onReveal}>
+          <button type="button" className="polish-reveal-open" data-pill-control="polish-reveal-open" onClick={onReveal}>
             {lines.reveal}
           </button>
-          <button type="button" className="polish-reveal-dismiss" onClick={onKeep}>
+          <button type="button" className="polish-reveal-dismiss" data-pill-control="polish-reveal-dismiss" onClick={onKeep}>
             {lines.dismiss}
           </button>
           <CloseButton label={lines.close} onClick={close} />
@@ -161,10 +162,10 @@ export function PolishRevealView({
         </p>
       )}
       <div className="polish-reveal-actions">
-        <button type="button" className="polish-reveal-original" disabled={busy} onClick={onUseOriginal}>
+        <button type="button" className="polish-reveal-original" data-pill-control="polish-reveal-original" disabled={busy} onClick={onUseOriginal}>
           {lines.useOriginal}
         </button>
-        <button type="button" className="polish-reveal-keep" disabled={busy} onClick={onKeep}>
+        <button type="button" className="polish-reveal-keep" data-pill-control="polish-reveal-keep" disabled={busy} onClick={onKeep}>
           {lines.keep}
         </button>
       </div>
