@@ -108,8 +108,16 @@ fn threshold() -> CosineDistance {
 fn four_voices_with_a_drift_are_four_with_count_four_and_five_on_auto() {
     let raw = four_voices_one_drifts();
     let auto = assign_clusters(&raw, threshold());
-    assert_eq!(speakers(&auto), 5, "the drift alone makes a fifth speaker on Auto");
-    assert_eq!(cap_turn_clusters(&raw, &auto, None), auto, "Auto is today's behaviour");
+    assert_eq!(
+        speakers(&auto),
+        5,
+        "the drift alone makes a fifth speaker on Auto"
+    );
+    assert_eq!(
+        cap_turn_clusters(&raw, &auto, None),
+        auto,
+        "Auto is today's behaviour"
+    );
     let capped = cap_turn_clusters(&raw, &auto, voice_pool(Some(4), false));
     assert_eq!(speakers(&capped), 4, "count = 4 yields exactly 4 speakers");
     // The drifted half went to D, not to A, B or C.
@@ -131,11 +139,18 @@ fn every_count_from_one_to_six_is_a_ceiling_and_never_splits_a_cluster() {
         let capped = cap_turn_clusters(&raw, &auto, voice_pool(Some(count), false));
         let n = speakers(&capped);
         assert!(n <= usize::from(count), "count {count}: {n} speakers");
-        assert_eq!(n, speakers(&auto).min(usize::from(count)), "count {count}: merges only as far as needed");
+        assert_eq!(
+            n,
+            speakers(&auto).min(usize::from(count)),
+            "count {count}: merges only as far as needed"
+        );
         for i in 0..raw.len() {
             for j in 0..raw.len() {
                 if auto[i] == auto[j] {
-                    assert_eq!(capped[i], capped[j], "count {count}: turns {i},{j} were split");
+                    assert_eq!(
+                        capped[i], capped[j],
+                        "count {count}: turns {i},{j} were split"
+                    );
                 }
             }
         }
@@ -164,13 +179,23 @@ fn merge_to_cap_keeps_the_larger_member_and_merges_voiceless_clusters_last() {
     let a = vec![1.0, 0.0, 0.0];
     let a2 = unit(vec![0.9, 0.3, 0.0]);
     let b = vec![0.0, 0.0, 1.0];
-    let reps = merge_to_cap(&[a.clone(), a2, b.clone(), Vec::new()], &[10.0, 30.0, 5.0, 1.0], Some(3));
+    let reps = merge_to_cap(
+        &[a.clone(), a2, b.clone(), Vec::new()],
+        &[10.0, 30.0, 5.0, 1.0],
+        Some(3),
+    );
     assert_eq!(reps[0], 1, "the larger member represents the merged pair");
     assert_eq!(reps[1], 1);
     assert_eq!(reps[2], 2);
-    assert_eq!(reps[3], 3, "a voiceless cluster merges only when the count demands it");
+    assert_eq!(
+        reps[3], 3,
+        "a voiceless cluster merges only when the count demands it"
+    );
     let reps = merge_to_cap(&[a, b, Vec::new()], &[10.0, 5.0, 1.0], Some(1));
-    assert!(reps.iter().all(|r| *r == 0), "count 1 is one speaker: {reps:?}");
+    assert!(
+        reps.iter().all(|r| *r == 0),
+        "count 1 is one speaker: {reps:?}"
+    );
 }
 
 /// The real-audio variant: 4 licensed voices, one band-passed halfway, made by
@@ -196,7 +221,10 @@ fn real_audio_four_voices_with_a_phone_band_drift_are_four_with_count_four() {
     let auto = assign_clusters(&raw, threshold());
     let capped = cap_turn_clusters(&raw, &auto, voice_pool(Some(4), false));
     assert_eq!(speakers(&capped), 4, "count = 4 yields 4 on real audio");
-    assert!(speakers(&auto) >= 4, "Auto never finds fewer than the cap result");
+    assert!(
+        speakers(&auto) >= 4,
+        "Auto never finds fewer than the cap result"
+    );
     pool.shutdown();
 }
 
@@ -263,14 +291,24 @@ fn after_the_meeting_five_to_four_merges_without_asr_or_embedding_and_keeps_the_
     let db = support::open_db(&dir);
     let sidecar_before = wilson_voice_lib::diarize::sidecar_requests();
     let out = db.recap_meeting_speakers(&id, Some(4), false).unwrap();
-    assert_eq!(out, RecapOutcome::Applied { voices: 4, merged: 1 });
+    assert_eq!(
+        out,
+        RecapOutcome::Applied {
+            voices: 4,
+            merged: 1
+        }
+    );
     assert_eq!(
         wilson_voice_lib::diarize::sidecar_requests(),
         sidecar_before,
         "the merge re-runs on stored voices: no diarize/embed request"
     );
     let l = lines(&dir, &id);
-    assert_eq!(l[4], (Some(3), Some("John".to_string())), "the phone voice is John now");
+    assert_eq!(
+        l[4],
+        (Some(3), Some("John".to_string())),
+        "the phone voice is John now"
+    );
     assert_eq!(l[3], (Some(3), Some("John".to_string())));
     assert_eq!(db.meeting_expected_speakers(&id).unwrap(), Some(4));
     assert_eq!(db.meeting_cluster_voices(&id).unwrap().len(), 4);
@@ -293,13 +331,26 @@ fn merging_two_named_people_asks_once_and_writes_nothing_until_confirmed() {
         "\"Merge Maya into John?\" — the larger named voice keeps its name"
     );
     let l = lines(&dir, &id);
-    assert_eq!(l[4], (Some(4), Some("Maya".to_string())), "nothing written before the answer");
+    assert_eq!(
+        l[4],
+        (Some(4), Some("Maya".to_string())),
+        "nothing written before the answer"
+    );
     assert_eq!(db.meeting_expected_speakers(&id).unwrap(), None);
     let out = db.recap_meeting_speakers(&id, Some(4), true).unwrap();
-    assert_eq!(out, RecapOutcome::Applied { voices: 4, merged: 1 });
+    assert_eq!(
+        out,
+        RecapOutcome::Applied {
+            voices: 4,
+            merged: 1
+        }
+    );
     let l = lines(&dir, &id);
     assert_eq!(l[4], (Some(3), Some("John".to_string())));
-    assert_eq!(wilson_voice_lib::diarize::sidecar_requests(), sidecar_before);
+    assert_eq!(
+        wilson_voice_lib::diarize::sidecar_requests(),
+        sidecar_before
+    );
     drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -310,9 +361,18 @@ fn a_higher_count_after_the_meeting_never_splits_anyone() {
     let db = support::open_db(&dir);
     db.recap_meeting_speakers(&id, Some(4), false).unwrap();
     let out = db.recap_meeting_speakers(&id, Some(6), false).unwrap();
-    assert_eq!(out, RecapOutcome::Applied { voices: 4, merged: 0 });
+    assert_eq!(
+        out,
+        RecapOutcome::Applied {
+            voices: 4,
+            merged: 0
+        }
+    );
     assert_eq!(db.meeting_expected_speakers(&id).unwrap(), Some(6));
-    assert!(db.set_meeting_expected_speakers(&id, Some(13)).is_err(), "1..=12 only");
+    assert!(
+        db.set_meeting_expected_speakers(&id, Some(13)).is_err(),
+        "1..=12 only"
+    );
     drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }
