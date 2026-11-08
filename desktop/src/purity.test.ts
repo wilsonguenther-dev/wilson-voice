@@ -47,6 +47,7 @@ const ADAPTERS: Record<string, string> = {
   "meetings/notetakerSetup.ts": "drives the notetaker setup commands",
   "permissionRepair.ts": "runs the per-service permission probe and repair commands",
   "pill/characters/registry.ts": "registers Yappy, whose transitional canvas stage (pill/YappyPill.tsx, lazily imported) listens to the backend",
+  "pill/occupant.ts": "paints the chosen friend through pill/characters/friends, which reaches Yappy's canvas stage (pill/YappyPill.tsx) and its listeners; its framing math is tested by occupant.test.ts",
   "pill/drag.ts": "moves the float window through invoke(); its hit-box math is tested on its own",
   "pill/usePartialTranscript.ts": "listens for transcript_partial over listen(); its rules are pure in pill/partialTranscript.ts",
   "pill/hitTargets.ts": "publishes every pill control's drawn rect as hit area and logs pill.click through invoke(); its padding math is tested on its own",
