@@ -1959,7 +1959,11 @@ fn swallow_inputs() -> Option<(PttBinding, bool)> {
         .try_lock()
         .map(|b| *b)
         .unwrap_or(PttBinding::FnControl);
-    let combo_down = st.machine.try_lock().map(|m| m.combo_down()).unwrap_or(false);
+    let combo_down = st
+        .machine
+        .try_lock()
+        .map(|m| m.combo_down())
+        .unwrap_or(false);
     Some((binding, combo_down))
 }
 
@@ -1970,7 +1974,12 @@ fn spawn_swallow_log(chord: &'static str, phase: KeyPhase) {
         .name("wv-key-swallow-log".into())
         .spawn(move || {
             let front = crate::focus::frontmost_bundle_id();
-            crate::diagnostics::record_hotkey_swallowed(chord, phase.name(), front.as_deref(), "tap");
+            crate::diagnostics::record_hotkey_swallowed(
+                chord,
+                phase.name(),
+                front.as_deref(),
+                "tap",
+            );
         });
 }
 
@@ -1984,7 +1993,10 @@ unsafe extern "C" fn key_swallow_callback(
         on_key_swallow_disabled(kind);
         return event;
     }
-    if event.is_null() || !KEY_SWALLOW_LIVE.load(Ordering::SeqCst) || !RUNNING.load(Ordering::SeqCst) {
+    if event.is_null()
+        || !KEY_SWALLOW_LIVE.load(Ordering::SeqCst)
+        || !RUNNING.load(Ordering::SeqCst)
+    {
         return event;
     }
     let keycode = ffi::CGEventGetIntegerValueField(event, ffi::KEYBOARD_EVENT_KEYCODE);
@@ -2988,5 +3000,343 @@ mod globe_keycode_tests {
             vec![PttEvent::Interrupted]
         );
         assert!(!m.take_live());
+    }
+}
+
+#[cfg(test)]
+mod swallow_tests {
+    //! yap-1107-hotkey-exclusive-to-yap (1): `swallow_decision` across every
+    //! bound chord, both phases; modifiers never swallowed; non-Yap keys always
+    //! passed; a key-up swallowed exactly when its key-down was.
+    use super::{
+        is_modifier_keycode, swallow_chord_label, swallow_decision, KeyPhase, PassReason,
+        PttBinding, SwallowDecision, SwallowTakeState, GLOBE_KEYCODE, KCG_EVENT_FLAGS_CHANGED,
+        KCG_EVENT_FLAG_MASK_ALTERNATE, KCG_EVENT_FLAG_MASK_COMMAND, KCG_EVENT_FLAG_MASK_CONTROL,
+        KCG_EVENT_FLAG_MASK_SECONDARY_FN, KCG_EVENT_KEY_DOWN, KCG_EVENT_KEY_UP,
+        KCG_EVENT_TAP_OPTION_DEFAULT, KCG_EVENT_TAP_OPTION_LISTEN_ONLY, KCG_SESSION_EVENT_TAP,
+        KEY_SWALLOW_LOCATION, KEY_SWALLOW_MASK, KEY_SWALLOW_OPTIONS, MAIN_TAP_OPTIONS,
+    };
+
+    const SHIFT: u64 = 0x0002_0000;
+    const FN: u64 = KCG_EVENT_FLAG_MASK_SECONDARY_FN;
+    const CTL: u64 = KCG_EVENT_FLAG_MASK_CONTROL;
+    const CMD: u64 = KCG_EVENT_FLAG_MASK_COMMAND;
+    const OPT: u64 = KCG_EVENT_FLAG_MASK_ALTERNATE;
+
+    const BINDINGS: [PttBinding; 3] = [
+        PttBinding::Fn,
+        PttBinding::FnControl,
+        PttBinding::FnOrFnControl,
+    ];
+
+    /// Every flag combination a press can carry (fn ⌃ ⌘ ⌥ ⇧).
+    fn all_flags() -> Vec<u64> {
+        let bits = [FN, CTL, CMD, OPT, SHIFT];
+        (0..32u32)
+            .map(|m| {
+                bits.iter()
+                    .enumerate()
+                    .filter(|(i, _)| m & (1u32 << *i) != 0)
+                    .fold(0u64, |acc, (_, b)| acc | *b)
+            })
+            .collect()
+    }
+
+    fn all_takes() -> [SwallowTakeState; 4] {
+        [
+            SwallowTakeState {
+                combo_down: false,
+                down_swallowed: false,
+            },
+            SwallowTakeState {
+                combo_down: true,
+                down_swallowed: false,
+            },
+            SwallowTakeState {
+                combo_down: false,
+                down_swallowed: true,
+            },
+            SwallowTakeState {
+                combo_down: true,
+                down_swallowed: true,
+            },
+        ]
+    }
+
+    fn swallowed(d: SwallowDecision) -> bool {
+        matches!(d, SwallowDecision::Swallow { .. })
+    }
+
+    #[test]
+    fn the_swallow_tap_can_never_see_a_modifier_edge() {
+        // Structural: flags-changed is not in the mask, so no fn / ⌃ / ⌘ / ⌥
+        // release can be eaten (stuck keys), whatever the decision says.
+        assert_eq!(KEY_SWALLOW_MASK & (1u64 << KCG_EVENT_FLAGS_CHANGED), 0);
+        assert_ne!(KEY_SWALLOW_MASK & (1u64 << KCG_EVENT_KEY_DOWN), 0);
+        assert_ne!(KEY_SWALLOW_MASK & (1u64 << KCG_EVENT_KEY_UP), 0);
+        assert_eq!(KEY_SWALLOW_OPTIONS, KCG_EVENT_TAP_OPTION_DEFAULT);
+        assert_eq!(KEY_SWALLOW_LOCATION, KCG_SESSION_EVENT_TAP);
+        // The feeding tap stays listen-only: it can never eat a key.
+        assert_eq!(MAIN_TAP_OPTIONS, KCG_EVENT_TAP_OPTION_LISTEN_ONLY);
+    }
+
+    #[test]
+    fn modifiers_are_never_swallowed_in_any_state() {
+        let modifier_codes: Vec<i64> = (54..=63).collect();
+        for binding in BINDINGS {
+            for flags in all_flags() {
+                for take in all_takes() {
+                    // Every flags-changed event, whatever key it names.
+                    for code in modifier_codes.iter().copied().chain([GLOBE_KEYCODE, 0, 49]) {
+                        assert_eq!(
+                            swallow_decision(binding, flags, code, KCG_EVENT_FLAGS_CHANGED, take),
+                            SwallowDecision::Pass(PassReason::ModifierEdge),
+                            "{binding:?} flags={flags:#x} code={code} {take:?}"
+                        );
+                    }
+                    for code in &modifier_codes {
+                        for ty in [KCG_EVENT_KEY_DOWN, KCG_EVENT_KEY_UP] {
+                            assert_eq!(
+                                swallow_decision(binding, flags, *code, ty, take),
+                                SwallowDecision::Pass(PassReason::ModifierEdge),
+                                "{binding:?} flags={flags:#x} code={code} ty={ty}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn non_yap_keys_always_pass_down_and_up() {
+        for binding in BINDINGS {
+            for flags in all_flags() {
+                for take in all_takes() {
+                    for code in 0..=127i64 {
+                        if is_modifier_keycode(code) {
+                            continue;
+                        }
+                        for ty in [KCG_EVENT_KEY_DOWN, KCG_EVENT_KEY_UP] {
+                            assert_eq!(
+                                swallow_decision(binding, flags, code, ty, take),
+                                SwallowDecision::Pass(PassReason::NotTapChord),
+                                "{binding:?} flags={flags:#x} code={code} ty={ty} {take:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn carbon_chords_pass_both_phases_because_carbon_consumes_them() {
+        // Swallowing a Carbon chord's key-down here would stop Carbon from
+        // firing; RegisterEventHotKey already keeps both phases from apps.
+        for b in crate::shortcuts::ALL {
+            let code = crate::carbon_probe::carbon_keycode(b.code)
+                .unwrap_or_else(|| panic!("{} has no Carbon keycode", b.id))
+                as i64;
+            let mut flags = 0u64;
+            if b.ctrl {
+                flags |= CTL;
+            }
+            if b.cmd {
+                flags |= CMD;
+            }
+            if b.alt {
+                flags |= OPT;
+            }
+            if b.shift {
+                flags |= SHIFT;
+            }
+            for binding in BINDINGS {
+                for take in all_takes() {
+                    for ty in [KCG_EVENT_KEY_DOWN, KCG_EVENT_KEY_UP] {
+                        assert!(
+                            !swallowed(swallow_decision(binding, flags, code, ty, take)),
+                            "{} ty={ty} {binding:?} {take:?}",
+                            b.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn globe_key_down_is_swallowed_when_the_bound_chord_is_held() {
+        let idle = SwallowTakeState::default();
+        // fn hold and fn / fn⌃: fn in the event's flags is the chord.
+        for binding in [PttBinding::Fn, PttBinding::FnOrFnControl] {
+            assert_eq!(
+                swallow_decision(binding, FN, GLOBE_KEYCODE, KCG_EVENT_KEY_DOWN, idle),
+                SwallowDecision::Swallow {
+                    chord: "fn",
+                    phase: KeyPhase::Down
+                }
+            );
+        }
+        // fn⌃: fn alone is not Yap's press — the system / app keeps it.
+        assert_eq!(
+            swallow_decision(
+                PttBinding::FnControl,
+                FN,
+                GLOBE_KEYCODE,
+                KCG_EVENT_KEY_DOWN,
+                idle
+            ),
+            SwallowDecision::Pass(PassReason::ChordNotHeld)
+        );
+        assert_eq!(
+            swallow_decision(
+                PttBinding::FnControl,
+                FN | CTL,
+                GLOBE_KEYCODE,
+                KCG_EVENT_KEY_DOWN,
+                idle
+            ),
+            SwallowDecision::Swallow {
+                chord: "fn⌃",
+                phase: KeyPhase::Down
+            }
+        );
+        // Command mode (⌘ / ⌥ on top) is still the chord.
+        assert!(swallowed(swallow_decision(
+            PttBinding::FnControl,
+            FN | CTL | CMD,
+            GLOBE_KEYCODE,
+            KCG_EVENT_KEY_DOWN,
+            idle
+        )));
+        // The machine already holds the combo (flags edge seen first).
+        let held = SwallowTakeState {
+            combo_down: true,
+            down_swallowed: false,
+        };
+        for binding in BINDINGS {
+            assert!(swallowed(swallow_decision(
+                binding,
+                0,
+                GLOBE_KEYCODE,
+                KCG_EVENT_KEY_DOWN,
+                held
+            )));
+        }
+        // No fn anywhere: never.
+        for binding in BINDINGS {
+            assert_eq!(
+                swallow_decision(binding, CTL | CMD, GLOBE_KEYCODE, KCG_EVENT_KEY_DOWN, idle),
+                SwallowDecision::Pass(PassReason::ChordNotHeld)
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_up_is_swallowed_exactly_when_its_key_down_was() {
+        for binding in BINDINGS {
+            for flags in all_flags() {
+                for combo_down in [false, true] {
+                    let up_after_swallow = SwallowTakeState {
+                        combo_down,
+                        down_swallowed: true,
+                    };
+                    assert_eq!(
+                        swallow_decision(
+                            binding,
+                            flags,
+                            GLOBE_KEYCODE,
+                            KCG_EVENT_KEY_UP,
+                            up_after_swallow
+                        ),
+                        SwallowDecision::Swallow {
+                            chord: swallow_chord_label(binding),
+                            phase: KeyPhase::Up
+                        }
+                    );
+                    let up_after_pass = SwallowTakeState {
+                        combo_down,
+                        down_swallowed: false,
+                    };
+                    assert_eq!(
+                        swallow_decision(
+                            binding,
+                            flags,
+                            GLOBE_KEYCODE,
+                            KCG_EVENT_KEY_UP,
+                            up_after_pass
+                        ),
+                        SwallowDecision::Pass(PassReason::DownReachedApp)
+                    );
+                }
+            }
+        }
+    }
+
+    /// Drive the callback's pairing rule over a press sequence and count what
+    /// reached the app.
+    fn run(binding: PttBinding, presses: &[(u64, bool)]) -> (usize, usize, usize) {
+        let mut down_swallowed = false;
+        let (mut eaten_down, mut eaten_up, mut leaked) = (0, 0, 0);
+        for &(flags, combo_down) in presses {
+            for ty in [KCG_EVENT_KEY_DOWN, KCG_EVENT_KEY_UP] {
+                let take = SwallowTakeState {
+                    combo_down,
+                    down_swallowed,
+                };
+                let d = swallow_decision(binding, flags, GLOBE_KEYCODE, ty, take);
+                if ty == KCG_EVENT_KEY_UP {
+                    down_swallowed = false;
+                }
+                match d {
+                    SwallowDecision::Swallow {
+                        phase: KeyPhase::Down,
+                        ..
+                    } => {
+                        down_swallowed = true;
+                        eaten_down += 1;
+                    }
+                    SwallowDecision::Swallow {
+                        phase: KeyPhase::Up,
+                        ..
+                    } => eaten_up += 1,
+                    SwallowDecision::Pass(_) => leaked += 1,
+                }
+            }
+        }
+        (eaten_down, eaten_up, leaked)
+    }
+
+    #[test]
+    fn fifty_takes_leave_every_swallowed_down_paired_with_its_up() {
+        // 50 takes of each binding, interleaved with lone-fn presses under fn⌃
+        // (not Yap's): every swallowed down has its swallowed up, nothing half.
+        for binding in BINDINGS {
+            let chord = match binding {
+                PttBinding::FnControl => FN | CTL,
+                _ => FN,
+            };
+            let mut presses = Vec::new();
+            for i in 0..50 {
+                presses.push((chord, i % 2 == 0));
+                presses.push((FN, false));
+            }
+            let (down, up, leaked) = run(binding, &presses);
+            assert_eq!(down, up, "{binding:?}");
+            match binding {
+                PttBinding::FnControl => {
+                    assert_eq!(down, 50);
+                    assert_eq!(
+                        leaked, 100,
+                        "the 50 lone-fn presses reach the app, down and up"
+                    );
+                }
+                _ => {
+                    assert_eq!(down, 100);
+                    assert_eq!(leaked, 0);
+                }
+            }
+        }
     }
 }

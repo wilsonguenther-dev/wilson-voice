@@ -708,8 +708,14 @@ mod tests {
             .expect("listen-only must carry a degraded line");
         assert!(line.contains("hotkeys work"), "{line}");
         assert!(line.contains("Accessibility"), "{line}");
-        assert_eq!(super::exclusive_line(super::ExclusiveStatus::Exclusive), None);
-        assert_eq!(super::exclusive_line(super::ExclusiveStatus::NotAttempted), None);
+        assert_eq!(
+            super::exclusive_line(super::ExclusiveStatus::Exclusive),
+            None
+        );
+        assert_eq!(
+            super::exclusive_line(super::ExclusiveStatus::NotAttempted),
+            None
+        );
     }
 
     #[test]
@@ -722,7 +728,11 @@ mod tests {
         for b in shortcuts::ALL {
             let label = super::carbon_chord_label(&b.shortcut());
             assert!(!label.is_empty(), "{}", b.id);
-            assert!(!label.contains(' '), "{} label {label:?} must be one token", b.id);
+            assert!(
+                !label.contains(' '),
+                "{} label {label:?} must be one token",
+                b.id
+            );
         }
     }
 

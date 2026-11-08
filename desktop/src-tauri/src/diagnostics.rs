@@ -872,7 +872,10 @@ mod tests {
     fn swallow_tokens_stay_one_field_and_never_empty() {
         assert_eq!(super::swallow_token(Some("⌃⌥⌘Space")), "⌃⌥⌘Space");
         assert_eq!(super::swallow_token(Some("fn hold")), "fn_hold");
-        assert_eq!(super::swallow_token(Some("com.apple.TextEdit")), "com.apple.TextEdit");
+        assert_eq!(
+            super::swallow_token(Some("com.apple.TextEdit")),
+            "com.apple.TextEdit"
+        );
         assert_eq!(super::swallow_token(None), "unknown");
         assert_eq!(super::swallow_token(Some("")), "unknown");
     }

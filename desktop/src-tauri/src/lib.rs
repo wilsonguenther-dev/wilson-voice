@@ -15207,7 +15207,10 @@ pub fn run() {
                     move |app, shortcut, event| {
                         // yap-1107-hotkey-exclusive-to-yap: Carbon consumed this
                         // phase; one `hotkey swallowed` diagnostics line for it.
-                        hotkeys::note_carbon_swallowed(shortcut, event.state == ShortcutState::Pressed);
+                        hotkeys::note_carbon_swallowed(
+                            shortcut,
+                            event.state == ShortcutState::Pressed,
+                        );
                         on_shortcut(app.clone(), shortcut, event.state == ShortcutState::Pressed)
                     }
                 })
