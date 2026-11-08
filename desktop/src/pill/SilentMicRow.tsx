@@ -105,6 +105,7 @@ export default function SilentMicRow({
         <button
           type="button"
           className="silent-mic-switch"
+          data-pill-control="silent-mic-switch"
           aria-busy={busy}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={switchMic}

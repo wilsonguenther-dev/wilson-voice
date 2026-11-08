@@ -77,6 +77,8 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/cloudChip.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
   // yap-1106-byom-cloud-fast-path — the polish_result contract and the reveal-edit actions.
   "pill/polishResult.ts": { lines: 100, branches: 90, functions: 100, statements: 100 },
+  // yap-1107-reveal-stays-until-read — the dwell rule (8 s floor, pointer, keep-open); floor = measured coverage.
+  "pill/revealDwell.ts": { lines: 95, branches: 85, functions: 94, statements: 91 },
   // yap-wf-05 — the "Polished — Reveal" payload check, copy and route words.
   "pill/polishReveal.ts": { lines: 100, branches: 85, functions: 100, statements: 100 },
   // yap-1106-engine-owner — the speech engine's health state, in plain words.

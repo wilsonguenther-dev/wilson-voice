@@ -774,3 +774,45 @@
   color: var(--text-muted);
   margin: 0 0 var(--space-2);
 }
+
+/* yap-1106-fb-23 — "4 voices · People − 4 +" in the after-meeting cards header. */
+.people-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+}
+.people-stepper button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-card);
+  color: inherit;
+  font: inherit;
+}
+.people-stepper button:disabled {
+  opacity: 0.45;
+}
+.people-stepper .people-auto.is-on {
+  border-color: var(--accent-action);
+  color: var(--accent-action-ink);
+  background: var(--accent-action-soft);
+}
+.people-stepper .people-value {
+  min-width: 2ch;
+  text-align: center;
+  color: var(--text, inherit);
+}
+.people-stepper .people-suggest-reason {
+  color: var(--muted);
+}
+.people-merge-ask {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}

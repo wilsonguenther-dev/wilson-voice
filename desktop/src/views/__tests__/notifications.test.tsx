@@ -37,8 +37,12 @@ describe("WF-17 Settings › Notifications", () => {
 
   it("settings_notifications_has_three_switches_all_on_by_default", () => {
     const html = render(<Notifications />, { settings: {}, saveSettings: () => undefined });
-    expect((html.match(/data-quiet-switch="/g) ?? []).length).toBe(3);
+    // Three category switches, all on, plus yap-1107-reveal-stays-until-read's
+    // "Keep the reveal open until I close it" (default off).
+    expect((html.match(/data-quiet-switch="/g) ?? []).length).toBe(4);
     for (const id of ["tip", "news", "milestone"]) expect(switchHtml(html, id)).toContain("checked");
+    expect(switchHtml(html, "keep-reveal-open")).not.toContain("checked");
+    expect(html).toContain("Keep the reveal open until I close it");
     expect(html).toContain("Tips");
     expect(html).toContain("Feature news");
     expect(html).toContain("Milestones");

@@ -36,7 +36,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -283,6 +283,151 @@ impl LiveSpeakers<'_> {
 // window that [`LiveSpeakers`] already makes.
 // ---------------------------------------------------------------------------
 
+/// yap-1106-fb-23 — the People count of the meeting being recorded now
+/// (0 = Auto). Set by the pill's stepper; read by the live worker each tick
+/// and by the post-meeting pass when the row has no count of its own.
+static LIVE_EXPECTED_SPEAKERS: AtomicU8 = AtomicU8::new(0);
+
+/// See [`LIVE_EXPECTED_SPEAKERS`]. `None` or out of range = Auto.
+pub fn set_live_expected_speakers(count: Option<u8>) {
+    let n = count
+        .filter(|n| {
+            (crate::meetings::EXPECTED_SPEAKERS_MIN..=crate::meetings::EXPECTED_SPEAKERS_MAX)
+                .contains(n)
+        })
+        .unwrap_or(0);
+    LIVE_EXPECTED_SPEAKERS.store(n, Ordering::Relaxed);
+}
+
+/// The live People count (`None` = Auto).
+pub fn live_expected_speakers() -> Option<u8> {
+    Some(LIVE_EXPECTED_SPEAKERS.load(Ordering::Relaxed)).filter(|n| *n > 0)
+}
+
+/// The live People count, cleared: the post-meeting pass takes it once.
+pub fn take_live_expected_speakers() -> Option<u8> {
+    Some(LIVE_EXPECTED_SPEAKERS.swap(0, Ordering::Relaxed)).filter(|n| *n > 0)
+}
+
+/// yap-1106-fb-23 — the line of a window a full pool put on its nearest
+/// voice: that voice's name (or "Speaker N"), marked as a guess. Under
+/// [`LIVE_SAME_PERSON_BELOW`] the reason reads "Same person as …?" only when
+/// "Ask who's talking" (FB-22a) is on; otherwise it is the plain match.
+pub fn capped_voice(roster: &LiveRoster, cluster: usize, similarity: f32) -> LiveVoice {
+    let name = roster
+        .display_name(cluster)
+        .unwrap_or_else(|| LiveRoster::label(cluster));
+    let pct = (similarity.clamp(0.0, 1.0) * 100.0).round() as i32;
+    let hint = if roster.ask_enabled && similarity < LIVE_SAME_PERSON_BELOW {
+        format!("Same person as {name}? {pct}% sure")
+    } else {
+        format!("Probably {name} — {pct}% voice match, people count reached")
+    };
+    LiveVoice {
+        name: Some(name),
+        hint: Some(hint),
+        cluster: Some(cluster),
+    }
+}
+
+/// The pill's People stepper during a meeting (and the after-meeting header
+/// for the meeting row): `count: None` = Auto. Live, it applies from the next
+/// window; with a `meeting_id` it is also stored on the row for the post pass.
+#[tauri::command]
+pub fn meeting_set_expected_speakers(
+    app: tauri::AppHandle,
+    meeting_id: Option<String>,
+    count: Option<u8>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(n) = count {
+        if !(crate::meetings::EXPECTED_SPEAKERS_MIN..=crate::meetings::EXPECTED_SPEAKERS_MAX)
+            .contains(&n)
+        {
+            log::warn!("meeting_people refused count={n}");
+            return Err("People can be 1 to 12, or Auto.".into());
+        }
+    }
+    log::info!(
+        "meeting_people set count={} stored={}",
+        count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "auto".into()),
+        meeting_id.is_some()
+    );
+    set_live_expected_speakers(count);
+    if let Some(id) = meeting_id {
+        let st = app
+            .try_state::<std::sync::Arc<crate::AppState>>()
+            .ok_or_else(|| "Yap is still starting. Try again in a moment.".to_string())?;
+        st.db
+            .set_meeting_expected_speakers(&id, count)
+            .map_err(|e| {
+                log::warn!("meeting_people store_failed error=\"{e}\"");
+                "Couldn't save the people count. Try again.".to_string()
+            })?;
+    }
+    Ok(())
+}
+
+/// The after-meeting People stepper: re-runs ONLY the merge on the stored
+/// voices (no transcription, no embedding) and relabels the lines. Returns
+/// `needsConfirm` ("Merge Maya into John?") before losing a name; the same
+/// call with `confirm_merge: true` applies it.
+#[tauri::command]
+pub fn meeting_recap_speakers(
+    app: tauri::AppHandle,
+    meeting_id: String,
+    count: Option<u8>,
+    confirm_merge: bool,
+) -> Result<RecapReply, String> {
+    use tauri::Manager;
+    let t0 = Instant::now();
+    let st = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .ok_or_else(|| "Yap is still starting. Try again in a moment.".to_string())?;
+    let out = st
+        .db
+        .recap_meeting_speakers(&meeting_id, count, confirm_merge)
+        .map_err(|e| {
+            log::warn!("meeting_recap failure error=\"{e}\"");
+            "Couldn't regroup the voices. Try again.".to_string()
+        })?;
+    let rows = match &out {
+        crate::meetings::RecapOutcome::Applied { .. } => {
+            st.db.meeting_label_rows(&meeting_id).unwrap_or_else(|e| {
+                log::warn!("meeting_recap rows_failed error=\"{e}\"");
+                Vec::new()
+            })
+        }
+        crate::meetings::RecapOutcome::NeedsConfirm { .. } => Vec::new(),
+    };
+    log::info!("meeting_recap done ms={}", t0.elapsed().as_millis());
+    Ok(RecapReply { outcome: out, rows })
+}
+
+/// What the after-meeting People change hands the webview: the outcome and,
+/// when it applied, every line's speaker state to merge in place.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecapReply {
+    pub outcome: crate::meetings::RecapOutcome,
+    pub rows: Vec<crate::speaker_profiles::LabelRow>,
+}
+
+/// The People count stored on a meeting (`None` = Auto).
+#[tauri::command]
+pub fn meeting_expected_speakers(
+    app: tauri::AppHandle,
+    meeting_id: String,
+) -> Result<Option<u8>, String> {
+    use tauri::Manager;
+    let st = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .ok_or_else(|| "Yap is still starting. Try again in a moment.".to_string())?;
+    st.db.meeting_expected_speakers(&meeting_id)
+}
+
 /// The Tauri event the pill listens on for a live question.
 pub const LIVE_ASK_EVENT: &str = "meeting:live-ask";
 /// A voice is asked about after about this much of its speech.
@@ -339,6 +484,7 @@ pub struct LiveCluster {
     /// "Yes, John" folded this voice into another live voice.
     pub merged_into: Option<usize>,
     /// The best known/just-named person under [`LIVE_SAME_PERSON_BELOW`].
+    /// Frozen once `asked` is set: it is the person the card named.
     pub candidate: Option<(SameTarget, String, f32)>,
 }
 
@@ -391,6 +537,12 @@ pub struct LiveRoster {
     pub profiles: Vec<SpeakerProfile>,
     pub bands: MatchBands,
     pub ask_enabled: bool,
+    /// yap-1106-fb-23 — the most voices this roster may hold ("People" count,
+    /// minus You when You are the mic of a call). `None` = Auto.
+    pub cap: Option<usize>,
+    /// yap-1106-fb-23 — set by the last [`Self::observe`] when a full pool
+    /// put a new-sounding window on its nearest voice: that similarity.
+    pub last_capped: Option<f32>,
 }
 
 impl LiveRoster {
@@ -400,7 +552,14 @@ impl LiveRoster {
             profiles,
             bands,
             ask_enabled,
+            cap: None,
+            last_capped: None,
         }
+    }
+
+    /// yap-1106-fb-23 — the pool is full: a new voice would exceed the count.
+    pub fn pool_full(&self) -> bool {
+        self.cap.is_some_and(|c| self.speakers() >= c.max(1))
     }
 
     /// The voice a cluster resolves to after any "Yes" merges.
@@ -444,6 +603,7 @@ impl LiveRoster {
         speech: f32,
         m: &VoiceMatch,
     ) -> (usize, Option<LiveAsk>) {
+        self.last_capped = None;
         if let VoiceMatch::Auto {
             profile_id,
             display_name,
@@ -483,6 +643,19 @@ impl LiveRoster {
                 self.join(i, embedding, speech);
                 i
             }
+            // yap-1106-fb-23 — the pool is full ("People: 4"): a voice that
+            // drifted (phone mic, a cold) is the NEAREST known speaker, low
+            // confidence, never a new one. No question is raised for it here;
+            // the line carries the guess and its reason instead.
+            Some((i, s)) if self.pool_full() => {
+                self.join(i, embedding, speech);
+                self.last_capped = Some(s);
+                log::info!(
+                    "live_speaker capped cluster={i} pct={}",
+                    (s * 100.0).round() as i32
+                );
+                return (i, None);
+            }
             _ => {
                 self.clusters.push(LiveCluster {
                     centroid: normalized_or_empty(embedding),
@@ -497,7 +670,12 @@ impl LiveRoster {
                 self.clusters.len() - 1
             }
         };
-        self.note_candidate(idx, embedding, m);
+        // fix-l3b1-2: once a voice is asked about, its candidate is frozen:
+        // "Yes, John" must merge into the person the card showed, never a
+        // closer person a later window found after the question went out.
+        if !self.clusters[idx].asked {
+            self.note_candidate(idx, embedding, m);
+        }
         let c = &mut self.clusters[idx];
         if !self.ask_enabled
             || c.asked
@@ -845,7 +1023,10 @@ impl LiveState {
         samples: &[f32],
         dictation_wants_engine: &dyn Fn() -> bool,
     ) -> LiveVoice {
-        let on = self.roster.as_ref().is_some_and(|r| r.ask_enabled);
+        let on = self
+            .roster
+            .as_ref()
+            .is_some_and(|r| r.ask_enabled || r.cap.is_some());
         // Setting off (the default), or the mic of a call (the person at this
         // Mac): exactly the live-whos-talking path, never a question.
         if !on || (tracks >= 2 && track == 0) {
@@ -869,6 +1050,14 @@ impl LiveState {
                 voice.hint = Some(LIVE_NAMED_HINT.to_string());
             }
         }
+        // yap-1106-fb-23 — a full pool never shows "Someone new": the line is
+        // the nearest known speaker, marked as a guess with its reason.
+        if let Some(similarity) = roster.last_capped {
+            voice = capped_voice(roster, cluster, similarity);
+        } else if roster.pool_full() && voice.name.as_deref() == Some(SOMEONE_NEW) {
+            voice.name = Some(LiveRoster::label(cluster));
+            voice.hint = None;
+        }
         log::info!(
             "live_speaker matched={} track={track} cluster={cluster} ask={} ms={}",
             m.outcome(),
@@ -879,6 +1068,22 @@ impl LiveState {
             self.asks.push(a);
         }
         voice
+    }
+
+    /// yap-1106-fb-23 — follow the People count; applies from the next live
+    /// window. `tracks` decides whether You are the mic of a call (then the
+    /// roster, which only ever sees the call side, holds count − 1).
+    pub fn set_people(&mut self, count: Option<u8>, tracks: usize) {
+        if let Some(r) = self.roster.as_mut() {
+            let cap = crate::diarize::voice_pool(count, tracks >= 2);
+            if r.cap != cap {
+                log::info!(
+                    "live_speaker people pool={}",
+                    cap.map(|n| n.to_string()).unwrap_or_else(|| "auto".into())
+                );
+                r.cap = cap;
+            }
+        }
     }
 
     pub fn spills(&self) -> &[PathBuf] {
@@ -1223,15 +1428,17 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
             // same budget) so a new voice can be asked about.
             let ask_live = ask_live_enabled(&app);
             let bands = MatchBands::from_env_or_provisional();
-            let speakers = match digest.as_deref() {
-                Some(d) if !profiles.is_empty() || ask_live => Some(LiveSpeakers {
-                    embedder: &embedder,
-                    profiles: &profiles,
-                    digest: d,
-                    bands,
-                }),
-                _ => None,
-            };
+            // yap-1106-fb-23 — a People count can be set mid-meeting, so the
+            // matcher exists whenever the embedder does; with no voiceprints,
+            // the setting off and People on Auto it still embeds nothing
+            // (`LiveSpeakers::label` skips without profiles).
+            set_live_expected_speakers(None);
+            let speakers = digest.as_deref().map(|d| LiveSpeakers {
+                embedder: &embedder,
+                profiles: &profiles,
+                digest: d,
+                bands,
+            });
             drop(take_answers()); // nothing from an earlier meeting
             log::info!("live_ask start enabled={ask_live}");
             log::info!(
@@ -1279,6 +1486,8 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
                     }
                 }
                 state.set_ask_enabled(ask_live_enabled(&app));
+                let tracks = state.spills().len();
+                state.set_people(live_expected_speakers(), tracks);
                 // yap-1106-resource-governor: at minimal the live view pauses;
                 // the recording and the spill keep going underneath it.
                 if crate::resource_governor::live_transcript_paused() {
@@ -1746,6 +1955,67 @@ mod tests {
         assert_eq!(r.display_name(c).as_deref(), Some("John"));
     }
 
+    /// fix-l3b1-2 fixture: a named John cluster, an enrolled Maya profile and
+    /// a new voice asked "Same person as John? 62% sure", then a later window
+    /// of that voice that is 66% like Maya. Returns (roster, john, phone).
+    fn asked_about_john_then_closer_to_maya() -> (LiveRoster, usize, usize) {
+        let maya = profile(9, "Maya", vec![0.0, 0.0, 1.0]);
+        let mut r = LiveRoster::new(vec![maya], MatchBands::provisional(), true);
+        let none = VoiceMatch::Unknown { best: None };
+        let (john, _) = r.observe(&[1.0, 0.0, 0.0], 6.0, &none);
+        r.name(john, "John").unwrap();
+        let (phone, ask) = r.observe(&johns_phone(), 6.0, &none);
+        let Some(LiveAsk::SamePerson {
+            name, similarity, ..
+        }) = ask
+        else {
+            panic!("62% like John asks about John: {ask:?}");
+        };
+        assert_eq!(name, "John");
+        assert_eq!((similarity * 100.0).round() as i32, 62);
+        let maya_66 = VoiceMatch::Ask {
+            profile_id: 9,
+            display_name: "Maya".into(),
+            similarity: crate::diarize_metrics::cosine_similarity(
+                &[0.66, (1.0f32 - 0.66 * 0.66).sqrt()],
+                &[1.0, 0.0],
+            ),
+        };
+        let (again, ask) = r.observe(&johns_phone(), 6.0, &maya_66);
+        assert_eq!(again, phone, "the later window is the same live voice");
+        assert_eq!(ask, None, "asked once: no second question");
+        (r, john, phone)
+    }
+
+    #[test]
+    fn a_closer_window_after_asking_never_changes_who_the_card_named() {
+        let (r, john, phone) = asked_about_john_then_closer_to_maya();
+        let Some((target, name, similarity)) = r.clusters[phone].candidate.clone() else {
+            panic!("the asked voice keeps the person the card named");
+        };
+        assert_eq!(target, SameTarget::Cluster(john));
+        assert_eq!(name, "John");
+        assert_eq!((similarity * 100.0).round() as i32, 62);
+    }
+
+    #[test]
+    fn yes_john_merges_into_john_and_leaves_mayas_voiceprint_untouched() {
+        let (mut r, john, phone) = asked_about_john_then_closer_to_maya();
+        assert_eq!(
+            r.confirm_same(phone, true).unwrap(),
+            SameOutcome::MergedInto { cluster: john }
+        );
+        assert_eq!(r.profiles[0].display_name, "Maya");
+        assert_eq!(
+            r.profiles[0].n_samples, 3,
+            "Maya's voiceprint never gets John's sample"
+        );
+        assert_eq!(r.clusters[phone].profile_id, None);
+        assert_eq!(r.clusters[phone].merged_into, Some(john));
+        assert_eq!(r.display_name(phone).as_deref(), Some("John"));
+        assert_eq!(r.speakers(), 1);
+    }
+
     #[test]
     fn a_voice_is_asked_about_after_five_seconds_and_only_once() {
         let mut r = LiveRoster::new(Vec::new(), MatchBands::provisional(), true);
@@ -1810,5 +2080,94 @@ mod tests {
             .all(|v| v.cluster.is_none()));
         assert!(st.roster().unwrap().clusters.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// yap-1106-fb-23 — "People: 2" on a mic-only meeting: once two voices
+    /// are known, a window that drifted (Sam on a phone mic, 60% like Sam) is
+    /// Sam, low confidence, and never "Someone new". On Auto the same windows
+    /// make a third speaker — the cap is what does the work.
+    #[test]
+    fn a_full_pool_assigns_a_drifting_window_to_the_nearest_speaker_and_never_says_someone_new() {
+        let profiles = vec![profile(1, "Alex", vec![1.0, 0.0, 0.0, 0.0])];
+        let maya = vec![0.0, 1.0, 0.0, 0.0];
+        let sam = vec![0.0, 0.0, 1.0, 0.0];
+        let sams_phone = {
+            let v = [0.0f32, 0.1, 0.6, 0.79];
+            let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter().map(|x| x / n).collect::<Vec<f32>>()
+        };
+        let run = |people: Option<u8>, ask: bool| -> (Vec<LiveVoice>, usize) {
+            let embedder = Fixture::new(vec![
+                Some(maya.clone()),
+                Some(sam.clone()),
+                Some(sams_phone.clone()),
+                Some(sams_phone.clone()),
+            ]);
+            let sp = LiveSpeakers {
+                embedder: &embedder,
+                profiles: &profiles,
+                digest: DIGEST,
+                bands: MatchBands::provisional(),
+            };
+            let mut st = LiveState::new(Vec::new()).with_roster(LiveRoster::new(
+                profiles.clone(),
+                MatchBands::provisional(),
+                ask,
+            ));
+            st.set_people(people, 1);
+            let window = speech(6.0);
+            let voices: Vec<LiveVoice> = (0..4)
+                .map(|_| st.voice_for(&sp, 0, 1, &window, &|| false))
+                .collect();
+            assert_eq!(embedder.calls.get(), 4, "one embed per window, no more");
+            (voices, st.roster().unwrap().speakers())
+        };
+
+        let (capped, speakers) = run(Some(2), false);
+        assert_eq!(speakers, 2, "the pool never grows past the count");
+        for v in &capped[2..] {
+            assert_eq!(
+                v.cluster,
+                Some(1),
+                "the drifted window is Sam's voice: {v:?}"
+            );
+            assert_ne!(
+                v.name.as_deref(),
+                Some(SOMEONE_NEW),
+                "a full pool never says Someone new"
+            );
+            assert_eq!(v.name.as_deref(), Some("Speaker 2"));
+        }
+        assert!(
+            capped[2].hint.as_deref().is_some_and(|h| h.contains("60%")),
+            "the low-confidence guess carries its reason: {:?}",
+            capped[2]
+        );
+
+        // Auto, with the live roster on (FB-22a) so voices are counted: the
+        // same windows grow a third voice.
+        let (_, auto_speakers) = run(None, true);
+        assert_eq!(auto_speakers, 3, "on Auto the drift becomes a new voice");
+    }
+
+    #[test]
+    fn people_on_a_call_caps_the_call_side_at_count_minus_one() {
+        let mut st = LiveState::new(Vec::new()).with_roster(LiveRoster::new(
+            Vec::new(),
+            MatchBands::provisional(),
+            false,
+        ));
+        st.set_people(Some(4), 2);
+        assert_eq!(
+            st.roster().unwrap().cap,
+            Some(3),
+            "You are the mic: 3 other voices"
+        );
+        st.set_people(Some(4), 1);
+        assert_eq!(st.roster().unwrap().cap, Some(4));
+        st.set_people(None, 2);
+        assert_eq!(st.roster().unwrap().cap, None, "Auto");
+        set_live_expected_speakers(Some(13));
+        assert_eq!(live_expected_speakers(), None, "out of range is Auto");
     }
 }

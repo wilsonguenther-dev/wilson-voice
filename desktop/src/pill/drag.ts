@@ -523,6 +523,30 @@ function sendHitbox(x: number, y: number, w: number, h: number): void {
   invoke("pill_set_hitbox", { x, y, w, h }).catch(() => {});
 }
 
+/**
+ * yap-1106-fb-02-pill-first-click — the PRECISE hit area: every rect the panel
+ * must take the cursor over (the capsule, each control's own drawn rect, a
+ * held card), as a list. The backend hit-tests the list, so the empty glass
+ * between two controls stays click-through while every control — wherever the
+ * layout put it — takes its click on the first press. The single bounding
+ * union above is still sent for older listeners; the backend ignores it once
+ * this list has arrived. Published on `window.__YAP_PILL_HITBOXES__` too, so
+ * the headless click matrix (scripts/pill-matrix.mjs --clicks) can check that
+ * every probe point lies inside what the NSPanel was told.
+ */
+let lastHitboxes = "";
+function sendHitboxes(rects: Rect4[]): void {
+  const live = rects.filter((r) => r[2] > 0 && r[3] > 0);
+  const key = live.map((r) => r.map(Math.round).join(",")).join(";");
+  if (key === lastHitboxes) return;
+  lastHitboxes = key;
+  (globalThis as unknown as { __YAP_PILL_HITBOXES__?: Rect4[] }).__YAP_PILL_HITBOXES__ = live;
+  invoke("pill_set_hitboxes", { rects: live.map(([x, y, w, h]) => ({ x, y, w, h })) }).catch(() => {});
+}
+
+/** The owner `hitTargets.ts` publishes every `[data-pill-control]` rect under. */
+export const CONTROLS_OWNER = "controls";
+
 /** The capsule's latest rect, kept while a held rect overrides it. */
 let capsuleRect: [number, number, number, number] | null = null;
 /**
@@ -540,9 +564,9 @@ const holds = new Map<string, [number, number, number, number]>();
  */
 /** Extra rects the hitbox covers beside the capsule, one per owner (WF-20: the
  *  style chip and the meeting control can be up together). */
-const extraRects = new Map<string, [number, number, number, number]>();
+const extraRects = new Map<string, Rect4[]>();
 
-type Rect4 = [number, number, number, number];
+export type Rect4 = [number, number, number, number];
 
 /** Bounding union of two x/y/w/h rects; an empty (w or h <= 0) side is ignored. */
 export function unionHitbox(a: Rect4 | null, b: Rect4 | null): Rect4 | null {
@@ -558,13 +582,25 @@ export function unionHitbox(a: Rect4 | null, b: Rect4 | null): Rect4 | null {
 
 function sendCapsule(): void {
   let r: Rect4 | null = capsuleRect;
-  for (const e of extraRects.values()) r = unionHitbox(r, e);
+  const list: Rect4[] = capsuleRect ? [capsuleRect] : [];
+  for (const rs of extraRects.values()) {
+    for (const e of rs) {
+      r = unionHitbox(r, e);
+      list.push(e);
+    }
+  }
   if (r) sendHitbox(...r);
+  sendHitboxes(list);
 }
 
 export function reportPillHitbox(x: number, y: number, w: number, h: number): void {
   capsuleRect = [x, y, w, h];
-  if (holds.size) return;
+  // fb-02 — under a hold the capsule is still in the precise list, so its new
+  // rect is re-published (the legacy union stays the held rects alone).
+  if (holds.size) {
+    sendHeld();
+    return;
+  }
   sendCapsule();
 }
 
@@ -577,10 +613,52 @@ export function extendPillHitbox(
   rect: { x: number; y: number; w: number; h: number } | null,
   owner = "capsule",
 ): void {
-  if (rect) extraRects.set(owner, [rect.x, rect.y, rect.w, rect.h]);
+  if (rect) extraRects.set(owner, [[rect.x, rect.y, rect.w, rect.h]]);
   else extraRects.delete(owner);
-  if (holds.size) return;
+  if (holds.size) {
+    sendHeld();
+    return;
+  }
   sendCapsule();
+}
+
+/**
+ * yap-1106-fb-02-pill-first-click — like `extendPillHitbox`, but an owner may
+ * add SEVERAL rects (hitTargets.ts: one per `[data-pill-control]`). `null` or
+ * an empty list removes the owner. The controls owner stays live while a card
+ * holds the hitbox, so the meeting stop is never unreachable behind a card.
+ */
+export function extendPillHitboxRects(rects: Rect4[] | null, owner: string): void {
+  if (rects && rects.length) extraRects.set(owner, rects.map((r) => [r[0], r[1], r[2], r[3]] as Rect4));
+  else extraRects.delete(owner);
+  if (holds.size) {
+    sendHeld();
+    return;
+  }
+  sendCapsule();
+}
+
+/**
+ * While a card holds: the held rects (legacy union, unchanged), and in the
+ * precise LIST the held rects PLUS the capsule and every extra rect (controls,
+ * meeting badge, style chip). Loop-three review, batch 4 note 4: the list used
+ * to drop the capsule while a card (the polish reveal, 8 s or longer) held it,
+ * so the first click on the pill went to the app underneath and only a later
+ * click worked — Wilson's "the first time i click it the second time doesn't
+ * work the third time it works". A card drawn over the capsule still wins the
+ * click in the DOM; the panel just never hands that point to the floor.
+ */
+function sendHeld(): void {
+  let u: Rect4 | null = null;
+  const list: Rect4[] = [];
+  for (const h of holds.values()) {
+    u = unionHitbox(u, h);
+    list.push(h);
+  }
+  if (u) sendHitbox(...u);
+  if (capsuleRect) list.push(capsuleRect);
+  for (const rs of extraRects.values()) for (const e of rs) list.push(e);
+  sendHitboxes(list);
 }
 
 /**
@@ -600,9 +678,7 @@ export function holdPillHitbox(
     sendCapsule();
     return;
   }
-  let u: Rect4 | null = null;
-  for (const h of holds.values()) u = unionHitbox(u, h);
-  if (u) sendHitbox(...u);
+  sendHeld();
 }
 
 /** A rect in window-logical points, as `watchPillHitbox` publishes it. */

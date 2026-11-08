@@ -21,6 +21,7 @@ export default function LanguageChip() {
       type="button"
       className={`pill-lang${opts.notice ? " has-notice" : ""}`}
       data-mode={opts.mode}
+      data-pill-control="language-chip"
       title={title}
       aria-label={title}
       tabIndex={-1}

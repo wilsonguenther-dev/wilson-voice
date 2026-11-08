@@ -14,6 +14,16 @@ import { REVEAL_EDIT_TTL_MS, type PolishResult } from "./polishResult";
 
 /** Mirrors `lib.rs` `POLISH_REVEAL_EVENT`. */
 export const POLISH_REVEAL_EVENT = "polish_reveal";
+/**
+ * yap-1107-reveal-stays-until-read — backend -> pill: close the reveal now.
+ * Payload "esc" | "click_outside". The float panel is a non-activating NSPanel
+ * that is normally never key, so the hover watch reads Esc and the left mouse
+ * button from the window server instead. Mirrors `float_pill.rs`
+ * `POLISH_REVEAL_CLOSE_EVENT`.
+ */
+export const POLISH_REVEAL_CLOSE_EVENT = "polish-reveal-close";
+/** Pill -> backend: the reveal opened / closed (`lib.rs` `pill_reveal_state`). */
+export const REVEAL_STATE_COMMAND = "pill_reveal_state";
 /** "Use original" — `lib.rs` `use_original_take` (the Undo AI Edit paste). */
 export const USE_ORIGINAL_COMMAND = "use_original_take";
 
@@ -52,7 +62,7 @@ function sameSentence(a: string, b: string): boolean {
   const norm = (s: string) => s.trim().replace(/[\u2018\u2019]/g, "'");
   return norm(a) === norm(b);
 }
-/** Unanswered, the toast leaves on its own after this long. */
+/** Unanswered and untouched, the toast leaves on its own no sooner than this (`revealDwell.ts`). */
 export const POLISH_REVEAL_TTL_MS = REVEAL_EDIT_TTL_MS;
 /** Where polish ran when the route chip has nothing to say (a default install). */
 export const LOCAL_ROUTE_LABEL = "On this Mac";
@@ -97,6 +107,7 @@ export function polishRevealLines(r: PolishReveal): {
   useOriginal: string;
   keep: string;
   dismiss: string;
+  close: string;
   aria: string;
 } {
   const words = r.changedWords === 1 ? "1 word" : `${r.changedWords} words`;
@@ -107,6 +118,7 @@ export function polishRevealLines(r: PolishReveal): {
     useOriginal: "Use original",
     keep: "Keep",
     dismiss: "Dismiss",
+    close: "Close",
     aria: `Polished your dictation, ${words} changed`,
   };
 }
@@ -151,7 +163,7 @@ export function resultRouteLabel(r: Pick<PolishResult, "route">): string {
   return r.route === "cloud" ? "Cloud" : LOCAL_ROUTE_LABEL;
 }
 
-/** The toast the dev-only matrix scenes draw (`float.html?phase=idle&polish=toast|card`). */
+/** The toast the dev-only matrix scenes draw (`float.html?phase=idle&polish=toast|card|toast-hover|card-hover`). */
 export const SAMPLE_POLISH_REVEAL: PolishReveal = {
   id: "sample-take",
   raw: "so basically the report is kind of done now",
@@ -197,12 +209,18 @@ export const POLISH_REVEAL_DIFF_SAMPLES: Record<"fixture" | "one" | "same", Poli
  */
 export function forcedPolishReveal(
   search: string,
-): { reveal: PolishReveal; view: PolishRevealFace; layout?: "inline" | "blocks" } | null {
+): { reveal: PolishReveal; view: PolishRevealFace; layout?: "inline" | "blocks"; hover?: true } | null {
   const q = new URLSearchParams(search);
-  const v = q.get("polish");
+  const raw = q.get("polish");
+  // yap-1107-reveal-stays-until-read — `toast-hover` / `card-hover` force the
+  // pointer-inside (held open) state of either face.
+  const hover = raw === "toast-hover" || raw === "card-hover";
+  const v = raw === "toast-hover" ? "toast" : raw === "card-hover" ? "card" : raw;
   if (v !== "toast" && v !== "card") return null;
   const d = q.get("diff");
   const reveal = d === "fixture" || d === "one" || d === "same" ? POLISH_REVEAL_DIFF_SAMPLES[d] : SAMPLE_POLISH_REVEAL;
   const l = q.get("layout");
-  return l === "blocks" || l === "inline" ? { reveal, view: v, layout: l } : { reveal, view: v };
+  const base: { reveal: PolishReveal; view: PolishRevealFace; layout?: "inline" | "blocks"; hover?: true } =
+    l === "blocks" || l === "inline" ? { reveal, view: v, layout: l } : { reveal, view: v };
+  return hover ? { ...base, hover: true as const } : base;
 }

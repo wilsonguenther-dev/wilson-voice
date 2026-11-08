@@ -193,6 +193,11 @@ export const CARD_CLASSES = [
   // in the card row; without it here it was never measured, so the panel did
   // not grow and the card was drawn over Yappy, cut off by the window.
   "who-card-wrap",
+  // integrate(yap-1106-fb-02-pill-first-click) — WF-06's "Backtrack caught"
+  // toast: off this list it stayed pinned at the panel's top edge, and at a
+  // side dock it was drawn over the meeting Stop, so the first press on Stop
+  // landed on the toast's headline (pill-matrix --clicks).
+  "backtrack-caught-wrap",
 ] as const;
 export const CARD_SELECTOR: string = CARD_CLASSES.map((c) => `.${c}`).join(", ");
 /** The CSS custom property float.css adds to `--card-y` for a card's place in the stack. */

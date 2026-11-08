@@ -49,6 +49,7 @@ import { useGovernor } from "./pill/GovernorChip";
 import { usePartialTranscript } from "./pill/usePartialTranscript";
 import { forcedPartial, partialShows, partialTail } from "./pill/partialTranscript";
 import { forcedSilentMic, parseSilentMicWarning, SILENT_MIC_HINT_LINES, silentMicShows } from "./pill/silentMic";
+import { startPillControlTargets } from "./pill/hitTargets";
 import { forcedStyleChip } from "./pill/styleChip";
 import { forcedLanguageOffer } from "./pill/languageOffer";
 import { applyDragVisual, currentDock, forcedDragScene } from "./pill/drag";
@@ -156,6 +157,8 @@ interface Settings {
   scratchpadOnBar?: boolean;
   /** WF-17 — Settings › Notifications: the muted tip/news/milestone categories. */
   mutedPillCategories?: string[];
+  /** yap-1107 — Settings › Notifications: "Keep the reveal open until I close it". */
+  keepPolishRevealOpen?: boolean;
 }
 
 /**
@@ -347,6 +350,10 @@ window.addEventListener("contextmenu", (e) => {
 const dockOf = (s?: Settings): BarDock => barDock(s?.pillPosition);
 
 function Float() {
+  // yap-1106-fb-02-pill-first-click — every `[data-pill-control]` publishes
+  // its own drawn rect as hit area, holds the panel through a press, and logs
+  // `pill.click {control, handled}` (pill/hitTargets.ts).
+  useEffect(() => startPillControlTargets(), []);
   const [style, setStyle] = useState<string>(FORCED?.style ?? FALLBACK_CHARACTER);
   // Y5-I — the dock edge is now SHELL state too: it picks the bar's box and
   // its axis (pill/dock.ts). Changing it re-renders the `.bar` root's tokens;
@@ -418,6 +425,7 @@ function Float() {
   const [curseSetting, setCurseSetting] = useState(false);
   // WF-17 — quiet mode, read live off the settings payload like the tone.
   const [mutedCats, setMutedCats] = useState<ReadonlySet<string>>(() => new Set());
+  const [keepRevealOpen, setKeepRevealOpen] = useState(false);
   // Y2-A — the license lives HERE for the same reason `gate` and `progress` do:
   // it is a property of the app, not of whichever capsule happens to be drawn.
   // `null` until the first payload lands, which is silence and not an
@@ -641,6 +649,7 @@ function Float() {
       setChatter(parseChatterMode(s?.yappyTalks));
       setCurseSetting(s?.companionCurse === true);
       setMutedCats(parseMutedCategories(s?.mutedPillCategories));
+      setKeepRevealOpen(s?.keepPolishRevealOpen === true);
     };
     invoke<Settings>("get_settings").then(apply).catch(() => {});
     listen<Settings>("settings", (e) => apply(e.payload)).then((u) => (dead ? u() : unsubs.push(u)));
@@ -896,6 +905,7 @@ function Float() {
       <PolishRevealCard
         forced={FORCED ? forcedPolishReveal(window.location.search) : null}
         muted={mutedCats}
+        keepOpen={keepRevealOpen}
       />
       {/* Y8-D — the coaching nudge (`growthNudge`). Never during a take: it
           is only evaluated at rest, and a forced matrix phase never shows one. */}
