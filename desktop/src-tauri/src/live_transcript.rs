@@ -1416,15 +1416,12 @@ pub fn spawn(app: tauri::AppHandle, manager: crate::transcription::Transcription
             // the setting off and People on Auto it still embeds nothing
             // (`LiveSpeakers::label` skips without profiles).
             set_live_expected_speakers(None);
-            let speakers = match digest.as_deref() {
-                Some(d) => Some(LiveSpeakers {
-                    embedder: &embedder,
-                    profiles: &profiles,
-                    digest: d,
-                    bands,
-                }),
-                _ => None,
-            };
+            let speakers = digest.as_deref().map(|d| LiveSpeakers {
+                embedder: &embedder,
+                profiles: &profiles,
+                digest: d,
+                bands,
+            });
             drop(take_answers()); // nothing from an earlier meeting
             log::info!("live_ask start enabled={ask_live}");
             log::info!(
