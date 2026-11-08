@@ -2788,30 +2788,3 @@ html[data-dock="right"] .friend-visit {
   .who-card { animation: none; }
   .who-wave-bar { animation: none; transform: scaleY(0.6); }
 }
-
-/* yap-1106-fb-23 — the pill's compact People stepper: pointer-only, never
-   takes focus from the call, hidden during a screen share. */
-.rec-people .people-stepper.is-compact {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.rec-people .people-stepper.is-compact .people-label,
-.rec-people .people-stepper.is-compact .people-suggest-reason {
-  display: none;
-}
-.rec-people .people-stepper.is-compact button {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: var(--surface-glass);
-  color: inherit;
-  font: inherit;
-}
-.rec-people .people-stepper.is-compact .people-auto.is-on {
-  background: var(--accent-action-soft);
-}

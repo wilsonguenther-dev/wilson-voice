@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use crate::asr_engine::TimedSpan;
 use crate::db::Database;
 use crate::diarize::{
-    attribute_clusters, cluster_track_with_voices_capped, DiarizeError, DiarizePool, DiarizedSegment,
+    attribute_clusters, cluster_track_with_voices, DiarizeError, DiarizePool, DiarizedSegment,
     MeetingTracks, TargetMode,
 };
 use crate::diarize_metrics::CosineDistance;
@@ -373,42 +373,13 @@ fn run(
         mic_wav: &mic,
         system_wav: sys.as_deref(),
     };
-    // yap-1106-fb-23 — "How many people are in this meeting?" caps the pass:
-    // the threshold path clusters, then the closest clusters merge until at
-    // most the count remain (count − 1 when You have the mic track).
-    let expected = match db.meeting_expected_speakers(meeting_id) {
-        Ok(Some(n)) => Some(n),
-        Ok(None) => crate::live_transcript::take_live_expected_speakers(),
-        Err(e) => {
-            log::warn!("meeting_diarize expected_speakers_failed meeting={meeting_id} error=\"{e}\"");
-            None
-        }
-    };
-    if let Some(n) = expected {
-        // A count set live (before the row id reached the pill) is stored now,
-        // so the after-meeting header shows it and a re-merge starts from it.
-        if let Err(e) = db.set_meeting_expected_speakers(meeting_id, Some(n)) {
-            log::warn!("meeting_diarize expected_speakers_store_failed meeting={meeting_id} error=\"{e}\"");
-        }
-    }
-    let you_have_own_track = matches!(
-        crate::meetings::diarization_target(meeting.kind(), sys.is_some()),
-        crate::meetings::DiarizationTarget::MicIsMe
-    );
-    let cap = crate::diarize::voice_pool(expected, you_have_own_track);
-    log::info!(
-        "meeting_diarize people meeting={meeting_id} count={} pool={}",
-        expected.map(|n| n.to_string()).unwrap_or_else(|| "auto".into()),
-        cap.map(|n| n.to_string()).unwrap_or_else(|| "auto".into())
-    );
-    let (diarized, voices) = match cluster_track_with_voices_capped(
+    let (diarized, voices) = match cluster_track_with_voices(
         pool,
         tracks,
         meeting.kind(),
         cluster_distance(),
         TargetMode::FullClustering,
         shortest_turn(),
-        cap,
     ) {
         Ok(d) => d,
         Err(e) => return failed(&e),

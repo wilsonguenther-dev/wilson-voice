@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Bump ONLY by appending a new arm to the migration match in
 /// `db::run_migrations`; never edit a shipped step.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// YV104 / OS-4 — the column migration 3 (YV106) adds for the system-audio
 /// tap's rebuild log, named here rather than invented there.
@@ -911,37 +911,6 @@ pub const MIGRATION_10_DETECTED_CALL: &str = r#"
 ALTER TABLE meetings ADD COLUMN detected_app TEXT;
 ALTER TABLE meetings ADD COLUMN detected_via TEXT;
 "#;
-
-/// yap-1106-fb-23 — "How many people are in this meeting?" The count the
-/// person set (it counts them), 1..=12; NULL = Auto (the threshold alone
-/// decides, today's behaviour). Additive and nullable: every older row is Auto.
-pub const MIGRATION_14_EXPECTED_SPEAKERS: &str = r#"
-ALTER TABLE meetings ADD COLUMN expected_speakers INTEGER;
-"#;
-
-/// yap-1106-fb-23 — the People stepper's range ("Auto" is `None`).
-pub const EXPECTED_SPEAKERS_MIN: u8 = 1;
-pub const EXPECTED_SPEAKERS_MAX: u8 = 12;
-
-/// `Some(n)` inside 1..=12 survives; anything else is Auto.
-pub fn clamp_expected_speakers(count: Option<i64>) -> Option<u8> {
-    count
-        .filter(|n| (i64::from(EXPECTED_SPEAKERS_MIN)..=i64::from(EXPECTED_SPEAKERS_MAX)).contains(n))
-        .map(|n| n as u8)
-}
-
-/// What an after-meeting People change did (yap-1106-fb-23).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum RecapOutcome {
-    /// The merge ran (or had nothing to do): `voices` is the count after it.
-    #[serde(rename_all = "camelCase")]
-    Applied { voices: usize, merged: usize },
-    /// Two differently named people would become one: "Merge Maya into John?"
-    /// Nothing was written; the same call with `confirm_merge` applies it.
-    #[serde(rename_all = "camelCase")]
-    NeedsConfirm { from: String, into: String },
-}
 
 /// `3725.4` → `01:02:05`. Always hh:mm:ss so a 3-hour meeting and a 3-minute one
 /// line up in a monospace column, and so the exported Markdown sorts as text.

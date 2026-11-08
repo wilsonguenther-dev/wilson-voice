@@ -31,8 +31,7 @@ use support::{open_db, temp_dir};
 /// `meeting_cluster_voices`, one row per unknown voice the "Who was this?" cards ask about.
 /// 13 = yap-1106-auto-label-and-correct's `meeting_segments.speaker_locked` lock token
 /// and `speaker_negative_samples` ("this is someone else" corrections).
-/// 14 = yap-1106-fb-23's `meetings.expected_speakers` (the People count; NULL = Auto).
-const EXPECTED_VERSION: i64 = 14;
+const EXPECTED_VERSION: i64 = 13;
 
 /// Put a database BACK on an older rung, columns and all, so the step under
 /// test is a real upgrade of a real older database rather than a fresh install
@@ -44,9 +43,6 @@ const EXPECTED_VERSION: i64 = 14;
 fn rewind_to(path: &std::path::Path, version: i64) {
     let conn = rusqlite::Connection::open(path).unwrap();
     let mut sql = String::from("BEGIN IMMEDIATE;\n");
-    if version < 14 {
-        sql.push_str("ALTER TABLE meetings DROP COLUMN expected_speakers;\n");
-    }
     if version < 13 {
         sql.push_str("DROP TABLE speaker_negative_samples;\n");
         sql.push_str("ALTER TABLE meeting_segments DROP COLUMN speaker_locked;\n");
@@ -406,7 +402,6 @@ fn a_fresh_database_lands_on_the_current_version_with_every_column_present() {
         "kind",
         "detected_app",
         "detected_via",
-        "expected_speakers",
     ] {
         assert!(meetings.contains(&col.to_string()), "{col}: {meetings:?}");
     }
@@ -907,36 +902,4 @@ fn migration_eleven_adds_speaker_profiles_without_touching_existing_rows() {
     assert_eq!(rows.len(), 2);
     assert_eq!(db.segment_speaker(&rows[0].id).unwrap(), (None, None));
     assert!(db.list_speaker_profiles().unwrap().is_empty());
-}
-
-// ── yap-1106-fb-23 · migration 14 ────────────────────────────────────────────
-
-/// `expected_speakers` lands on a database that already has a meeting, every
-/// old row reads Auto (NULL), a value survives, and reopening twice more is a
-/// no-op.
-#[test]
-fn migration_fourteen_adds_expected_speakers_and_reopening_is_a_no_op() {
-    let dir = temp_dir("mig14");
-    let path = dir.join("wilson_voice.db");
-    let id = {
-        let db = open_db(&dir);
-        let id = support::seed_meeting(&db, &dir, "Before fourteen", &["hi"]);
-        drop(db);
-        rewind_to(&path, 13);
-        id
-    };
-    assert!(!columns(&path, "meetings").contains(&"expected_speakers".to_string()));
-    let db = open_db(&dir);
-    assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
-    assert!(columns(&path, "meetings").contains(&"expected_speakers".to_string()));
-    assert_eq!(db.meeting_expected_speakers(&id).unwrap(), None, "old rows are Auto");
-    assert!(db.set_meeting_expected_speakers(&id, Some(4)).unwrap());
-    drop(db);
-    for _ in 0..2 {
-        let db = open_db(&dir);
-        assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
-        assert_eq!(db.meeting_expected_speakers(&id).unwrap(), Some(4));
-        assert_eq!(db.list_meetings(50, None).unwrap().len(), 1);
-    }
-    let _ = std::fs::remove_dir_all(&dir);
 }

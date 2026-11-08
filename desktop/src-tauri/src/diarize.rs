@@ -432,7 +432,6 @@ impl DiarizePool {
         req: &DiarizeRequest,
         deadline: Duration,
     ) -> Result<DiarizeResponse, DiarizeError> {
-        SIDECAR_REQUESTS.fetch_add(1, Ordering::Relaxed);
         let mut held = self.slot.lock();
         // Stamped before any of the work below, so a request that FAILS still
         // counts as use: the idle sweep is for a child nobody is diarizing at,
@@ -1022,22 +1021,6 @@ pub fn cluster_track_with_voices(
     mode: TargetMode,
     min_embed: Duration,
 ) -> Result<(Vec<DiarizedSegment>, Vec<PassClusterVoice>), DiarizeError> {
-    cluster_track_with_voices_capped(pool, tracks, kind, threshold, mode, min_embed, None)
-}
-
-/// yap-1106-fb-23 — [`cluster_track_with_voices`] with the "How many people
-/// are in this meeting?" cap: the threshold path clusters first, then
-/// [`cap_turn_clusters`] merges the closest clusters until at most `cap`
-/// remain. `None` is "Auto" (today's behaviour, byte for byte).
-pub fn cluster_track_with_voices_capped(
-    pool: &DiarizePool,
-    tracks: MeetingTracks<'_>,
-    kind: MeetingKind,
-    threshold: CosineDistance,
-    mode: TargetMode,
-    min_embed: Duration,
-    cap: Option<usize>,
-) -> Result<(Vec<DiarizedSegment>, Vec<PassClusterVoice>), DiarizeError> {
     let target = diarization_target(kind, tracks.system_wav.is_some());
     let (wav, track) = match target {
         DiarizationTarget::ClusterTrackA => (tracks.mic_wav, MIC_TRACK),
@@ -1054,7 +1037,7 @@ pub fn cluster_track_with_voices_capped(
 
     match mode {
         TargetMode::FullClustering => {
-            let clustered = cap_turn_clusters(&raw, &assign_clusters(&raw, threshold), cap);
+            let clustered = assign_clusters(&raw, threshold);
             let voices = cluster_voices(&raw, &clustered);
             let segments = raw
                 .iter()
@@ -1077,7 +1060,7 @@ pub fn cluster_track_with_voices_capped(
 /// on the wire, and falls back to the child's ids only when the child sent none
 /// — a fallback that is logged, because a silent one would make the tuned
 /// threshold stop being the thing that decided the answer.
-pub fn assign_clusters(raw: &[DiarizeSegment], threshold: CosineDistance) -> Vec<Option<i64>> {
+fn assign_clusters(raw: &[DiarizeSegment], threshold: CosineDistance) -> Vec<Option<i64>> {
     if raw.is_empty() {
         return Vec::new();
     }
@@ -1217,197 +1200,6 @@ pub fn cluster_by_distance_threshold(
         out.push(label);
     }
     out
-}
-
-/// yap-1106-fb-23 — the voice pool a pass may end with, from the meeting's
-/// "People" count (`meetings.expected_speakers`, `None` = Auto).
-///
-/// The count includes the person at this Mac. When "You" has a track of
-/// their own (a call: the mic is you, the call's audio is clustered —
-/// [`DiarizationTarget::MicIsMe`] in `meetings::diarization_target`, which is
-/// the same branch `cluster_track_with_voices` and `meeting_asr` take), the
-/// clustered track holds everyone else: count − 1 (never below 1). On a
-/// mic-only meeting the one clustered track holds everyone, you included.
-pub fn voice_pool(expected_speakers: Option<u8>, you_have_own_track: bool) -> Option<usize> {
-    let n = usize::from(expected_speakers?);
-    if n == 0 {
-        return None;
-    }
-    Some(if you_have_own_track {
-        n.saturating_sub(1).max(1)
-    } else {
-        n
-    })
-}
-
-/// yap-1106-fb-23 — merge clusters until at most `cap` remain; never split.
-///
-/// `centroids[i]` / `weights[i]` are cluster `i`'s voice and its speech
-/// seconds. While more than `cap` groups are alive, the pair whose weighted
-/// mean voices are closest by cosine (average linkage over the members'
-/// centroids) merges. A cluster with no usable voice compares as the least
-/// similar thing there is, so it merges last, but it still merges when the
-/// count demands it — the cap is a promise to the person who set it.
-///
-/// Returns, for every input cluster, the index of its group's representative:
-/// the member with the most speech (ties: the lowest index), so a merged
-/// cluster keeps the larger member's identity. `cap: None` is the identity.
-pub fn merge_to_cap(centroids: &[Vec<f32>], weights: &[f64], cap: Option<usize>) -> Vec<usize> {
-    let n = centroids.len();
-    let identity: Vec<usize> = (0..n).collect();
-    let Some(cap) = cap else {
-        return identity;
-    };
-    let cap = cap.max(1);
-    if n <= cap {
-        return identity;
-    }
-    let width = centroids.iter().map(Vec::len).max().unwrap_or(0);
-    let weight = |i: usize| -> f64 {
-        let w = weights.get(i).copied().unwrap_or(0.0);
-        if w.is_finite() && w > 0.0 {
-            w
-        } else {
-            1e-6
-        }
-    };
-    // Each live group's weighted sum of unit voices; `None` = no usable voice.
-    let mut sums: Vec<Option<Vec<f64>>> = centroids
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            if width == 0 || c.len() != width {
-                return None;
-            }
-            let norm = c.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>().sqrt();
-            if !norm.is_finite() || norm <= 0.0 {
-                return None;
-            }
-            let w = weight(i);
-            Some(c.iter().map(|x| f64::from(*x) / norm * w).collect())
-        })
-        .collect();
-    let mut group = identity.clone();
-    let mut alive = vec![true; n];
-    let mut live = n;
-    let cosine = |a: &[f64], b: &[f64]| -> f64 {
-        let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-        let na = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let nb = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let c = dot / (na * nb);
-        if c.is_finite() {
-            c
-        } else {
-            -2.0
-        }
-    };
-    while live > cap {
-        let mut best: Option<(usize, usize, f64)> = None;
-        for a in 0..n {
-            if !alive[a] {
-                continue;
-            }
-            for b in (a + 1)..n {
-                if !alive[b] {
-                    continue;
-                }
-                let sim = match (&sums[a], &sums[b]) {
-                    (Some(x), Some(y)) => cosine(x, y),
-                    _ => -2.0,
-                };
-                if best.is_none_or(|(_, _, s)| sim > s) {
-                    best = Some((a, b, sim));
-                }
-            }
-        }
-        let Some((a, b, _)) = best else { break };
-        let merged = match (sums[a].take(), sums[b].take()) {
-            (Some(x), Some(y)) => Some(x.iter().zip(&y).map(|(p, q)| p + q).collect()),
-            (Some(x), None) | (None, Some(x)) => Some(x),
-            (None, None) => None,
-        };
-        sums[a] = merged;
-        alive[b] = false;
-        live -= 1;
-        for g in group.iter_mut() {
-            if *g == b {
-                *g = a;
-            }
-        }
-    }
-    // The representative of each group: its member with the most speech.
-    let mut rep_of_root: std::collections::BTreeMap<usize, usize> = Default::default();
-    for (i, root) in group.iter().enumerate() {
-        rep_of_root
-            .entry(*root)
-            .and_modify(|r| {
-                if weight(i) > weight(*r) {
-                    *r = i;
-                }
-            })
-            .or_insert(i);
-    }
-    group.iter().map(|root| rep_of_root[root]).collect()
-}
-
-/// yap-1106-fb-23 — apply the speaker-count cap to one pass's turn clusters.
-///
-/// Runs AFTER the threshold path ([`assign_clusters`]); merges by the
-/// clusters' voices ([`cluster_voices`]) until at most `cap` remain, then
-/// renumbers 0.. in the order of the surviving clusters' original ids. Never
-/// splits: two turns that shared a cluster still share one. `cap: None` (Auto)
-/// returns the input unchanged. Unattributed turns stay unattributed.
-pub fn cap_turn_clusters(
-    raw: &[DiarizeSegment],
-    clusters: &[Option<i64>],
-    cap: Option<usize>,
-) -> Vec<Option<i64>> {
-    let Some(limit) = cap else {
-        return clusters.to_vec();
-    };
-    let voices = cluster_voices(raw, clusters);
-    if voices.len() <= limit.max(1) {
-        return clusters.to_vec();
-    }
-    let centroids: Vec<Vec<f32>> = voices.iter().map(|v| v.embedding.clone()).collect();
-    let weights: Vec<f64> = voices.iter().map(|v| v.seconds).collect();
-    let reps = merge_to_cap(&centroids, &weights, cap);
-    let rep_of: std::collections::BTreeMap<i64, i64> = voices
-        .iter()
-        .zip(&reps)
-        .map(|(v, r)| (v.cluster_index, voices[*r].cluster_index))
-        .collect();
-    let mut survivors: Vec<i64> = rep_of.values().copied().collect();
-    survivors.sort_unstable();
-    survivors.dedup();
-    log::info!(
-        "diarize cap_merge before={} after={} cap={limit}",
-        voices.len(),
-        survivors.len()
-    );
-    clusters
-        .iter()
-        .map(|c| {
-            c.map(|c| {
-                let r = rep_of.get(&c).copied().unwrap_or(c);
-                survivors
-                    .iter()
-                    .position(|s| *s == r)
-                    .map(|p| p as i64)
-                    .unwrap_or(r)
-            })
-        })
-        .collect()
-}
-
-/// yap-1106-fb-23 — every request this process has sent a diarize sidecar
-/// (load, diarize, embed). The after-meeting count change asserts it stays
-/// flat: it re-runs the merge on stored voices and never re-embeds.
-static SIDECAR_REQUESTS: AtomicU64 = AtomicU64::new(0);
-
-/// See [`SIDECAR_REQUESTS`].
-pub fn sidecar_requests() -> u64 {
-    SIDECAR_REQUESTS.load(Ordering::Relaxed)
 }
 
 fn find(parent: &mut [usize], mut x: usize) -> usize {
