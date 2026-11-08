@@ -12,6 +12,39 @@ pub mod feeds;
 pub mod rank;
 /// yap-1106-news-refresh-setting — when a refresh may run.
 pub mod schedule;
+/// yap-1107-news-no-off-topic-stories — what each story is about.
+pub mod sources;
+
+/// yap-1107-news-no-off-topic-stories — label the refresh's undeclared
+/// stories with ONE cloud call (when the cloud seam is installed; the BYOM
+/// route itself refuses without a key, over the cap or offline), cached by
+/// url key. No lock is held during the call. Never fails the refresh: any
+/// error leaves the keywords to decide.
+pub fn classify_cloud(db: &crate::db::Database, stories: &[feeds::Story], now_ms: i64) {
+    let Some(call) = sources::cloud() else {
+        return;
+    };
+    let t0 = std::time::Instant::now();
+    let (pending, mut report) = match db.with_news_cache(|c| cache::classify_pending(c, stories)) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("news cache_failed op=classify error=\"{e}\"");
+            return;
+        }
+    };
+    let mut ask = |system: &str, user: &str| call(db, system, user);
+    let labels = cache::ask_cloud(&pending, &mut report, &mut ask);
+    if !labels.is_empty() {
+        match db.with_news_cache(|c| cache::store_labels(c, &pending, &labels, now_ms)) {
+            Ok(n) => report.labelled = n,
+            Err(e) => log::warn!("news cache_failed op=classify_store error=\"{e}\""),
+        }
+    }
+    report.ms = t0.elapsed().as_millis() as u64;
+    if report.candidates > 0 {
+        cache::log_classify(&report);
+    }
+}
 
 /// yap-1106-news-rank-cache — one refresh end to end: fetch (gated), fold
 /// into the cache, return the ranked stories. Blocking: run it on a blocking
@@ -25,6 +58,7 @@ pub fn refresh_ranked(
     let prefs = crate::news_prefs::load(db);
     let report = feeds::refresh_now(db, quote_key).map_err(|c| c.tag().to_string())?;
     let now = crate::news_prefs::now_ms();
+    classify_cloud(db, &report.stories, now);
     let ingest = db
         .with_news_cache(|c| cache::ingest(c, &report.stories, &prefs, now, limit))
         .inspect_err(|e| log::warn!("news cache_failed op=ingest error=\"{e}\""))?;
@@ -46,6 +80,7 @@ pub fn refresh_on_connect_ranked(
         Err(c) => return Some(Err(c.tag().to_string())),
     };
     let now = crate::news_prefs::now_ms();
+    classify_cloud(db, &report.stories, now);
     Some(
         db.with_news_cache(|c| cache::ingest(c, &report.stories, &prefs, now, limit))
             .inspect_err(|e| log::warn!("news cache_failed op=ingest error=\"{e}\""))
@@ -126,6 +161,7 @@ pub fn refresh_if_due(
         );
         c.tag().to_string()
     })?;
+    classify_cloud(db, &report.stories, now_ms);
     let ingest = db
         .with_news_cache(|c| cache::ingest(c, &report.stories, &prefs, now_ms, limit))
         .inspect_err(|e| log::warn!("news cache_failed op=ingest error=\"{e}\""))?;
