@@ -15,6 +15,7 @@ import { MouthDriver } from "./mouth";
 import { drawChick as drawChickArt } from "../sprites/art";
 import { drawDeskHD, drawNotepadHD, growPadInk } from "../sprites/props";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
+import { drawOccupant, occupantEnvelope } from "./occupant";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
 import GovernorChip from "./GovernorChip";
@@ -141,7 +142,7 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
  * glyph, which is also the button to the fix).
  */
 export default function YappyPill(
-  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle" }: {
+  { gate = "idle", chordLabel = DEFAULT_STOP_KEY, tone = "friendly", voice, chatter = DEFAULT_CHATTER_MODE, curse = false, progress = null, meeting = IDLE_MEETING, meetingAfter = null, onMeetingOpen, license = null, engineHealth = "idle", occupant = null }: {
     gate?: LivePhase;
     /** Y5-K — the companion tone, decided by the shell; this stage no longer reads settings. */
     tone?: ChatTone;
@@ -191,6 +192,13 @@ export default function YappyPill(
      * sky cache + canvas rebuilt from scratch (pill/stuckScene.ts).
      */
     engineHealth?: EngineHealth;
+    /**
+     * yap-1106-main-character-switch — who sits in the pill (Settings ›
+     * Companion), as the shell resolved it. Yappy (or absent) paints the chick;
+     * Hoot, Tidy, Gulp or Shelly paints that friend at the same spot, in this
+     * same one-pill stage (sky, camera, meeting dock and timer unchanged).
+     */
+    occupant?: string | null;
   },
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -221,6 +229,12 @@ export default function YappyPill(
   // effect speaks through `sayRef` (the queue lives in the mount-once scene).
   const gateRef = useRef<LivePhase>(gate);
   gateRef.current = gate;
+  // yap-1106-main-character-switch — read by the mount-once draw loop.
+  const occupantRef = useRef<string | null>(occupant);
+  occupantRef.current = occupant;
+  useEffect(() => {
+    console.info(`pill occupant_change id=${occupant ?? "yappy"}`);
+  }, [occupant]);
   const sayRef = useRef<(t: string) => void>(() => {});
   const prevGateRef = useRef<LivePhase>(gate);
   // The last hands-free explanation, so a `listening` (re)entry that lands
@@ -483,7 +497,9 @@ export default function YappyPill(
       // yap-1106-fb-10 — the pose is clamped into the range his bounding box promises;
       // yap-1107-pill-matches-artifact-size — at the artifact's size the camera hands
       // a lift budget (a smaller hop) so he stays whole at the bigger scale.
-      drawChick(cx, feet, clampChickPose(A, A.lift));
+      // yap-1106-main-character-switch — a friend in the pill stands in Yappy's
+      // box (pill/occupant.ts); Yappy (or no friend) is the chick as before.
+      if (!drawOccupant(octx, occupantRef.current, gateRef.current, A, performance.now(), reduce)) drawChick(cx, feet, clampChickPose(A, A.lift));
       // receptionist desk + a little pixel TYPEWRITER — yap-1106-pill-props-detail:
       // wood grain + edge highlight, carriage, return levers, keys that light in
       // sequence, a bouncing page, and a mug + pencils on the left.
@@ -953,7 +969,9 @@ export default function YappyPill(
       // the world at the same cell, never a stretch; the buffer covers every
       // capsule at that cell, so it is never letterboxed. Drawn under an identity
       // transform (the clip above is already in device space).
-      const cam = pillCamera({ x: x0, y: y0, w: capW, h: capH }, DPR);
+      // yap-1106-main-character-switch — a friend in the pill is framed on its
+      // own box, so a taller friend (Hoot) is drawn whole at a whole cell.
+      const cam = pillCamera({ x: x0, y: y0, w: capW, h: capH }, DPR, occupantEnvelope(occupantRef.current));
       if (!cam.fits && !warnedCrop) { warnedCrop = true; console.warn(cropWarning("yappy", { w: capW, h: capH }, DPR)); }
       // one line when the settled sprite scale changes (open / rest, display, tier)
       if ((openV < 0.01 || openV > 0.99) && (cam.blit.cell !== loggedScale.cell || cam.lift !== loggedScale.lift || DPR !== loggedScale.dpr)) {
@@ -1152,6 +1170,7 @@ export default function YappyPill(
       ref={stageRef}
       className={hop ? "kami-stage kami-hop" : "kami-stage"}
       data-phase={PHASE_ID[gate]}
+      data-occupant={occupant ?? "yappy"}
       onPointerEnter={gated ? () => hoverGate(true) : undefined}
       onPointerLeave={gated ? () => hoverGate(false) : undefined}
       data-sprite={art.sprite}
@@ -1283,7 +1302,7 @@ export default function YappyPill(
           <span>{gate === "waiting" ? "Allow the mic…" : "Mic blocked"}</span>
         </button>
       )}
-      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} />
+      <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} occupant={occupant ?? "yappy"} />
       <GovernorChip />
     </div>
   );

@@ -464,7 +464,9 @@ export default function ClassicPill(
         }}
       >
         <FlowBarSlots ctx={slotCtx} group="lead" actions={slotActions} dragged={drag.dragged} />
-        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} />
+        {/* yap-1106-main-character-switch — the meeting cast follows who sits here:
+            Hoot in the pill records it himself; anyone else, Hoot visits. */}
+        <MeetingBadge status={meeting} after={meetingAfter} onOpen={onMeetingOpen} stacked={meetingClockStacked(gate)} occupant={character.id} />
         <GovernorChip />
         {/* ── Y2-D · the upgrade affordance ──
             Rendered ONLY when the policy gives it a route, so a licensed pill

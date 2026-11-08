@@ -11,8 +11,11 @@
  *   Hoot    the meeting's notes are ready (during the meeting itself Hoot is
  *           at the tape machine — meetingScene.ts — which is not a visit)
  *   Cinder  Yappy News is ready, and only while the cloud is connected
- *   Yappy   a milestone (100th / 1000th take) — only when someone else sits
- *           in the pill, because "Yappy is never gone"
+ *   Yappy   a milestone — your 100th (and 1000th) take, your longest take
+ *           of the week, a new streak record (yap-1106-main-character-switch,
+ *           companions.html section 04) — only when someone else sits in the
+ *           pill, because "Yappy is never gone": he works the studio
+ *           typewriter full-time and visits for milestones and nothing else
  *
  * Ember, Sal and Mochi are room-only: they never visit. Whoever SITS in the
  * pill never visits it.
@@ -51,6 +54,8 @@ export const FRIEND_EVENTS = [
   "meeting-notes-ready",
   "news-ready",
   "milestone",
+  "longest-take-week",
+  "streak-record",
 ] as const;
 export type FriendEvent = (typeof FRIEND_EVENTS)[number];
 
@@ -62,7 +67,12 @@ export const EVENT_OWNER: Readonly<Record<FriendEvent, VisitorId>> = {
   "meeting-notes-ready": "hoot",
   "news-ready": "cinder",
   milestone: "yappy",
+  "longest-take-week": "yappy",
+  "streak-record": "yappy",
 };
+
+/** Yappy's milestones: the only events that bring him to a pill someone else sits in. */
+export const YAPPY_MILESTONES: readonly FriendEvent[] = ["milestone", "longest-take-week", "streak-record"];
 
 /** Room-only friends: they live in Home's studio and never visit the pill. */
 export const ROOM_ONLY: readonly VisitorId[] = ["ember", "sal", "mochi"];
@@ -222,9 +232,9 @@ export function decideVisit(
   const friend = EVENT_OWNER[event];
   if (requested !== undefined && requested !== friend) return { show: false, reason: "not-own-event" };
   // Room-only friends own no event (EVENT_OWNER), so they can never get here.
-  // yap-1106-chatter-setting — "only milestones": the milestone visit is the only one
+  // yap-1106-chatter-setting — "only milestones": Yappy's milestone visits are the only ones
   // (checked before the occupant so the skip reason names the setting).
-  if (ctx.chatter === "milestones" && event !== "milestone") return { show: false, reason: "chatter-milestones" };
+  if (ctx.chatter === "milestones" && !YAPPY_MILESTONES.includes(event)) return { show: false, reason: "chatter-milestones" };
   if (ctx.occupant === friend) return { show: false, reason: "occupant" };
   if (friend === "cinder" && !ctx.cloudConnected) return { show: false, reason: "cloud-off" };
   const quiet = quietReason(ctx);
@@ -442,4 +452,134 @@ export function forcedFriendVisit(search: string): VisitorId | null {
   const id = new URLSearchParams(search).get("friend");
   if (!id || !VISITORS.includes(id)) return null;
   return id as VisitorId;
+}
+
+/* ── yap-1106-main-character-switch — Yappy's milestones ───────────────── */
+
+/**
+ * What Yappy keeps count of to know a milestone when it happens. Survives a
+ * relaunch (one localStorage row next to the visit ledger). Counts and
+ * seconds only: never a transcript, never a path.
+ */
+export interface TakeStats {
+  /** The local Monday (YYYY-MM-DD) `weekTakes` / `weekLongestS` are for. */
+  week: string;
+  /** Takes so far this week. */
+  weekTakes: number;
+  /** The longest take this week, in seconds of speech. */
+  weekLongestS: number;
+  /** Days in a row with at least one take, ending on `lastDay`. */
+  streak: number;
+  /** The longest streak ever. */
+  bestStreak: number;
+  /** The local day of the last take (YYYY-MM-DD), or "". */
+  lastDay: string;
+}
+
+export const EMPTY_TAKE_STATS: TakeStats = { week: "", weekTakes: 0, weekLongestS: 0, streak: 0, bestStreak: 0, lastDay: "" };
+
+/** A "longest take of the week" counts only after this many takes that week (so Monday's second take is not one). */
+export const LONGEST_WEEK_MIN_TAKES = 5;
+/** …and only for a take of at least this many seconds of speech. */
+export const LONGEST_TAKE_MIN_S = 10;
+/** A streak record counts from this many days in a row (a first two-day run is not one). */
+export const STREAK_RECORD_MIN_DAYS = 3;
+
+/** The local Monday of the week `ms` falls in, as YYYY-MM-DD. */
+export function weekKey(ms: number): string {
+  const d = new Date(Number.isFinite(ms) ? ms : 0);
+  const back = (d.getDay() + 6) % 7; // Monday = 0
+  return dayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() - back, 12).getTime());
+}
+
+/** The local day before the day of `ms` (calendar arithmetic, safe across a DST change). */
+function dayBefore(ms: number): string {
+  const d = new Date(Number.isFinite(ms) ? ms : 0);
+  return dayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1, 12).getTime());
+}
+
+export interface TakeNote {
+  stats: TakeStats;
+  /** The milestone this take reached (Yappy's event), or null. */
+  milestone: FriendEvent | null;
+}
+
+/**
+ * Count one finished take and say which of Yappy's milestones it reached, if
+ * any: the 100th / 1000th take outranks a new streak record, which outranks
+ * the longest take of the week. `speechS` is the take's seconds of speech
+ * (null when the backend did not say). Pure: the caller passes the clock.
+ */
+export function noteTake(
+  stats: TakeStats,
+  takesSoFar: number,
+  speechS: number | null,
+  nowMs: number,
+  /**
+   * The take tracker's edge (`TakeTracker.transcript()`): true only when the
+   * real total crossed 100 or 1000 just now. When given it decides the count
+   * milestone, so a re-read that lands on the same total never repeats it.
+   */
+  countCrossed?: boolean,
+): TakeNote {
+  const today = dayKey(nowMs);
+  const week = weekKey(nowMs);
+  const sameWeek = stats.week === week;
+  const weekTakesBefore = sameWeek ? stats.weekTakes : 0;
+  const weekLongestBefore = sameWeek ? stats.weekLongestS : 0;
+  const s = typeof speechS === "number" && Number.isFinite(speechS) && speechS > 0 ? speechS : 0;
+  const streak = stats.lastDay === today ? Math.max(1, stats.streak) : stats.lastDay === dayBefore(nowMs) ? stats.streak + 1 : 1;
+  const next: TakeStats = {
+    week,
+    weekTakes: weekTakesBefore + 1,
+    weekLongestS: Math.max(weekLongestBefore, s),
+    streak,
+    bestStreak: Math.max(stats.bestStreak, streak),
+    lastDay: today,
+  };
+  let milestone: FriendEvent | null = null;
+  if (countCrossed ?? milestoneReached(takesSoFar)) milestone = "milestone";
+  else if (streak > stats.bestStreak && streak >= STREAK_RECORD_MIN_DAYS) milestone = "streak-record";
+  else if (weekTakesBefore >= LONGEST_WEEK_MIN_TAKES && s >= LONGEST_TAKE_MIN_S && s > weekLongestBefore) milestone = "longest-take-week";
+  return { stats: next, milestone };
+}
+
+const whole = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+
+/** Parse the stored take stats; anything malformed is empty, never a throw. */
+export function parseTakeStats(raw: unknown): TakeStats {
+  if (typeof raw !== "string" || !raw) return EMPTY_TAKE_STATS;
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { return EMPTY_TAKE_STATS; }
+  if (!v || typeof v !== "object") return EMPTY_TAKE_STATS;
+  const o = v as Record<string, unknown>;
+  const week = typeof o.week === "string" && DAY_RE.test(o.week) ? o.week : "";
+  const lastDay = typeof o.lastDay === "string" && DAY_RE.test(o.lastDay) ? o.lastDay : "";
+  const longest = typeof o.weekLongestS === "number" && Number.isFinite(o.weekLongestS) && o.weekLongestS > 0 ? o.weekLongestS : 0;
+  const streak = lastDay ? whole(o.streak) : 0;
+  return {
+    week,
+    weekTakes: week ? whole(o.weekTakes) : 0,
+    weekLongestS: week ? longest : 0,
+    streak,
+    bestStreak: Math.max(whole(o.bestStreak), streak),
+    lastDay,
+  };
+}
+
+export const serializeTakeStats = (t: TakeStats): string => JSON.stringify(t);
+
+/** The seconds of speech in a `transcript` payload (camelCase or snake_case), or null. */
+export function takeSpeechSeconds(payload: unknown): number | null {
+  const o = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  const v = o?.speechSeconds ?? o?.speech_seconds;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/** What Yappy says when he visits for a milestone (companions.html: "that's a hundred! — Yappy"). */
+export function milestoneLine(event: FriendEvent, takesSoFar: number): string | null {
+  if (event === "milestone") return takes(takesSoFar) >= 1000 ? "a thousand takes! — Yappy" : "that's a hundred! — Yappy";
+  if (event === "longest-take-week") return "longest take this week! — Yappy";
+  if (event === "streak-record") return "new streak record! — Yappy";
+  return null;
 }
