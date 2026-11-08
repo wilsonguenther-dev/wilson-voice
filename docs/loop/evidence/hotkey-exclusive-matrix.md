@@ -68,3 +68,13 @@ created through the AppleScript object model and closes without saving at the en
 It never targets Wilson's Yap or his Terminal. Pass condition: exit 0, meaning every fn⌃ leak
 count is 0, the TextEdit text is unchanged, and CGEventSourceFlagsState (HID and combined
 session) shows no Control, Fn, Command or Option bit after 50 takes.
+
+## Integrator, batch 2 (2026-11-08T21:52Z)
+
+The matrix was NOT run by the integrator either. It needs a launched Yap Test with Accessibility,
+Input Monitoring and Accessibility for the posting shell, and a TextEdit document. This seat may not
+launch Yap Test, open a GUI app or write TCC. So acceptance 2, 3 and 4, and the BUILD 2 log grep,
+are deferred to Wilson on the test build: run the command above with Yap Test frontmost
+(insertion set to copy-only) and paste the result here. What WAS verified on the integrated
+build: the script typechecks (swiftc -typecheck, exit 0), and every swallow_decision, fallback,
+re-arm, pairing and diagnostics-label test listed in this file passed in the full cargo test run.
