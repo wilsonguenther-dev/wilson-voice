@@ -4520,7 +4520,6 @@ button.primary.big {
   background: transparent;
   font-size: 14px;
   color: var(--news-ink);
-  outline: none;
 }
 .news-field-input::placeholder {
   color: var(--news-ink-3);
