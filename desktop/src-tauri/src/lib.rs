@@ -188,15 +188,15 @@ pub mod pill_quiet;
 // YV101 — the macOS 14.4 runtime gate for the system-audio process tap (plan
 // finding OS-11). Public so `tests/syscapture_os_gate.rs` can drive the version
 // table, and because every future tap entry point has to pass through it.
+/// yap-1107-globe-key-conflict-guard — the lone-Fn (Globe key) conflict line and
+/// its consented, reversible "Turn it off" / "Put it back".
+pub mod globe_key;
 pub mod os_version_gate;
 pub mod paste;
 mod paste_tx;
 pub mod perm_probe;
 pub mod perm_truth;
 pub mod permissions;
-/// yap-1107-globe-key-conflict-guard — the lone-Fn (Globe key) conflict line and
-/// its consented, reversible "Turn it off" / "Put it back".
-pub mod globe_key;
 // YV61: the validated polish stage. Public for the same reason `dictation` is —
 // the golden formatting corpus runs the real stage from an integration test.
 pub mod polish;
@@ -10424,14 +10424,7 @@ fn news_cloud_text(
         };
         let mut sink = |_: &str| {};
         cloud_client::CloudKeyClient::new(&cfg.base_url, key.clone(), client).complete_streaming(
-            model,
-            job,
-            system,
-            user,
-            max_tokens,
-            budget,
-            &cancel,
-            &mut sink,
+            model, job, system, user, max_tokens, budget, &cancel, &mut sink,
         )
     };
     let accept = |text: &str| Some(Some(text.to_string()));
