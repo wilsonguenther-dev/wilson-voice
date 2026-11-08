@@ -39,7 +39,7 @@
         "page": "float.html",
         "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "idle__yappy__bottom__none.png"
+        "capture": "app/idle__yappy__bottom__none.png"
       },
       "expect": {
         "w": 72,
@@ -79,7 +79,7 @@
         "page": "float.html",
         "query": "phase=sleepy&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "sleepy__yappy__bottom__none.png"
+        "capture": "app/sleepy__yappy__bottom__none.png"
       },
       "expect": {
         "w": 72,
@@ -119,7 +119,7 @@
         "page": "float.html",
         "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening__yappy__bottom__none.png"
+        "capture": "app/listening__yappy__bottom__none.png"
       },
       "expect": {
         "w": 228,
@@ -157,9 +157,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=listening_locked&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=listening-locked&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening_locked__yappy__bottom__none.png"
+        "capture": "app/listening_locked__yappy__bottom__none.png"
       },
       "expect": {
         "w": 295.2,
@@ -208,7 +208,7 @@
         "page": "float.html",
         "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening__yappy__bottom__none.png"
+        "capture": "app/listening__yappy__bottom__none.png"
       },
       "expect": {
         "w": 307.2,
@@ -256,9 +256,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&pill=yappy&dock=top&meeting=recording&sky=day",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "idle__yappy__top__recording.png"
+        "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
         "w": 144.5,
@@ -302,9 +302,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=listening&pill=yappy&dock=top&meeting=recording&sky=day",
+        "query": "phase=listening&pill=yappy&dock=bottom&meeting=recording&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening__yappy__top__recording.png"
+        "capture": "app/listening__yappy__bottom__recording.png"
       },
       "expect": {
         "w": 296,
@@ -352,9 +352,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=model_loading&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=model-loading&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "model_loading__yappy__bottom__none.png"
+        "capture": "app/model_loading__yappy__bottom__none.png"
       },
       "expect": {
         "w": 184.16,
@@ -399,7 +399,7 @@
         "page": "float.html",
         "query": "phase=transcribing&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "transcribing__yappy__bottom__none.png"
+        "capture": "app/transcribing__yappy__bottom__none.png"
       },
       "expect": {
         "w": 264,
@@ -447,7 +447,7 @@
         "page": "float.html",
         "query": "phase=polishing&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "polishing__yappy__bottom__none.png"
+        "capture": "app/polishing__yappy__bottom__none.png"
       },
       "expect": {
         "w": 270.14,
@@ -490,7 +490,7 @@
         "page": "float.html",
         "query": "phase=pasting&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "pasting__yappy__bottom__none.png"
+        "capture": "app/pasting__yappy__bottom__none.png"
       },
       "expect": {
         "w": 280.8,
@@ -533,7 +533,7 @@
         "page": "float.html",
         "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "done__yappy__bottom__none.png"
+        "capture": "app/done__yappy__bottom__none.png"
       },
       "expect": {
         "w": 297.45,
@@ -579,7 +579,7 @@
         "page": "float.html",
         "query": "phase=empty&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "empty__yappy__bottom__none.png"
+        "capture": "app/empty__yappy__bottom__none.png"
       },
       "expect": {
         "w": 154.63,
@@ -622,7 +622,7 @@
         "page": "float.html",
         "query": "phase=cancelled&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "cancelled__yappy__bottom__none.png"
+        "capture": "app/cancelled__yappy__bottom__none.png"
       },
       "expect": {
         "w": 122.39,
@@ -667,7 +667,7 @@
         "page": "float.html",
         "query": "phase=error&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "error__yappy__bottom__none.png"
+        "capture": "app/error__yappy__bottom__none.png"
       },
       "expect": {
         "w": 216.36,
@@ -712,7 +712,7 @@
         "page": "float.html",
         "query": "phase=blocked&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "blocked__yappy__bottom__none.png"
+        "capture": "app/blocked__yappy__bottom__none.png"
       },
       "expect": {
         "w": 159.64,
@@ -757,7 +757,7 @@
         "page": "float.html",
         "query": "phase=waiting&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "waiting__yappy__bottom__none.png"
+        "capture": "app/waiting__yappy__bottom__none.png"
       },
       "expect": {
         "w": 215.28,
@@ -800,7 +800,7 @@
         "page": "float.html",
         "query": "phase=gated&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "gated__yappy__bottom__none.png"
+        "capture": "app/gated__yappy__bottom__none.png"
       },
       "expect": {
         "w": 195.08,
@@ -845,7 +845,7 @@
         "page": "float.html",
         "query": "phase=blind&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "blind__yappy__bottom__none.png"
+        "capture": "app/blind__yappy__bottom__none.png"
       },
       "expect": {
         "w": 222.3,
@@ -889,7 +889,7 @@
         "page": "float.html",
         "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "idle__yappy__bottom__none.png"
+        "capture": "app/idle__yappy__bottom__none.png"
       },
       "expect": {
         "w": 167.05,
@@ -931,9 +931,9 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&rail=open&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&rail=open",
         "selector": ".yappy-capsule-box",
-        "capture": "rail__yappy__bottom__none.png"
+        "capture": "app/rail__yappy__bottom__none.png"
       },
       "expect": {
         "w": 72,
@@ -979,12 +979,33 @@
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&drag=blob&pill=yappy&dock=bottom&meeting=none&sky=day",
-        "selector": ".yappy-capsule-box",
-        "capture": "drag-blob__yappy__bottom__none.png"
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&drag=blob",
+        "selector": ".kami-blob",
+        "capture": "app/drag-blob__yappy__bottom__none.png"
       },
       "expect": {
-        "note": "artifact draws a 28x28 head blob (canvas r=14); measured on the integrator run"
+        "w": 36,
+        "h": 36,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1e2025"
+        ],
+        "sprite": [
+          {
+            "w": 28,
+            "h": 28
+          }
+        ]
       }
     },
     {
@@ -1000,7 +1021,7 @@
         "page": "float.html",
         "query": "phase=listening&pill=yappy&dock=right&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening__yappy__right__none.png"
+        "capture": "app/listening__yappy__right__none.png"
       },
       "expect": {
         "w": 244,
@@ -1039,69 +1060,43 @@
       "section": "#timer",
       "artifact": {
         "page": "pill.html",
-        "selector": "#clocks",
+        "selector": "#clocks .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&pill=yappy&dock=top&meeting=recording&sky=day",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "idle__yappy__top__recording.png"
+        "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 899.56
+        "w": 202,
+        "h": 44,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
         },
-        "fontPx": [
-          10,
-          11,
-          12,
-          13,
-          18
-        ],
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#1b1b1b1c",
-          "#1d1c1a",
           "#1e2025",
-          "#20361a",
-          "#262a31",
           "#2b2e35",
-          "#56534d",
-          "#8b877f",
-          "#b93a26",
-          "#ba392559",
           "#e5484d",
-          "#eceae4",
-          "#efece4",
-          "#fbfaf7",
-          "#ff8a8d",
-          "#fffef6bf"
+          "#ff8a8d"
         ],
-        "winSprites": [
+        "sprite": [
           {
             "w": 140,
             "h": 36
           },
           {
-            "w": 140,
-            "h": 36
-          },
-          {
-            "w": 140,
-            "h": 36
-          },
-          {
-            "w": 140,
-            "h": 36
-          },
-          {
-            "w": 140,
-            "h": 36
-          },
-          {
-            "w": 140,
-            "h": 36
+            "w": 14,
+            "h": 14
           }
         ]
       },
@@ -1113,58 +1108,46 @@
       "section": "#hoot",
       "artifact": {
         "page": "pill.html",
-        "selector": "#hootB",
+        "selector": "#hootB .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&pill=yappy&dock=top&meeting=recording&sky=day",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "idle__yappy__top__recording.png"
+        "capture": "app/idle__yappy__bottom__recording.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 538,
-          "h": 664.7
-        },
+        "w": 188,
+        "h": 44,
         "fontPx": [
-          10,
-          11,
-          12,
-          13
+          10
         ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#000000",
-          "#1b1b1b1c",
-          "#1c1c1c40",
-          "#1d1c1a",
           "#1e2025",
           "#20361a",
-          "#262a31",
           "#2b2e35",
-          "#56534d",
-          "#b93a26",
-          "#eceae4",
-          "#fbfaf7",
           "#ff8a8d",
           "#fffef6bf"
         ],
-        "winSprites": [
+        "sprite": [
           {
             "w": 140,
             "h": 36
           },
           {
-            "w": 140,
-            "h": 36
-          },
-          {
-            "w": 140,
-            "h": 36
-          },
-          {
-            "w": 140,
-            "h": 36
+            "w": 14,
+            "h": 14
           }
         ]
       },
@@ -1176,57 +1159,37 @@
       "section": "#warm",
       "artifact": {
         "page": "pill.html",
-        "selector": "#warmS",
+        "selector": "#warmS .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
-        "query": "phase=model_loading&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=model-loading&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "model_loading__yappy__bottom__none.png"
+        "capture": "app/model_loading__yappy__bottom__none.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 586.56
-        },
+        "w": 203.56,
+        "h": 32,
         "fontPx": [
-          12,
-          13
+          12
         ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#000000",
-          "#1b1b1b1c",
           "#1e2025",
-          "#262a31",
-          "#56534d",
-          "#b93a26",
           "#eceae4",
-          "#f2c14e",
-          "#fbfaf7",
           "#ffffff24"
         ],
-        "winSprites": [
-          {
-            "w": 72,
-            "h": 24
-          },
-          {
-            "w": 72,
-            "h": 24
-          },
-          {
-            "w": 72,
-            "h": 24
-          },
-          {
-            "w": 72,
-            "h": 24
-          },
-          {
-            "w": 72,
-            "h": 24
-          },
+        "sprite": [
           {
             "w": 72,
             "h": 24
@@ -1241,43 +1204,33 @@
       "section": "#props",
       "artifact": {
         "page": "pill.html",
-        "selector": "#propsG",
+        "selector": "#propsG .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
         "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening__yappy__bottom__none.png"
+        "capture": "app/listening__yappy__bottom__none.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 473.59
+        "w": 204,
+        "h": 52,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
         },
-        "fontPx": [
-          16
-        ],
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#1b1b1b1c",
-          "#1d1c1a",
-          "#1e2025",
-          "#b93a26",
-          "#fbfaf7"
+          "#1e2025"
         ],
-        "winSprites": [
-          {
-            "w": 196,
-            "h": 44
-          },
-          {
-            "w": 196,
-            "h": 44
-          },
-          {
-            "w": 196,
-            "h": 44
-          },
+        "sprite": [
           {
             "w": 196,
             "h": 44
@@ -1292,38 +1245,42 @@
       "section": "#vdock",
       "artifact": {
         "page": "pill.html",
-        "selector": "#vstage",
+        "selector": "#vstage .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
         "query": "phase=listening&pill=yappy&dock=left&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "listening__yappy__left__none.png"
+        "capture": "app/listening__yappy__left__none.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 400
+        "w": 244,
+        "h": 52,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
         },
-        "fontPx": [
-          11,
-          12
-        ],
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#1d1c1a",
           "#1e2025",
           "#2b2e35",
-          "#8b877f",
-          "#d4d0c5",
-          "#e9e6de",
-          "#ff8a8d",
-          "#fffdf7"
+          "#ff8a8d"
         ],
-        "winSprites": [
+        "sprite": [
           {
             "w": 196,
             "h": 44
+          },
+          {
+            "w": 14,
+            "h": 14
           }
         ]
       },
@@ -1335,100 +1292,43 @@
       "section": "#trial",
       "artifact": {
         "page": "pill.html",
-        "selector": "#trialS",
+        "selector": "#trialS .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
         "query": "phase=gated&pill=yappy&dock=bottom&meeting=none&sky=day",
         "selector": ".yappy-capsule-box",
-        "capture": "gated__yappy__bottom__none.png"
+        "capture": "app/gated__yappy__bottom__none.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 299.06
-        },
+        "w": 196.23,
+        "h": 32,
         "fontPx": [
-          11,
-          12,
-          13
+          12
         ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#000000",
-          "#1b1b1b1c",
           "#1d1c1a",
           "#1e2025",
-          "#262a31",
-          "#56534d",
-          "#8b877f",
-          "#b93a26",
           "#eceae4",
-          "#efece4",
-          "#efeee9",
-          "#fbfaf7",
-          "#ffd23f",
-          "#ffffff"
+          "#efece4"
         ],
-        "winSprites": [
-          {
-            "w": 44,
-            "h": 24
-          },
-          {
-            "w": 44,
-            "h": 24
-          },
-          {
-            "w": 42.68,
-            "h": 23.28
-          },
+        "sprite": [
           {
             "w": 44,
             "h": 24
           }
         ]
-      },
-      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
-    },
-    {
-      "id": "heavy",
-      "name": "after the 50th take (quieter done line)",
-      "section": "#heavy",
-      "artifact": {
-        "page": "pill.html",
-        "selector": "#heavy",
-        "sprites": []
-      },
-      "app": {
-        "page": "float.html",
-        "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day",
-        "selector": ".yappy-capsule-box",
-        "capture": "done__yappy__bottom__none.png"
-      },
-      "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 617.58
-        },
-        "fontPx": [
-          11,
-          12,
-          14,
-          15,
-          26
-        ],
-        "colors": [
-          "#1b1b1b1c",
-          "#1d1c1a",
-          "#1f6e43",
-          "#56534d",
-          "#8b877f",
-          "#b93a26",
-          "#e3f3e9",
-          "#fbfaf7"
-        ],
-        "winSprites": []
       },
       "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
     },
@@ -1438,105 +1338,45 @@
       "section": "#wispr",
       "artifact": {
         "page": "pill.html",
-        "selector": "#wrows",
+        "selector": "#wrows .ypill",
         "sprites": []
       },
       "app": {
         "page": "float.html",
-        "query": "phase=idle&backtrack=1&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&backtrack=1",
         "selector": ".yappy-capsule-box",
-        "capture": "backtrack-caught__yappy__bottom__none.png"
+        "capture": "app/backtrack-caught__yappy__bottom__none.png"
       },
       "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 2629.84
-        },
+        "w": 167.05,
+        "h": 32,
         "fontPx": [
-          11,
-          12,
-          13,
-          18
+          12
         ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
         "colors": [
-          "#000000",
-          "#1b1b1b1c",
-          "#1d1c1a",
           "#1e2025",
-          "#262a31",
-          "#2b2e35",
-          "#56534d",
-          "#8b877f",
-          "#b93a26",
-          "#e9e6de",
-          "#eceae4",
-          "#efece4",
-          "#f6f5f2",
-          "#fbfaf7",
-          "#ff8a8d",
-          "#fffdf7",
-          "#ffffff",
-          "#ffffff38"
+          "#eceae4"
         ],
-        "winSprites": [
+        "sprite": [
           {
             "w": 44,
             "h": 24
           },
           {
-            "w": 196,
-            "h": 44
-          },
-          {
-            "w": 64,
-            "h": 20
-          },
-          {
-            "w": 196,
-            "h": 44
+            "w": 14,
+            "h": 14
           }
         ]
-      },
-      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
-    },
-    {
-      "id": "chatshots",
-      "name": "today's pill from the chat screenshots",
-      "section": "#chatshots",
-      "artifact": {
-        "page": "pill.html",
-        "selector": "#chatshots",
-        "sprites": []
-      },
-      "app": {
-        "page": "float.html",
-        "query": "phase=listening_locked&pill=yappy&dock=bottom&meeting=none&sky=day",
-        "selector": ".yappy-capsule-box",
-        "capture": "listening_locked__yappy__bottom__none.png"
-      },
-      "expect": {
-        "sectionBox": {
-          "w": 1176,
-          "h": 973.63
-        },
-        "fontPx": [
-          11,
-          12,
-          13,
-          14,
-          15,
-          26
-        ],
-        "colors": [
-          "#1414140d",
-          "#1b1b1b1c",
-          "#1d1c1a",
-          "#1f6e43",
-          "#56534d",
-          "#b93a26",
-          "#e3f3e9"
-        ],
-        "winSprites": []
       },
       "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
     }
@@ -1569,5 +1409,19 @@
       "build": "REST_CAPSULE = ARTIFACT_REST_SHELL 72 x 28 (characterFit.ts); on 2x every pill character sits whole in it at one device px per art px; below 2x Yappy's camera uses 'head' framing (sprout, eyes, beak in view, feet leave the nub)",
       "why": "batch-7 bounce: the item text said 56 tall, the senior standard says build the artifact when they conflict. Cost, for Wilson: at rest on Retina Yappy draws at 0.5 CSS px per art px (whole, crisp, but half his open scale), because no larger whole cell fits a 26 px clip; the artifact itself shows a face close-up there, which fb-10 removed after 'the heads cropped'."
     }
-  ]
+  ],
+  "nonVisual": [
+    {
+      "id": "heavy",
+      "section": "#heavy",
+      "reason": "#heavy is a behaviour table (how often Yappy talks after the 50th take), not a drawn pill: no pill box exists on the page to measure. Proven in code by the chatter-ladder tests, not by a pixel row."
+    },
+    {
+      "id": "chatshots",
+      "section": "#chatshots",
+      "reason": "#chatshots are screenshots of TODAY's (pre-redesign) pill pasted from chat, showing defects (nub over terminal text, clipped timer). Matching them would degrade the approved design; the approved states are the #states/#timer/#hoot rows."
+    }
+  ],
+  "captures": "pill-matrix.mjs --out <captures>/app writes <matrix id>__yappy__<bottom|left|right>__<none|recording|saved>.png; every app.capture is that name under app/",
+  "rewrittenAt": "2026-11-08T00:48:30Z"
 }

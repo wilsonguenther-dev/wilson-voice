@@ -13,9 +13,16 @@ import FLOAT_CSS from "../float.css?raw";
 import TOKENS_CSS from "../tokens.css?raw";
 import YAPPY_PILL_SRC from "./YappyPill.tsx?raw";
 import MANIFEST_SRC from "../../../docs/loop/evidence/parity-pill.manifest.json?raw";
+import { matrixBacktrackCaughtScene, matrixDragBlobScene, matrixPhases, matrixRailScene } from "./forced";
 
-interface ManifestState { id: string; section: string; app: { selector: string } }
-const MANIFEST = JSON.parse(MANIFEST_SRC) as { states: ManifestState[] };
+interface ManifestState {
+  id: string;
+  section: string;
+  artifact: { selector: string };
+  app: { selector: string; query: string; capture: string };
+}
+interface NonVisual { id: string; section: string; reason: string }
+const MANIFEST = JSON.parse(MANIFEST_SRC) as { states: ManifestState[]; nonVisual?: NonVisual[] };
 
 /** The value of a custom property in tokens.css (first declaration, the light/base block). */
 function token(name: string): string {
@@ -90,13 +97,70 @@ describe("yap-1107-parity-pill — the approved pill's colours", () => {
 
 describe("yap-1107-parity-pill — the manifest lists every approved state", () => {
   const ids = MANIFEST.states;
+  const nonVisual = MANIFEST.nonVisual ?? [];
 
   it("manifest_has_all_23_state_rows_and_every_section", () => {
     expect(ids.filter((s) => s.section === "#states")).toHaveLength(23);
     for (const sec of ["#timer", "#hoot", "#warm", "#props", "#vdock", "#trial", "#heavy", "#wispr", "#chatshots"]) {
-      expect(ids.some((s) => s.section === sec), sec).toBe(true);
+      const listed = ids.some((s) => s.section === sec) || nonVisual.some((n) => n.section === sec);
+      expect(listed, sec).toBe(true);
     }
-    for (const s of ids) expect(s.app.selector, s.id).toBe(".yappy-capsule-box");
+    for (const s of ids) expect(s.app.selector, s.id).toBe(s.id === "dragging" ? ".kami-blob" : ".yappy-capsule-box");
     expect(new Set(ids.map((s) => s.id)).size).toBe(ids.length);
+  });
+
+  // batch-4 bounce: section selectors (#clocks, #heavy...) measured 1176 px page
+  // sections against a pill. Every measured row now names ONE drawn pill.
+  it("every_artifact_selector_is_one_pill_not_a_page_section", () => {
+    for (const s of ids) expect(s.artifact.selector, s.id).toMatch(/\.(ypill|blob)$/);
+  });
+
+  // #heavy is a behaviour table and #chatshots are pre-redesign defect
+  // screenshots: listed with a reason, never measured as a pill.
+  it("non_visual_sections_carry_a_reason", () => {
+    expect(nonVisual.map((n) => n.id).sort()).toEqual(["chatshots", "heavy"]);
+    for (const n of nonVisual) expect(n.reason.length, n.id).toBeGreaterThan(40);
+  });
+
+  // batch-4 bounce: capture names that pill-matrix never writes. The matrix
+  // writes <captures>/app/<row id>__yappy__<dock>__<meeting>.png for docks
+  // bottom|left|right and meetings none|recording|saved, navigating with
+  // ?phase=<row phase>; the manifest must name exactly those files.
+  it("every_capture_is_a_file_pill_matrix_writes", () => {
+    const rows = [...matrixPhases(), matrixRailScene(), matrixDragBlobScene(), matrixBacktrackCaughtScene()];
+    const byId = new Map<string, { phase: string; query?: string }>(
+      rows.map((r): [string, { phase: string; query?: string }] => [r.id, r]),
+    );
+    for (const s of ids) {
+      const m = s.app.capture.match(/^app\/(.+)__yappy__(bottom|left|right)__(none|recording|saved)\.png$/);
+      expect(m, s.id + " " + s.app.capture).not.toBeNull();
+      if (!m) continue;
+      const row = byId.get(m[1]);
+      expect(row, s.id + ": no matrix row " + m[1]).toBeDefined();
+      if (!row) continue;
+      const q = new URLSearchParams(s.app.query);
+      expect(q.get("phase"), s.id).toBe(row.phase);
+      expect(q.get("dock"), s.id).toBe(m[2]);
+      expect(q.get("meeting"), s.id).toBe(m[3]);
+      expect(q.get("pill"), s.id).toBe("yappy");
+      if (row.query) for (const [k, v] of new URLSearchParams(row.query)) expect(q.get(k), s.id + " " + k).toBe(v);
+    }
+  });
+});
+
+describe("yap-1107-parity-pill — the drag blob is the approved .blob", () => {
+  it("blob_is_a_real_36px_disc_with_the_approved_rim_and_shadow", () => {
+    expect(YAPPY_PILL_SRC).toMatch(/<span className="kami-blob" aria-hidden="true" \/>/);
+    const b = rule('html[data-pill-drag="blob"] .kami-blob');
+    expect(b).toMatch(/width:\s*calc\(var\(--blob-d\) \+ 2 \* var\(--blob-rim\)\)/);
+    expect(b).toMatch(/height:\s*calc\(var\(--blob-d\) \+ 2 \* var\(--blob-rim\)\)/);
+    expect(b).toMatch(/background:\s*var\(--pill-shell-top\)/);
+    expect(b).toMatch(/inset 0 0 0 1px var\(--pill-shell-line\)/);
+    expect(b).toMatch(/var\(--pill-blob-shadow\)/);
+    // 28 px face + 2 x 4 px rim = pill.html .blob 36 x 36
+    expect(FLOAT_CSS).toMatch(/--blob-d:\s*28px/);
+    expect(FLOAT_CSS).toMatch(/--blob-rim:\s*4px/);
+    expect(token("--pill-blob-shadow").replace(/\s+/g, " ")).toBe("0 10px 22px rgba(0, 0, 0, 0.38)");
+    expect(rule(".kami-blob")).toMatch(/display:\s*none/);
   });
 });
