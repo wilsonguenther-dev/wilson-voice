@@ -102,6 +102,8 @@ cd desktop
 npm run desktop:dev
 ```
 
+Timing stress: `scripts/stress-tests.sh [--runs N] <test-file-stem|lib|all> [<filter>]` runs a test N times (default 10) at `--test-threads=8` under 8 CPU busy loops and prints `<pass>/<N>`; the `stress` job in `.github/workflows/stress.yml` runs the high-risk timing tests through it nightly and on demand (never on PRs).
+
 ### Build & signing
 
 `tauri.conf.json` commits **ad-hoc signing** (`bundle.macOS.signingIdentity: "-"`),

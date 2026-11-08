@@ -1,0 +1,16 @@
+stress-tests: target=matrix_new_asr_chunk_timeout filter='a_chunk_that_exceeds_the_transcribe_timeout_fails_alone' runs=10 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --test matrix_new_asr_chunk_timeout a_chunk_that_exceeds_the_transcribe_timeout_fails_alone -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /Users/wilsonguenther/code/wilson-voice-loop/loop3/INT/docs/loop/evidence/stress-harness/asr_chunk_timeout
+stress-tests: started 8 busy loops: 81490 81491 81492 81493 81494 81495 81496 81497
+run 1/10: pass (1 passed)
+run 2/10: pass (1 passed)
+run 3/10: pass (1 passed)
+run 4/10: pass (1 passed)
+run 5/10: pass (1 passed)
+run 6/10: pass (1 passed)
+run 7/10: pass (1 passed)
+run 8/10: pass (1 passed)
+run 9/10: pass (1 passed)
+run 10/10: pass (1 passed)
+10/10

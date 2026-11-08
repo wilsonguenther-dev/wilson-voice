@@ -1,0 +1,139 @@
+name: Stress
+
+# Thread-timing stress run (yap-1108-timing-stress-harness). Main went red three
+# times on 2026-11-07/08 on merge commits whose PR heads were green, every time
+# a test racing its own threads (#370 idle-watcher clock, #374 chunk-timeout
+# lease clock, #378 meeting journal queue). This job runs every HIGH-risk test
+# from docs/loop/evidence/timing-tests-audit.md 10 times each through
+# scripts/stress-tests.sh: --test-threads=8 under 8 `yes` busy loops.
+#
+# DIAGNOSTIC ONLY. It never runs on pull_request or push, so it cannot block or
+# slow a PR; it runs nightly and on demand. Several tests below are still in
+# their old racy form on main until the follow-up timing items (F/G of the
+# split yap-1107-timing-tests-deterministic) land, so a RED nightly here is
+# EXPECTED until then: read the uploaded logs for which test and which
+# assertion, do not treat it as a broken main.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Runs per test (default 10)"
+        required: false
+        default: "10"
+  schedule:
+    - cron: "23 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    name: Timing stress (HIGH-risk tests, 10x under load)
+    runs-on: macos-15
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built exactly like the `desktop` job in ci.yml: `--features
+      # custom-protocol` embeds the frontend, and bundle.externalBin makes the
+      # staged sidecars a precondition of every app build, tests included.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+      - name: Build frontend (tsc + vite)
+        run: npm run build
+
+      # Same pin as ci.yml and desktop/rust-toolchain.toml; bump all three together.
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Build + stage the sidecars (yap-polish, yap-diarize, yap-asr)
+        run: |
+          cargo build -p yap-polish -p yap-diarize -p yap-asr --release
+          TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
+          mkdir -p src-tauri/binaries
+          cp target/release/yap-polish "src-tauri/binaries/yap-polish-${TRIPLE}"
+          cp target/release/yap-diarize "src-tauri/binaries/yap-diarize-${TRIPLE}"
+          cp target/release/yap-asr "src-tauri/binaries/yap-asr-${TRIPLE}"
+          bash ../scripts/build-ane-engine.sh
+
+      # One line per test: "<target> <filter>". target = integration test file
+      # stem, or `lib` for the crate's unit tests. Every test runs even after
+      # an earlier one fails; the step fails at the end if any did.
+      - name: Stress the HIGH-risk tests
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          RUNS: ${{ inputs.runs || '10' }}
+        run: |
+          LOGS="$RUNNER_TEMP/stress-logs"
+          mkdir -p "$LOGS"
+          failed=0
+          idx=0
+          {
+            echo "## Stress: HIGH-risk timing tests, ${RUNS}x each, --test-threads=8 under 8 busy loops"
+            echo
+            echo "| # | target | test | result |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          while read -r target filter; do
+            [ -n "$target" ] || continue
+            idx=$((idx + 1))
+            dir="$LOGS/$(printf '%02d' "$idx")-$target-${filter//::/__}"
+            echo "::group::$target $filter"
+            if bash scripts/stress-tests.sh --runs "$RUNS" --log-dir "$dir" "$target" "$filter" < /dev/null; then
+              verdict="pass"
+            else
+              verdict="FAIL"
+              failed=$((failed + 1))
+              echo "::error title=stress::$target $filter failed under load (logs: stress-logs artifact, $(basename "$dir"))"
+            fi
+            echo "::endgroup::"
+            score="$(grep -E '^[0-9]+/[0-9]+$' "$dir/summary.txt" 2>/dev/null | tail -n 1 || true)"
+            echo "| $idx | $target | $filter | $verdict ${score} |" >> "$GITHUB_STEP_SUMMARY"
+          done <<'LIST'
+          lib transcription::tests::state_transitions_unloaded_to_loaded_to_idle_unloaded
+          lib transcription::tests::empty_audio_is_a_no_op_and_use_keeps_the_engine_warm
+          lib record::tests::arm_signal_returns_as_soon_as_the_worker_answers
+          lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency
+          lib polish::polish_fallback_tests::polish_dead_sidecar_restarts_once_then_fails_closed
+          diarize_sidecar_pool a_dead_child_respawns_once_then_stays_failed
+          lib record::tests::capture_ends_within_budget_of_the_stop_edge_while_context_reads_stall
+          lib meeting::tests::the_launch_scan_never_finalizes_a_journal_that_is_still_live
+          matrix_new_quit_mid_processing the_exit_drain_reports_a_cancelled_chunk_as_abandoned_not_as_a_failure
+          cancel_long_take cancel_mid_decode_stops_at_the_next_chunk_boundary
+          cancel_long_take cancel_stops_the_real_windowed_loop_not_just_one_window
+          summary_download_lock settings_and_a_notes_job_share_one_download
+          summary_download_lock cancel_interrupts_the_backoff_sleep
+          summary_download_lock cancel_interrupts_a_stalled_chunk
+          lifecycle a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off
+          lifecycle a_wedged_exempt_step_is_bounded_by_its_own_deadline_and_the_rest_still_run
+          lifecycle a_step_that_misses_its_deadline_is_skipped_and_quit_stays_bounded
+          lifecycle the_whole_quit_never_exceeds_its_budget_when_every_step_hangs
+          LIST
+          echo "stress: $failed of $idx tests failed at least one run"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "$failed of $idx tests failed at least one run. Red is expected until the follow-up timing fixes land (see the workflow header)." >> "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]
+
+      - name: Upload stress logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-logs
+          path: ${{ runner.temp }}/stress-logs
+          if-no-files-found: warn
+          retention-days: 14
