@@ -33,8 +33,8 @@ use support::eval_metrics::summary_verbatim_ratio;
 use support::notes_planted::{self, PlantedNote, MEETING_SECONDS, SCRIPT};
 use wilson_voice_lib::meetings::{MeetingKind, MeetingSegment};
 use wilson_voice_lib::summarize::{
-    summarize_segments_with, MeetingSummary, SidecarSession, SidecarSummaryClient, SummaryItem,
-    TrackSpeakers, DEFAULT_SUMMARY_MODEL,
+    summarize_segments_with_strategy, MeetingSummary, NotesStrategy, SidecarSession,
+    SidecarSummaryClient, SummaryItem, TrackSpeakers, DEFAULT_SUMMARY_MODEL, NOTES_STRATEGY,
 };
 use wilson_voice_lib::summary_jobs::{
     CancelToken, NotesBackend, NotesError, NotesPhase, NotesStatus, SummaryJobs,
@@ -384,6 +384,8 @@ struct RealNotes {
     binary: PathBuf,
     model: PathBuf,
     segments: Vec<MeetingSegment>,
+    /// yap-audit-notes-strategy — the arm this backend runs.
+    strategy: NotesStrategy,
     out: Mutex<Option<MeetingSummary>>,
 }
 
@@ -399,11 +401,97 @@ impl NotesBackend for RealNotes {
             .map_err(|_| NotesError::ModelStart)?;
         let client = SidecarSummaryClient::with_cancel(session, cancel.clone());
         let speakers = TrackSpeakers::for_meeting(MeetingKind::Virtual, &self.segments);
-        let s = summarize_segments_with(&self.segments, &client, &speakers)
+        let s = summarize_segments_with_strategy(&self.segments, &client, &speakers, self.strategy)
             .map_err(|e| NotesError::Summary(format!("{e:?}")))?;
         *self.out.lock().unwrap() = Some(s);
         Ok(())
     }
+}
+
+/// One arm's measured row (yap-audit-notes-strategy).
+struct ArmRun {
+    summary: MeetingSummary,
+    scores: Scores,
+    wall_s: f64,
+    peak_total_kb: u64,
+    peak_sidecar_kb: u64,
+    peak_host_kb: u64,
+}
+
+/// Run one arm end to end through `SummaryJobs`, the way the app runs a job,
+/// sampling peak RSS of this process plus the sidecar every 200 ms.
+fn run_arm(binary: &PathBuf, model: &PathBuf, strategy: NotesStrategy, job: &str) -> ArmRun {
+    let stop = Arc::new(AtomicBool::new(false));
+    let peaks = Arc::new(Mutex::new((0u64, 0u64, 0u64)));
+    let sampler = {
+        let (stop, peaks) = (stop.clone(), peaks.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let (own, kids) = rss_kb();
+                let mut p = peaks.lock().unwrap();
+                p.0 = p.0.max(own + kids);
+                p.1 = p.1.max(kids);
+                p.2 = p.2.max(own);
+                drop(p);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        })
+    };
+    let backend = Arc::new(RealNotes {
+        binary: binary.clone(),
+        model: model.clone(),
+        segments: notes_planted::segments(),
+        strategy,
+        out: Mutex::new(None),
+    });
+    let jobs = SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).expect("notes worker");
+    let started = Instant::now();
+    assert!(jobs.submit(job));
+    let end = jobs.wait_for(job, Duration::from_secs(30 * 60)).expect("a notes status");
+    let wall = started.elapsed();
+    stop.store(true, Ordering::SeqCst);
+    sampler.join().unwrap();
+    assert_eq!(end.phase, NotesPhase::Ready, "notes job {job} ended {:?}: {:?}", end.phase, end.reason);
+    let summary = backend.out.lock().unwrap().clone().expect("a stored summary");
+    let scores = score(&summary);
+    let (peak_total_kb, peak_sidecar_kb, peak_host_kb) = *peaks.lock().unwrap();
+    ArmRun { summary, scores, wall_s: wall.as_secs_f64(), peak_total_kb, peak_sidecar_kb, peak_host_kb }
+}
+
+/// The table header docs/decisions/notes-strategy-2026-10.md and
+/// docs/BUDGETS.md carry; every arm prints one row under it.
+const ARM_TABLE_HEADER: &str = "| Arm | Action recall | Action precision | Decision recall | Owner accuracy | Summary 4-gram verbatim | Cross-section dups | Max items per segment | Wall s | Peak RSS MB |";
+
+fn arm_row(arm: &str, r: &ArmRun) -> String {
+    let sc = &r.scores;
+    format!(
+        "| {arm} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {} | {} | {:.1} | {:.1} |",
+        sc.action_recall,
+        sc.action_precision,
+        sc.decision_recall,
+        sc.owner_ok,
+        sc.verbatim,
+        sc.duplicates,
+        sc.max_items_per_segment,
+        r.wall_s,
+        r.peak_total_kb as f64 / 1024.0,
+    )
+}
+
+#[test]
+fn every_arm_row_has_the_table_shape() {
+    let r = ArmRun {
+        summary: perfect(),
+        scores: score(&perfect()),
+        wall_s: 12.0,
+        peak_total_kb: 1024 * 900,
+        peak_sidecar_kb: 0,
+        peak_host_kb: 0,
+    };
+    let row = arm_row("E", &r);
+    assert!(row.starts_with("| E | "), "{row}");
+    assert_eq!(row.matches('|').count(), ARM_TABLE_HEADER.matches('|').count(), "{row}");
+    assert!(row.contains("| 900.0 |"), "{row}");
 }
 
 #[test]
@@ -423,63 +511,68 @@ fn real_notes_model_meets_the_summary_recall_gates() {
         return;
     };
 
-    // Peak RSS of this process (the app's stand-in) plus the sidecar, sampled
-    // every 200 ms for the whole job.
-    let stop = Arc::new(AtomicBool::new(false));
-    let peaks = Arc::new(Mutex::new((0u64, 0u64, 0u64)));
-    let sampler = {
-        let (stop, peaks) = (stop.clone(), peaks.clone());
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::SeqCst) {
-                let (own, kids) = rss_kb();
-                let mut p = peaks.lock().unwrap();
-                p.0 = p.0.max(own + kids);
-                p.1 = p.1.max(kids);
-                p.2 = p.2.max(own);
-                drop(p);
-                std::thread::sleep(Duration::from_millis(200));
-            }
-        })
-    };
+    // yap-audit-notes-strategy: every arm on the same planted fixture. Arm C
+    // is arm E with a 3B model file, measured only, and only when the eval
+    // is handed one (YAP_EVAL_ARM_C_MODEL); it must stay <= 2.2 GB peak.
+    let mut arms: Vec<(&str, NotesStrategy, PathBuf)> = vec![
+        ("A", NotesStrategy::A, model.clone()),
+        ("B", NotesStrategy::B, model.clone()),
+        ("E", NotesStrategy::E, model.clone()),
+    ];
+    match std::env::var_os("YAP_EVAL_ARM_C_MODEL").map(PathBuf::from) {
+        Some(c) if c.is_file() => arms.push(("C", NotesStrategy::E, c)),
+        Some(c) => eprintln!("ARM C SKIPPED: YAP_EVAL_ARM_C_MODEL={c:?} is not a file"),
+        None => eprintln!("ARM C SKIPPED: set YAP_EVAL_ARM_C_MODEL to a Qwen2.5-3B q4 GGUF to measure it"),
+    }
 
-    let backend = Arc::new(RealNotes { binary, model, segments: notes_planted::segments(), out: Mutex::new(None) });
-    let jobs = SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).expect("notes worker");
-    let started = Instant::now();
-    assert!(jobs.submit("nt4-planted"));
-    let end = jobs.wait_for("nt4-planted", Duration::from_secs(30 * 60)).expect("a notes status");
-    let wall = started.elapsed();
-    stop.store(true, Ordering::SeqCst);
-    sampler.join().unwrap();
-    assert_eq!(end.phase, NotesPhase::Ready, "notes job ended {:?}: {:?}", end.phase, end.reason);
-    let s = backend.out.lock().unwrap().clone().expect("a stored summary");
-    let sc = score(&s);
-    let (peak_total, peak_sidecar, peak_own) = *peaks.lock().unwrap();
-
-    println!("{}", s.markdown);
-    println!(
-        "NT4-EVAL model={} wall_s={:.1} chunks={} actions={} action_recall={:.2} explicit_recall={:.2} implicit_recall={:.2} late_recall={:.2} action_precision={:.2} distractors_filed={} decision_recall={:.2} verbatim={:.2} duplicates={} max_items_per_segment={} owner_ok={:.2} owner_right={} owner_blank={} owner_wrong={} peak_rss_mb={:.0} peak_sidecar_mb={:.0} peak_host_mb={:.0}",
-        s.model,
-        wall.as_secs_f64(),
-        s.chunks,
-        sc.actions,
-        sc.action_recall,
-        sc.explicit_recall,
-        sc.implicit_recall,
-        sc.late_recall,
-        sc.action_precision,
-        sc.distractors_filed,
-        sc.decision_recall,
-        sc.verbatim,
-        sc.duplicates,
-        sc.max_items_per_segment,
-        sc.owner_ok,
-        sc.owner_right,
-        sc.owner_blank,
-        sc.owner_wrong,
-        peak_total as f64 / 1024.0,
-        peak_sidecar as f64 / 1024.0,
-        peak_own as f64 / 1024.0,
-    );
-    let failures = gate_failures(&sc);
-    assert!(failures.is_empty(), "summary recall gates failed: {failures:?}");
+    let mut rows = Vec::new();
+    let mut shipped: Option<ArmRun> = None;
+    for (label, strategy, arm_model) in arms {
+        let r = run_arm(&binary, &arm_model, strategy, &format!("nt4-planted-{label}"));
+        let sc = &r.scores;
+        println!("{}", r.summary.markdown);
+        println!(
+            "NT4-EVAL arm={label} model={} wall_s={:.1} chunks={} actions={} action_recall={:.2} explicit_recall={:.2} implicit_recall={:.2} late_recall={:.2} action_precision={:.2} distractors_filed={} decision_recall={:.2} verbatim={:.2} duplicates={} max_items_per_segment={} owner_ok={:.2} owner_right={} owner_blank={} owner_wrong={} peak_rss_mb={:.0} peak_sidecar_mb={:.0} peak_host_mb={:.0}",
+            r.summary.model,
+            r.wall_s,
+            r.summary.chunks,
+            sc.actions,
+            sc.action_recall,
+            sc.explicit_recall,
+            sc.implicit_recall,
+            sc.late_recall,
+            sc.action_precision,
+            sc.distractors_filed,
+            sc.decision_recall,
+            sc.verbatim,
+            sc.duplicates,
+            sc.max_items_per_segment,
+            sc.owner_ok,
+            sc.owner_right,
+            sc.owner_blank,
+            sc.owner_wrong,
+            r.peak_total_kb as f64 / 1024.0,
+            r.peak_sidecar_kb as f64 / 1024.0,
+            r.peak_host_kb as f64 / 1024.0,
+        );
+        if label == "C" && r.peak_total_kb as f64 / 1024.0 / 1024.0 > 2.2 {
+            eprintln!("ARM C over the 2.2 GB ceiling: {:.2} GB", r.peak_total_kb as f64 / 1024.0 / 1024.0);
+        }
+        rows.push(arm_row(label, &r));
+        if label != "C" && strategy == NOTES_STRATEGY {
+            shipped = Some(r);
+        }
+    }
+    // One numeric table row per arm, ready to paste into
+    // docs/decisions/notes-strategy-2026-10.md and docs/BUDGETS.md.
+    println!("NOTES-ARMS-TABLE");
+    println!("{ARM_TABLE_HEADER}");
+    println!("|---|---|---|---|---|---|---|---|---|---|");
+    for row in &rows {
+        println!("{row}");
+    }
+    // The gates bind the SHIPPED arm; the others are measured, not gated.
+    let shipped = shipped.expect("the shipped arm ran");
+    let failures = gate_failures(&shipped.scores);
+    assert!(failures.is_empty(), "summary recall gates failed for arm {}: {failures:?}", NOTES_STRATEGY.tag());
 }
