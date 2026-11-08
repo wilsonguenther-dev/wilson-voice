@@ -73,38 +73,6 @@ impl NotesPhase {
     pub fn is_active(self) -> bool {
         matches!(self, Self::Queued | Self::PreparingNotes | Self::Summarizing)
     }
-    /// yap-1107-pill-writing-notes-always-clears — the job is over (ready,
-    /// failed or cancelled): the pill must hear it, row or no row.
-    pub fn is_terminal(self) -> bool {
-        !self.is_active()
-    }
-}
-
-/// yap-1107-pill-writing-notes-always-clears — the `meeting:progress` state
-/// `delete_meeting` emits for the id it removed (the pill's
-/// `MEETING_DELETED_STATE` in `pill/meeting.ts`): any pill phase about that
-/// meeting clears.
-pub const MEETING_DELETED_STATE: &str = "deleted";
-
-/// yap-1107-pill-writing-notes-always-clears — the reason a notes job ends
-/// with when the transcript changed (or is being rebuilt) under it. The worker
-/// queues the job ONCE more (it waits for the transcription to go idle in
-/// [`wait_for_idle`]); a second change fails honestly with this sentence, which
-/// promises nothing the code does not do.
-pub const TRANSCRIPT_REBUILDING: &str =
-    "the transcript changed while the notes were being written. Press Retry notes to write them again.";
-
-/// yap-1107-pill-writing-notes-always-clears — the durations a notes progress
-/// event carries: the meeting row's `(processed_through_seconds,
-/// duration_seconds)` when the row exists; zeros for a TERMINAL phase whose row
-/// is gone (a delete raced the job — the pill still has to hear the end);
-/// `None` (skip the event) only for an active phase about a vanished meeting.
-pub fn progress_durations(phase: NotesPhase, row: Option<(f64, f64)>) -> Option<(f64, f64)> {
-    match row {
-        Some(d) => Some(d),
-        None if phase.is_terminal() => Some((0.0, 0.0)),
-        None => None,
-    }
 }
 
 /// What the card shows for one meeting's notes.
@@ -315,10 +283,6 @@ struct Queue {
     /// each one again the moment that job ends, so the notes are rebuilt from
     /// the finished transcript instead of being lost (or kept stale).
     rerun: std::collections::HashSet<String>,
-    /// yap-1107-pill-writing-notes-always-clears: meetings already queued
-    /// once more after a [`TRANSCRIPT_REBUILDING`] failure. A second one fails
-    /// for real (Retry), so a transcript that keeps changing cannot loop.
-    rebuild_retried: std::collections::HashSet<String>,
 }
 
 struct Inner {
@@ -372,7 +336,6 @@ impl SummaryJobs {
                 running: None,
                 status: HashMap::new(),
                 rerun: std::collections::HashSet::new(),
-                rebuild_retried: std::collections::HashSet::new(),
             }),
             cv: Condvar::new(),
             backend,
@@ -559,8 +522,6 @@ fn worker_loop(inner: &Arc<Inner>) {
             // Fix round 4 (independent B1): the transcript changed under this
             // job, so it was cancelled and stored nothing; queue it again over
             // the finished transcript, in the same lock as the slot is cleared.
-            let rebuilt = end.phase == NotesPhase::Failed
-                && end.reason.as_deref() == Some(TRANSCRIPT_REBUILDING);
             let end = if q.rerun.remove(&id) {
                 q.pending.push_back(id.clone());
                 NotesStatus {
@@ -569,24 +530,7 @@ fn worker_loop(inner: &Arc<Inner>) {
                     percent: 0,
                     reason: None,
                 }
-            } else if rebuilt && q.rebuild_retried.insert(id.clone()) {
-                // yap-1107: the transcript changed under the notes; queue them
-                // once more over the settled transcript (the job waits in
-                // `wait_for_idle` while a transcription runs).
-                log::info!("summary rebuild_requeue meeting={id}");
-                q.pending.push_back(id.clone());
-                NotesStatus {
-                    id: id.clone(),
-                    phase: NotesPhase::Queued,
-                    percent: 0,
-                    reason: None,
-                }
             } else {
-                if !rebuilt {
-                    q.rebuild_retried.remove(&id);
-                } else {
-                    log::warn!("summary rebuild_failed meeting={id} — transcript changed twice");
-                }
                 end
             };
             q.status.insert(end.id.clone(), end.clone());
@@ -953,64 +897,6 @@ mod tests {
             assert!(Instant::now() < deadline, "{id} never reached {phase:?}");
             std::thread::sleep(Duration::from_millis(5));
         }
-    }
-
-    // yap-1107-pill-writing-notes-always-clears — terminal phases are emitted
-    // even when the meeting row is gone (zero durations); only an ACTIVE phase
-    // about a vanished meeting is skipped.
-    #[test]
-    fn terminal_phases_emit_even_without_the_meeting_row() {
-        for phase in [NotesPhase::Ready, NotesPhase::Failed, NotesPhase::Cancelled] {
-            assert!(phase.is_terminal());
-            assert_eq!(progress_durations(phase, None), Some((0.0, 0.0)), "{phase:?}");
-            assert_eq!(progress_durations(phase, Some((12.0, 30.0))), Some((12.0, 30.0)));
-        }
-        for phase in [NotesPhase::Queued, NotesPhase::PreparingNotes, NotesPhase::Summarizing] {
-            assert!(!phase.is_terminal());
-            assert_eq!(progress_durations(phase, None), None, "{phase:?}");
-            assert_eq!(progress_durations(phase, Some((1.0, 2.0))), Some((1.0, 2.0)));
-        }
-    }
-
-    // yap-1107 — Wilson's 22:06Z log: cloud notes for fbd4eea9 succeeded, but
-    // a meeting delete landed mid-job and the store check said "transcript
-    // changed under its notes" => the job ended notes_failed with a sentence
-    // promising a rewrite nothing did. Now the worker queues it ONCE more and
-    // the notes land: the last status the pill hears is terminal (ready).
-    #[test]
-    fn a_transcript_change_mid_notes_requeues_once_and_ends_terminal() {
-        let stub = Stub::new(true);
-        *stub.sum_fail.lock().unwrap() =
-            Some(NotesError::Summary(TRANSCRIPT_REBUILDING.to_string()));
-        let (j, seen) = jobs(&stub);
-        assert!(j.submit("fbd4eea9"));
-        wait_phase(&j, "fbd4eea9", NotesPhase::Ready);
-        assert_eq!(stub.calls.load(Ordering::SeqCst), 2, "one retry, then the notes");
-        assert_eq!(stub.stored.lock().unwrap().as_slice(), ["fbd4eea9".to_string()]);
-        let seen = seen.lock().unwrap();
-        assert!(seen.iter().all(|s| s.phase != NotesPhase::Failed), "no false failure: {seen:?}");
-        assert_eq!(seen.last().map(|s| s.phase), Some(NotesPhase::Ready));
-        assert!(seen.last().map(|s| s.phase.is_terminal()).unwrap_or(false));
-    }
-
-    // yap-1107 — deleting a meeting with an active notes job cancels it (the
-    // delete path calls `cancel`), and the end status the reporter emits is
-    // terminal, which `progress_durations` lets through with the row gone.
-    #[test]
-    fn deleting_a_meeting_mid_notes_cancels_its_job_and_reports_terminal() {
-        let stub = Stub::new(true);
-        let tx = stub.gated();
-        let (j, seen) = jobs(&stub);
-        assert!(j.submit("m-del"));
-        wait_phase(&j, "m-del", NotesPhase::Summarizing);
-        assert!(j.cancel("m-del"), "a running job is cancelled by the delete");
-        let _ = tx.send(());
-        wait_phase(&j, "m-del", NotesPhase::Cancelled);
-        assert!(!j.is_busy("m-del"));
-        let last = seen.lock().unwrap().last().cloned().expect("a status was reported");
-        assert_eq!(last.phase, NotesPhase::Cancelled);
-        assert_eq!(progress_durations(last.phase, None), Some((0.0, 0.0)));
-        assert!(stub.stored.lock().unwrap().is_empty(), "a cancel stores nothing");
     }
 
     // B3 — two triggers for one meeting (the live hook and the launch resume)
