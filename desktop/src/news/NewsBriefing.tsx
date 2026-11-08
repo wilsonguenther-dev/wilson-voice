@@ -13,8 +13,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppCtx } from "../appShell";
-import { FRIENDS } from "../sprites/art";
-import { domBuffer, paintCrisp } from "../sprites/crisp";
+import { FRIENDS, H } from "../sprites/art";
+import { crispPlan, domBuffer } from "../sprites/crisp";
 import { cadenceOf, topicLabel, loadNews, type NewsCadence, type NewsRefreshOutcome, type NewsView } from "./newsPrefs";
 import {
   QUOTE_CHECK_MS,
@@ -44,26 +44,94 @@ export type BriefingPhase = "loading" | "ready" | "empty" | "error";
 
 /**
  * The pair, drawn at a whole-number scale (2x on the design page).
- * yap-1107-parity-news: the approved card draws Cinder + Yappy as ONE 104x44
- * art canvas shown at 208x88; two 104x88 boxes side by side, no gap (App.css
- * .news-briefing-pair), give the same 208x88 footprint, so the header row is
- * as tall as the page's.
+ * yap-1107-parity-news (batch-2 bounce: "duo sprite 104 vs 208"): the approved
+ * card (news.html §02 #duo) draws Cinder + Yappy as ONE 104x44 art canvas —
+ * Yappy stamped at (2,6), Cinder at (54,2), the paper between them at (44,30)
+ * — shown at 208x88 CSS px. Two separate 104x88 canvases measured as two
+ * 104-wide sprites against the page's one 208-wide sprite, so the pair is now
+ * the same single canvas, composited exactly as the page composites it.
  */
-export const PAIR_BOX = { w: 104, h: 88 };
+export const DUO_ART = { w: 104, h: 44 } as const;
+export const DUO_SCALE = 2;
+export const PAIR_BOX = { w: DUO_ART.w * DUO_SCALE, h: DUO_ART.h * DUO_SCALE };
+/** Where each friend's art box sits inside the duo art canvas (art px, news.html §02). */
+export const DUO_AT = { yappy: { x: 2, y: 6 }, cinder: { x: 54, y: 2 } } as const;
+/** The folded paper Cinder hands over: sprite-art pixels, copied from news.html §02. */
+const DUO_PAPER: readonly { fill: string; x: number; y: number; w: number; h: number }[] = [
+  { fill: "#c9c3ad", x: 44, y: 30, w: 12, h: 9 },
+  { fill: "#fffdf5", x: 45, y: 30, w: 10, h: 8 },
+  { fill: "#4a4f5c", x: 46, y: 32, w: 8, h: 1 },
+  { fill: "#4a4f5c", x: 46, y: 34, w: 6, h: 1 },
+];
+/** How often the speaker's mouth opens and closes while it has the turn (ms). */
+const DUO_MOUTH_MS = 250;
 
-function PairSprite({ name, talking = false }: { name: "cinder" | "yappy"; talking?: boolean }) {
+/** Paint the duo art canvas into `canvas` at the 208x88 box. Returns false (and logs once) on failure. */
+export function paintDuo(canvas: HTMLCanvasElement, talking: "cinder" | "yappy" | null, mouthOpen: boolean, dprRaw: number | undefined | null): boolean {
+  try {
+    const plan = crispPlan(PAIR_BOX.w, PAIR_BOX.h, DUO_ART.w, DUO_ART.h, dprRaw);
+    if (canvas.width !== plan.backingW) canvas.width = plan.backingW;
+    if (canvas.height !== plan.backingH) canvas.height = plan.backingH;
+    canvas.style.width = `${plan.cssW}px`;
+    canvas.style.height = `${plan.cssH}px`;
+    canvas.style.imageRendering = "pixelated";
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      console.warn("sprites paint-failed name=news-duo reason=no-2d-context");
+      return false;
+    }
+    const art = domBuffer(DUO_ART.w, DUO_ART.h);
+    const actx = art.image.getContext("2d");
+    if (!actx) throw new Error("no-2d-context");
+    actx.imageSmoothingEnabled = false;
+    for (const name of ["yappy", "cinder"] as const) {
+      const sprite = FRIENDS[name];
+      const buf = domBuffer(sprite.w, sprite.h);
+      const open = talking === name && mouthOpen;
+      sprite.draw(buf.ctx, H(buf.ctx), name === "yappy" && open ? 2 : 0, name === "cinder" ? { talk: open, t: 0 } : undefined);
+      actx.drawImage(buf.image, DUO_AT[name].x, DUO_AT[name].y);
+    }
+    for (const r of DUO_PAPER) {
+      actx.fillStyle = r.fill;
+      actx.fillRect(r.x, r.y, r.w, r.h);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, plan.backingW, plan.backingH);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(art.image, 0, 0, DUO_ART.w, DUO_ART.h, plan.dx, plan.dy, DUO_ART.w * plan.scale, DUO_ART.h * plan.scale);
+    return true;
+  } catch (e) {
+    console.warn(`sprites paint-failed name=news-duo reason=${e instanceof Error ? e.name : "unknown"}`);
+    return false;
+  }
+}
+
+function PairSprite({ talking = null }: { talking?: "cinder" | "yappy" | null }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    paintCrisp<HTMLCanvasElement>(c, FRIENDS[name], 0, undefined, PAIR_BOX, window.devicePixelRatio, domBuffer, name);
-  }, [name]);
+    let open = talking !== null;
+    paintDuo(c, talking, open, window.devicePixelRatio);
+    // Whoever has the turn talks (mouth open/closed, whole frames); reduce
+    // motion keeps the pair still and only the words change.
+    if (talking === null || prefersReducedMotion()) return;
+    const id = window.setInterval(() => {
+      open = !open;
+      paintDuo(c, talking, open, window.devicePixelRatio);
+    }, DUO_MOUTH_MS);
+    return () => window.clearInterval(id);
+  }, [talking]);
   return (
     <canvas
       ref={ref}
-      className={talking ? "news-briefing-sprite news-briefing-sprite--talking" : "news-briefing-sprite"}
-      data-news-sprite={name}
-      data-news-talking={talking ? "yes" : undefined}
+      className="news-briefing-sprite"
+      width={PAIR_BOX.w}
+      height={PAIR_BOX.h}
+      style={{ width: PAIR_BOX.w, height: PAIR_BOX.h }}
+      data-news-sprite="duo"
+      data-news-pair="cinder yappy"
+      data-news-talking={talking ?? undefined}
       aria-hidden="true"
     />
   );
@@ -134,8 +202,7 @@ export function NewsBriefingView({
     <section className="card news-briefing" data-news-briefing={phase} aria-labelledby="news-briefing-title" aria-busy={phase === "loading"}>
       <header className="news-briefing-head">
         <div className="news-briefing-pair">
-          <PairSprite name="cinder" talking={turn?.who === "cinder"} />
-          <PairSprite name="yappy" talking={turn?.who === "yappy"} />
+          <PairSprite talking={turn ? turn.who : null} />
         </div>
         <div className="news-briefing-says">
           {/* yap-1107-parity-news — the approved card draws no title; the

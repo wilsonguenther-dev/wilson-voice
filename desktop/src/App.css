@@ -4296,24 +4296,11 @@ button.primary.big {
 .news-briefing-sprite {
   image-rendering: pixelated;
 }
-/* yap-1106-news-duo-delivery — whoever has the turn hops (whole pixels, stepped);
-   reduce motion keeps the pair still side by side and only the words change. */
-.news-briefing-sprite--talking {
-  animation: news-duo-hop 0.5s steps(2, jump-none) infinite alternate;
-}
-@keyframes news-duo-hop {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-2px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .news-briefing-sprite--talking {
-    animation: none;
-  }
-}
+/* yap-1106-news-duo-delivery — whoever has the turn talks: yap-1107-parity-news
+   draws the pair as ONE duo canvas (news.html §02 #duo), so the speaker's mouth
+   opens and closes in whole frames inside it (NewsBriefing.tsx PairSprite)
+   instead of a hop that would lift both friends; reduce motion keeps the pair
+   still and only the words change. */
 .news-briefing-says {
   display: flex;
   flex-direction: column;
@@ -4452,6 +4439,13 @@ button.primary.big {
   /* the page's .note inherits body 15px/1.55: two lines at 20.15 px make the
      row 76.17 px tall (bounced at 5.5% off with the app's own line height) */
   line-height: 1.55;
+  /* batch-2 bounce (heading row 72 vs 76): the page sets this lede in IBM Plex
+     Sans, which wraps it to two lines in the 602 px column; the app's native SF
+     is narrower and fit it on one, so the row fell back to Yappy's 72 px. A
+     measure of 38em (494 px) breaks it into the page's two lines in either
+     face, making the row 29.9 + 6 + 2 x 20.15 = 76.2 px as on the page. */
+  max-width: 38em;
+  text-wrap: pretty;
   color: var(--news-ink-2);
 }
 .news-interests--onboarding {
@@ -4520,7 +4514,6 @@ button.primary.big {
   background: transparent;
   font-size: 14px;
   color: var(--news-ink);
-  outline: none;
 }
 .news-field-input::placeholder {
   color: var(--news-ink-3);
@@ -4663,7 +4656,18 @@ button.primary.big {
 }
 .news-briefing .news-briefing-foot p {
   font: 400 12px var(--font-mono);
+  /* the page's .meta inherits body line-height 1.55: 18.6 px, so the wrapped
+     cadence line makes .bchips 26 + 6 + 18.6 = 50.6 px tall (batch-2 bounce:
+     topics 26 vs 50.6) */
+  line-height: 1.55;
   color: var(--news-ink-3);
+}
+/* "Hide for today" is part of the cadence line on the page (.meta text): same
+   face, size and colour; it stays a real button with the global focus ring. */
+.news-briefing .news-briefing-foot p button.link {
+  padding: 0;
+  font: inherit;
+  color: inherit;
 }
 @media (max-width: 720px) {
   .news-briefing .news-briefing-stories {

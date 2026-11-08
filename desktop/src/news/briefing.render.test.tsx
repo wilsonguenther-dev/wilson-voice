@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { NewsBriefingView, PAIR_BOX, cachedBriefing, composeBriefing } from "./NewsBriefing";
+import { DUO_ART, DUO_AT, DUO_SCALE, NewsBriefingView, PAIR_BOX, cachedBriefing, composeBriefing, paintDuo } from "./NewsBriefing";
 import { buildBriefing, quietNow, type CachedStory } from "./briefing";
 import { duoAt, duoTurns } from "./duo";
 
@@ -65,8 +65,10 @@ describe("yap-1106-news-home-briefing card", () => {
 
   it("home_briefing_card_has_the_pair_header_topics_and_hide_for_today", () => {
     const html = render();
-    expect(html).toContain('data-news-sprite="cinder"');
-    expect(html).toContain('data-news-sprite="yappy"');
+    // One duo canvas holds both friends, as on the approved page (news.html §02 #duo).
+    expect(html).toContain('data-news-sprite="duo"');
+    expect(html).toContain('data-news-pair="cinder yappy"');
+    expect(html.match(/<canvas/g)?.length).toBe(1);
     expect(html).toContain('data-news-says="cinder"');
     expect(html).toContain("Updated twice a day");
     expect(html).toContain("Hide for today");
@@ -108,7 +110,7 @@ describe("yap-1106-news-duo-delivery card", () => {
     expect(first).toContain('data-news-says="cinder"');
     expect(first).toContain('data-news-turn="0"');
     expect(first).toContain("Dev news!");
-    expect(first).toContain('data-news-talking="yes"');
+    expect(first).toContain('data-news-talking="cinder"');
     expect(first).toContain('data-news-story-current="yes"');
     expect(first).toContain("story 1 of 3");
     const second = render({ duo: { frame: { ...duoAt(T0, T0, true, turns.length), turn: 1, speaker: "yappy" }, turns } });
@@ -187,10 +189,28 @@ describe("fix-l3b3-2 briefing makes no cloud call when quiet", () => {
 });
 
 describe("yap-1107-parity-news — the pair matches the approved card's duo canvas", () => {
-  it("two pair boxes side by side, no gap, make the page's 208x88 footprint at a whole-number scale", () => {
-    // news.html §02 draws Cinder + Yappy as one 104x44 art canvas shown at 208x88.
-    expect(PAIR_BOX.w * 2).toBe(208);
-    expect(PAIR_BOX.h).toBe(88);
-    expect(Number.isInteger(PAIR_BOX.w / 52) && Number.isInteger(PAIR_BOX.h / 44)).toBe(true);
+  it("one duo canvas, 104x44 art shown at 208x88, a whole-number scale", () => {
+    // news.html §02: var DW = 104, DH = 44; dv.style.width = DW * 2 + "px".
+    expect(DUO_ART).toEqual({ w: 104, h: 44 });
+    expect(DUO_SCALE).toBe(2);
+    expect(PAIR_BOX).toEqual({ w: 208, h: 88 });
+    expect(Number.isInteger(PAIR_BOX.w / DUO_ART.w) && Number.isInteger(PAIR_BOX.h / DUO_ART.h)).toBe(true);
+  });
+
+  it("friends stand where the page stamps them, fully inside the art canvas", () => {
+    // FR.stamp(o, "yappy", 2, 6, ...); FR.stamp(o, "cinder", 54, 2, ...) on a 104x44 canvas; art boxes 40x36 and 46x42.
+    expect(DUO_AT).toEqual({ yappy: { x: 2, y: 6 }, cinder: { x: 54, y: 2 } });
+    expect(DUO_AT.yappy.x + 40 <= DUO_ART.w && DUO_AT.yappy.y + 36 <= DUO_ART.h).toBe(true);
+    expect(DUO_AT.cinder.x + 46 <= DUO_ART.w && DUO_AT.cinder.y + 42 <= DUO_ART.h).toBe(true);
+  });
+
+  it("paintDuo fails soft (false + one log line) when the canvas has no 2d context", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fake = { width: 0, height: 0, style: {} as Record<string, string>, getContext: () => null } as unknown as HTMLCanvasElement;
+    expect(paintDuo(fake, null, false, 2)).toBe(false);
+    expect(fake.width).toBe(416);
+    expect(fake.height).toBe(176);
+    expect(warn).toHaveBeenCalledWith("sprites paint-failed name=news-duo reason=no-2d-context");
+    warn.mockRestore();
   });
 });
