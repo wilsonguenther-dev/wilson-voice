@@ -26,8 +26,9 @@ const FIXTURE: &[&str] = &[
     "Is the pilot price still open for the second semester?",
 ];
 
-/// The planted re-transcript: lines 1-3 copied word for word.
-const VERBATIM: &str = "Jeisil will send the signed contract to Liberty by Friday. Wilson to book the onboarding call with the Liberty team next week. We decided the pilot starts with two hundred students.";
+/// The planted re-transcript: lines 1-4 copied word for word (43 words, a
+/// paragraph past `VERBATIM_MIN_WORDS`).
+const VERBATIM: &str = "Jeisil will send the signed contract to Liberty by Friday. Wilson to book the onboarding call with the Liberty team next week. We decided the pilot starts with two hundred students. Is the pilot price still open for the second semester?";
 
 /// A real summary of the same meeting: its words, not its sentences.
 const CLEAN: &str = "The Liberty University pilot starts with two hundred students and Jeisil will send the signed contract.";

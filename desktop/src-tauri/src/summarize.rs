@@ -149,8 +149,10 @@ pub const VERBATIM_NARRATIVE_MAX: f64 = 0.6;
 /// is a paragraph of copied speech; one sentence that restates the meeting's
 /// one line of substance (a stated price, a single decision) is a quote, and
 /// 4-gram containment over fewer than ~20 4-grams is noise, not evidence.
-/// The audit's re-transcripts were 90-200 words; the planted fixture is 33.
-pub const VERBATIM_MIN_WORDS: usize = 25;
+/// The audit's re-transcripts were 90-200 words; the planted fixture is 43.
+/// A short summary written from verbatim key points (three stated facts, ~30
+/// words, tests/summary_round4.rs) is a summary, not a re-transcript.
+pub const VERBATIM_MIN_WORDS: usize = 40;
 
 /// The Summary section, word for word, when every narrative was refused as a
 /// re-transcript. Said out loud rather than left blank: a missing paragraph
@@ -2481,12 +2483,31 @@ pub fn decision_has_marker(text: &str, cited_line: &str) -> bool {
 /// its cited line's) or an explicit question shape ("whether ...", "open
 /// question", "still unclear").
 pub fn question_is_open(text: &str, cited_line: &str) -> bool {
-    let lower = text.trim().to_lowercase();
+    let lower = strip_speaker_tag(text).trim().to_lowercase();
     text.contains('?')
         || cited_line.trim_end().ends_with('?')
+        || starts_interrogative(&lower)
         || is_strong_question(&lower)
         || is_weak_question(&lower)
         || open_about_decision(&lower)
+}
+
+/// A question asked without its "?" ("can somebody confirm the review
+/// moved", "who owns the escalation path"): the first word is an
+/// interrogative. ASR rarely writes the mark; the shape is the evidence.
+/// ("will" is left out: "Will send the deck" names a person.)
+fn starts_interrogative(lower: &str) -> bool {
+    let first = lower
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric());
+    matches!(
+        first,
+        "who" | "what" | "when" | "where" | "why" | "how" | "which" | "can" | "could"
+            | "would" | "should" | "shall" | "is" | "are" | "do" | "does" | "did" | "has"
+            | "have" | "was" | "were"
+    )
 }
 
 /// DO 4 — how strongly an item commits someone; the two strongest per seg
@@ -2650,6 +2671,16 @@ pub fn attribute_owners(
     // The same numbering `transcript_lines_with` gave the lines.
     let spoken: Vec<&MeetingSegment> = segments.iter().filter(|s| !s.text.trim().is_empty()).collect();
     let single_voice = mic_is_single_voice(segments);
+    // The label the far-side (system) track renders under in THIS meeting.
+    let far_label = lines
+        .iter()
+        .zip(spoken.iter())
+        .filter(|(_, seg)| seg.track != MIC_TRACK)
+        .find_map(|(l, _)| match &l.speaker {
+            Some(SegmentSpeaker::Anonymous(_)) => l.speaker.as_ref().map(|s| s.label().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "Them".to_string());
     let (mut echo_them, mut blank, mut shared) = (0usize, 0usize, 0usize);
     for (section, list) in [actions, decisions, questions].into_iter().enumerate() {
         for item in list.iter_mut() {
@@ -2662,10 +2693,15 @@ pub fn attribute_owners(
             let Some(seg) = spoken.get(idx) else { continue };
             match echo_owner(seg, segments) {
                 TrackOwner::Them => {
+                    // A far-side line already carries the far side's own
+                    // label ("Call", "Them"): kept as it is. Only a mic line
+                    // that echoes the far side is moved over, under that
+                    // same label so one meeting never names the far side
+                    // two ways.
                     if seg.track == MIC_TRACK {
                         echo_them += 1;
+                        item.speaker = Some(far_label.clone());
                     }
-                    item.speaker = Some("Them".to_string());
                 }
                 TrackOwner::Unclear => {
                     blank += 1;
