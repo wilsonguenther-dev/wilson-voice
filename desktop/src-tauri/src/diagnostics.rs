@@ -301,6 +301,33 @@ pub fn bump(module: &str, counter: &str) {
     record_value(format!("{module}.{counter}"), 1);
 }
 
+/// yap-1107-hotkey-exclusive-to-yap — one key=value token: whitespace in a
+/// chord label or bundle id would split the field, and an absent front app is
+/// written `unknown`, never left empty.
+pub fn swallow_token(value: Option<&str>) -> String {
+    let v: String = value
+        .unwrap_or("")
+        .chars()
+        .map(|c| if c.is_whitespace() { '_' } else { c })
+        .collect();
+    if v.is_empty() {
+        "unknown".to_string()
+    } else {
+        v
+    }
+}
+
+/// One `hotkey swallowed` line per swallowed chord phase: the chord label, the
+/// phase and the front app's bundle id — never the key text beyond the label.
+/// `by` says who kept it from the app (`tap` = the active swallow tap,
+/// `carbon` = `RegisterEventHotKey`). Counted as `hotkey.swallowed`.
+pub fn record_hotkey_swallowed(chord: &str, phase: &str, front: Option<&str>, by: &str) {
+    bump("hotkey", "swallowed");
+    let chord = swallow_token(Some(chord));
+    let front = swallow_token(front);
+    log::info!("hotkey swallowed chord={chord} phase={phase} front={front} by={by}");
+}
+
 /// A named state the health line reads (`insert.path`, `meeting.stage` …).
 pub fn set_state(key: &str, value: impl Into<String>) {
     global().states.insert(key.to_string(), value.into());
@@ -839,6 +866,18 @@ mod tests {
         assert!(s.count >= 2);
         let h = Health::default();
         assert!(health_line(&h).contains("loaded=no"));
+    }
+
+    #[test]
+    fn swallow_tokens_stay_one_field_and_never_empty() {
+        assert_eq!(super::swallow_token(Some("⌃⌥⌘Space")), "⌃⌥⌘Space");
+        assert_eq!(super::swallow_token(Some("fn hold")), "fn_hold");
+        assert_eq!(
+            super::swallow_token(Some("com.apple.TextEdit")),
+            "com.apple.TextEdit"
+        );
+        assert_eq!(super::swallow_token(None), "unknown");
+        assert_eq!(super::swallow_token(Some("")), "unknown");
     }
 
     #[test]
