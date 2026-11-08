@@ -809,7 +809,6 @@ impl ManualLeaseClock {
     }
 }
 
-
 /// YV91 (finding #27): how many times a model load has been ASKED for, and how
 /// many times the idle sweeper's clock has been pushed out. Process-global
 /// counters rather than per-manager state, because the property under test is
