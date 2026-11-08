@@ -95,6 +95,8 @@ DRIVER="$ROOT/scripts/smoke-windowed.mjs"
 # overflow and clipping actually show up.
 # yap-1107-parity-home: a caller may set the sizes (the parity sheets capture Home
 # at 1188x1600, where the main column holds the 3x room and Home down to its end).
+# yap-1107-parity-news — a caller's sizes win (a parity run captures Home at the
+# approved page's 880x760); unset keeps the 980x700 + 720x520 pair.
 export YAP_SMOKE_W1="${YAP_SMOKE_W1:-980}" YAP_SMOKE_H1="${YAP_SMOKE_H1:-700}"
 export YAP_SMOKE_W2="${YAP_SMOKE_W2:-720}" YAP_SMOKE_H2="${YAP_SMOKE_H2:-520}"
 
@@ -130,9 +132,13 @@ case "${1:-}" in
 esac
 
 SHOTS_ROOT="${YAP_SMOKE_SHOTS:-docs/smoke-shots}"
-# yap-1107-parity-home: a caller-named run (YAP_SMOKE_RUN=parity-home-<date>, as
-# the parity integrator steps pass it) is honoured; unset = a timestamped run.
+# yap-1107-parity-news — the batch-4 bounce: this line overwrote a caller's
+# YAP_SMOKE_RUN, so a named parity run landed in a timestamped dir and the
+# sheet found no captures. A caller's name wins; unset keeps the timestamp.
 RUN="${YAP_SMOKE_RUN:-$(date -u +%Y-%m-%dT%H-%M-%SZ)}"
+case "$RUN" in
+  */*|.*|"") echo "smoke-windowed: YAP_SMOKE_RUN must be a plain directory name, got '$RUN'" >&2; exit 2 ;;
+esac
 export YAP_SMOKE_RUN="$RUN" YAP_SMOKE_SHOTS="$SHOTS_ROOT"
 mkdir -p "$SHOTS_ROOT/$RUN"
 

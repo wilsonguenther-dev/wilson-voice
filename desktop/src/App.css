@@ -4653,3 +4653,273 @@ button.primary.big {
   border-radius: var(--radius-pill);
   font-size: 0.8rem;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   yap-1107-parity-news — Yappy News measured against the approved page
+   (design-2026-11-06/news.html). Every number below is read off that page's
+   CSS: §01 .ob (onboarding step), §02 .bcard (Home briefing card). Colours
+   are the --news-* tokens in tokens.css. Declared last so they win over the
+   first-pass news rules above at equal specificity.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* §01 — the onboarding card widens to the page's 760 px sheet and gives its
+   padding to the step's own body and footer, as .ob does. */
+.onboard-card:has(.news-onb) {
+  width: min(var(--news-onb-w), 100%);
+  padding: 0;
+  overflow: hidden;
+  background: var(--news-onb-bg);
+  border-radius: var(--news-onb-radius);
+}
+.onboard-card:has(.news-onb) .onboard-progress {
+  display: none;
+}
+.news-onb-body {
+  padding: 28px 36px 24px;
+  display: grid;
+  gap: 18px;
+  color: var(--news-ink);
+}
+.news-onb-step {
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.news-onb-row {
+  display: grid;
+  grid-template-columns: var(--news-onb-yappy) 1fr;
+  gap: 14px;
+  align-items: center;
+}
+.news-onb-yappy {
+  display: block;
+  image-rendering: pixelated;
+}
+.onboard-step h1.news-onb-title {
+  margin: 0;
+  font: 400 26px/1.15 var(--font-mono);
+  color: var(--news-ink);
+}
+.news-onb-lede {
+  margin: 6px 0 0;
+  font-size: 13px;
+  /* the page's .note inherits body 15px/1.55: two lines at 20.15 px make the
+     row 76.17 px tall (bounced at 5.5% off with the app's own line height) */
+  line-height: 1.55;
+  color: var(--news-ink-2);
+}
+.news-interests--onboarding {
+  margin: 0;
+  gap: 18px;
+}
+.news-interests--onboarding .news-group {
+  gap: 0;
+}
+.news-interests--onboarding .news-chips button.chip {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 17px;
+  border: 1px solid var(--news-line);
+  background: var(--news-chip-bg);
+  font: 500 14px/32px var(--font-body);
+  color: var(--news-ink);
+}
+.news-interests--onboarding .news-chips button.chip.selected {
+  background: var(--news-chip-on-bg);
+  border-color: var(--news-chip-on-bg);
+  color: var(--news-chip-on-ink);
+  font-weight: 500;
+}
+.news-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 38px;
+  margin: 0;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  background: var(--news-field-bg);
+  font-size: 14px;
+  color: var(--news-ink-3);
+}
+.news-field:focus-within {
+  border-color: var(--news-ink-3);
+}
+.news-field[disabled] {
+  opacity: 0.6;
+}
+.news-field-label {
+  flex: none;
+  margin-right: 4px;
+}
+.news-field-token {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  background: var(--news-token-bg);
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink);
+  cursor: pointer;
+}
+.news-field-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  color: var(--news-ink);
+  outline: none;
+}
+.news-field-input::placeholder {
+  color: var(--news-ink-3);
+}
+.news-field-add {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  color: var(--news-ink-3);
+}
+.news-onb-privacy {
+  margin: 0;
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.onboard-actions.news-onb-foot {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 36px;
+  border-top: 1px solid var(--news-line);
+  background: var(--news-onb-foot-bg);
+}
+.news-onb-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  background: var(--news-chip-bg);
+  font: 500 14px/34px var(--font-body);
+  color: var(--news-ink);
+}
+.onboard-actions .news-onb-btn--primary {
+  background: var(--news-chip-on-bg);
+  border-color: var(--news-chip-on-bg);
+  color: var(--news-chip-on-ink);
+}
+.news-onb-btn:disabled {
+  opacity: 0.5;
+}
+
+/* §02 — the briefing card (.bcard): white, 12 px radius, 14 px padding. */
+.card.news-briefing {
+  background: var(--news-card-bg);
+  border: 1px solid var(--news-line);
+  border-radius: 12px;
+  padding: 14px;
+  gap: 12px;
+  color: var(--news-ink);
+}
+.news-briefing .news-briefing-head {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  gap: 14px;
+  align-items: center;
+}
+.news-briefing .news-briefing-pair {
+  gap: 0;
+  align-items: flex-end;
+}
+.news-briefing .news-briefing-says {
+  background: var(--news-say-bg);
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  padding: 8px 11px;
+  font-size: 13px;
+  color: var(--news-ink-2);
+  gap: 0;
+}
+.news-briefing .news-briefing-says b {
+  font-weight: 500;
+  color: var(--news-ink);
+}
+.news-briefing-when {
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.news-briefing .news-briefing-stories {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.news-briefing .news-briefing-story {
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  background: var(--news-story-bg);
+}
+.news-briefing .news-briefing-tag {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font: 400 10px var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--news-red);
+}
+.news-briefing .news-briefing-story h4 {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--news-ink);
+}
+.news-briefing .news-briefing-line {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--news-ink-2);
+}
+.news-briefing .news-briefing-source {
+  font: 400 10px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.news-briefing .news-briefing-foot,
+.news-briefing .news-briefing-topics {
+  gap: 6px;
+}
+.news-briefing .news-briefing-meta {
+  margin-right: 4px;
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.news-briefing .news-briefing-chip {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--news-chip-on-bg);
+  border-radius: 13px;
+  background: var(--news-chip-on-bg);
+  font: 500 12px/24px var(--font-body);
+  color: var(--news-chip-on-ink);
+}
+.news-briefing button.news-briefing-chip--add {
+  border-color: var(--news-line);
+  background: var(--news-chip-bg);
+  color: var(--news-ink);
+}
+.news-briefing .news-briefing-foot p {
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+@media (max-width: 720px) {
+  .news-briefing .news-briefing-stories {
+    grid-template-columns: 1fr;
+  }
+}
