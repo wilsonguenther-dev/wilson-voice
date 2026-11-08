@@ -10368,6 +10368,27 @@ fn news_explain_cloud(
     system: &str,
     user: &str,
 ) -> Result<String, &'static str> {
+    news_cloud_text(
+        app,
+        db,
+        system,
+        user,
+        news::explain::MAX_TOKENS,
+        news::explain::BUDGET,
+    )
+}
+
+/// yap-1107-news-no-off-topic-stories — the shared Yappy News cloud call
+/// (explain lines, story labels): the BYOM route with its cap, breaker and
+/// daily ledger, at the caller's token cap and budget.
+fn news_cloud_text(
+    app: &AppHandle,
+    db: &Database,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    budget_for_job: cloud_route::Budget,
+) -> Result<String, &'static str> {
     let job = cloud_route::Job::Format;
     let mode = cloud_route::CloudMode::load(db);
     let provider = if mode.wants_cloud() {
@@ -10385,7 +10406,7 @@ fn news_explain_cloud(
         today: cloud_today(),
         job,
         model,
-        budget: news::explain::BUDGET,
+        budget: budget_for_job,
         constrained_notes_allowed: false,
     };
     let cancel = summary_jobs::CancelToken::new();
@@ -10407,7 +10428,7 @@ fn news_explain_cloud(
             job,
             system,
             user,
-            news::explain::MAX_TOKENS,
+            max_tokens,
             budget,
             &cancel,
             &mut sink,
@@ -15440,6 +15461,25 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Lightweight setup only — no hotkey register, no second window
+
+            // yap-1107-news-no-off-topic-stories — the news classifier's one
+            // cloud call per refresh rides the same BYOM route as the explain
+            // step (mode, key, cap, breaker, ledger).
+            {
+                let handle = app.handle().clone();
+                news::sources::install_cloud(Box::new(
+                    move |db: &Database, system: &str, user: &str| {
+                        news_cloud_text(
+                            &handle,
+                            db,
+                            system,
+                            user,
+                            news::sources::CLASSIFY_MAX_TOKENS,
+                            news::sources::CLASSIFY_BUDGET,
+                        )
+                    },
+                ));
+            }
 
             // yap-1106-launch-walk — every change in the engine load percentage
             // goes to the pill as an event; the launch walk is drawn from it.
