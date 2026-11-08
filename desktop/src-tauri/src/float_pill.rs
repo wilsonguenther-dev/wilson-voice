@@ -1837,6 +1837,7 @@ pub const PILL_HOVER_OUT_EVENT: &str = "pill-hover-out";
 /// `outer_position`/`primary_monitor` are window-server queries.
 fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
     let mut primary_h = 0.0;
+    let mut geo: Option<((f64, f64), f64)> = None;
     let rect = (|| {
         let origin = w.outer_position().ok()?;
         let mon = w.primary_monitor().ok().flatten()?;
@@ -1846,6 +1847,7 @@ fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
         }
         let primary_height_pts = mon.size().height as f64 / scale;
         primary_h = primary_height_pts;
+        geo = Some(((origin.x as f64, origin.y as f64), scale));
         capsule_screen_rect(
             (origin.x as f64, origin.y as f64),
             scale,
@@ -1858,15 +1860,38 @@ fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
             ),
         )
     })();
-    log_capsule_rect_change(rect, primary_h);
+    log_capsule_rect_change(rect, primary_h, geo);
     set_capsule_screen_rect(rect);
+}
+
+/// yap-1107-pill-click-always-registers — every published hit rect in TOP-LEFT
+/// global screen points (the CGEvent space), in the order the webview sent
+/// them. At rest (no card holding) the webview sends the capsule FIRST
+/// (drag.ts `sendCapsule`), so `rects[0]` is the drawn capsule the 50-click
+/// harness aims inside; the bounding union alone may cover empty glass between
+/// controls, which is click-through by design (fb-02).
+pub fn rects_top_left_screen(
+    rects: &[(f64, f64, f64, f64)],
+    origin_px: (f64, f64),
+    scale: f64,
+    primary_h: f64,
+) -> Vec<(f64, f64, f64, f64)> {
+    rects
+        .iter()
+        .filter_map(|&r| capsule_screen_rect(origin_px, scale, primary_h, r))
+        .map(|(x, y, w, h)| (x, primary_h - (y + h), w, h))
+        .collect()
 }
 
 /// yap-1107-pill-click-always-registers — one log line whenever the clickable
 /// capsule moves or resizes (never per tick): the rect in TOP-LEFT global
 /// screen points (the CGEvent space scripts/pill-click-50.swift clicks in) and
 /// the window-relative hitbox it came from. The measurement note reads these.
-fn log_capsule_rect_change(rect: Option<(f64, f64, f64, f64)>, primary_h: f64) {
+fn log_capsule_rect_change(
+    rect: Option<(f64, f64, f64, f64)>,
+    primary_h: f64,
+    geo: Option<((f64, f64), f64)>,
+) {
     let (x, y, w, h) = rect.unwrap_or((0.0, 0.0, 0.0, 0.0));
     let prev = (
         load_f64(&CAPSULE_SCREEN_X),
@@ -1879,8 +1904,18 @@ fn log_capsule_rect_change(rect: Option<(f64, f64, f64, f64)>, primary_h: f64) {
         || (w - prev.2).abs() > 0.25
         || (h - prev.3).abs() > 0.25;
     if moved && w > 0.0 && h > 0.0 {
+        let list = geo
+            .map(|(origin, scale)| {
+                rects_top_left_screen(&hit_rects_now(), origin, scale, primary_h)
+            })
+            .unwrap_or_default();
+        let rects = list
+            .iter()
+            .map(|(rx, ry, rw, rh)| format!("{rx:.1},{ry:.1},{rw:.1},{rh:.1}"))
+            .collect::<Vec<_>>()
+            .join(";");
         log::info!(
-            "pill hitbox screen_rect={:.1},{:.1},{:.1},{:.1} space=top_left_pt hit={},{},{},{}",
+            "pill hitbox screen_rect={:.1},{:.1},{:.1},{:.1} space=top_left_pt hit={},{},{},{} rects={}",
             x,
             primary_h - (y + h),
             w,
@@ -1888,7 +1923,8 @@ fn log_capsule_rect_change(rect: Option<(f64, f64, f64, f64)>, primary_h: f64) {
             HIT_X.load(Ordering::SeqCst),
             HIT_Y.load(Ordering::SeqCst),
             HIT_W.load(Ordering::SeqCst),
-            HIT_H.load(Ordering::SeqCst)
+            HIT_H.load(Ordering::SeqCst),
+            rects
         );
     }
 }
@@ -2281,6 +2317,21 @@ mod tests {
             (0.0, 0.0),
             hitbox_cells(0.0, 0.0, 0.0, 0.0)
         ));
+    }
+
+    #[test]
+    fn logged_rects_are_top_left_screen_points_in_publish_order() {
+        // 2x display, window at physical (200, 100) = (100, 50) pt, primary 900 pt tall.
+        let capsule = (10.0, 20.0, 120.0, 36.0);
+        let control = (140.0, 26.0, 24.0, 24.0);
+        let got = rects_top_left_screen(&[capsule, control], (200.0, 100.0), 2.0, 900.0);
+        assert_eq!(
+            got,
+            vec![(110.0, 70.0, 120.0, 36.0), (240.0, 76.0, 24.0, 24.0)]
+        );
+        // the capsule (published first) stays first; empty rects never log
+        let none = rects_top_left_screen(&[(0.0, 0.0, 0.0, 0.0)], (0.0, 0.0), 2.0, 900.0);
+        assert!(none.is_empty());
     }
 
     #[test]

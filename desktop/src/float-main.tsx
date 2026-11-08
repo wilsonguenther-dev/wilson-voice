@@ -314,9 +314,9 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     ...matrixStuckEngineScenes(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
-// yap-1107-pill-click-always-registers — DEV matrix scene `&pressed=1` pins
-// the pressed shell (pill.html: 96 percent) for the before/after capture.
-if (new URLSearchParams(window.location.search).get("pressed") === "1") markPressed(document.documentElement, true);
+  // yap-1107-pill-click-always-registers — DEV matrix scene `&pressed=1` pins
+  // the pressed shell (pill.html: 96 percent) for the before/after capture.
+  if (new URLSearchParams(window.location.search).get("pressed") === "1") markPressed(document.documentElement, true);
   if (forcedDragScene(window.location.search)) {
     const root = document.documentElement;
     applyDragVisual(root, "blob", currentDock(root), prefersReducedMotion());

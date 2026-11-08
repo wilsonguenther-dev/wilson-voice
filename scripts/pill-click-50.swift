@@ -7,7 +7,11 @@
 //     [--out docs/loop/evidence/pill-click/clicks.csv]
 //
 // --rect is the DRAWN capsule in top-left-origin global screen points (the
-// CGEvent space), read from the app's `pill hitbox screen_rect=` log line. Each
+// CGEvent space): the FIRST entry of `rects=` on the app's `pill hitbox` log
+// line, taken at rest (no card showing). The webview publishes the capsule
+// first; `screen_rect=` is the union of every control and may cover glass
+// between controls that is click-through by design (fb-02), so never aim
+// there. Each
 // click lands at a seeded-random point inside the capsule's stadium (inset
 // 1 pt). Before EVERY click the frontmost app must be --front (a scratch text
 // app: a stop pastes there) or Yap itself; anything else aborts the run, so a
