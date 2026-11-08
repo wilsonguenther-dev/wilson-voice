@@ -2972,6 +2972,21 @@ html[data-one-pill="true"] .kami-blocked {
   margin: 0;
   max-width: var(--char-w);
 }
+/* integrate(yap-1106-fb-02-pill-first-click): at a side dock Yappy is a narrow
+   tab, so clamping the chip to his width cut "Mic blocked" / "Dictation is
+   paused" / "Get Yap" to an 8-22 pt ellipsis (and centring on him pushed it
+   off the window at the right dock). There it keeps the same height inside his
+   box but grows inward from the docked edge, full label, inside the window. */
+html[data-one-pill="true"][data-dock="left"] .kami-blocked {
+  left: var(--char-x);
+  translate: 0 -100%;
+  max-width: none;
+}
+html[data-one-pill="true"][data-dock="right"] .kami-blocked {
+  left: calc(var(--char-x) + var(--char-w));
+  translate: -100% -100%;
+  max-width: none;
+}
 
 /* The live clock row, again: the stop is never the thing an over-long row pushes past that clip:
    the call app's name is the one item that gives way (its full name is on its
