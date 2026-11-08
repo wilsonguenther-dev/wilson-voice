@@ -10,10 +10,15 @@
  * minute idle, plus each glance — and the two things that move faster (the
  * 1.6 s cup pulse and the turning reels) are CSS compositor animations on DOM
  * overlays, so a three-hour meeting never wakes a frame loop (OS-12).
+ *
+ * yap-1106-main-character-switch — the cast follows who sits in the pill
+ * (`meetingCast`): Hoot in the pill records it himself, headphones on, at
+ * Yappy's spot and without walking over to the tape machine; any other friend
+ * in the pill wears the headphones while Hoot visits the tape as before.
  */
 import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import { drawChick, type ChickPose } from "../sprites/art";
-import { drawFriendFrame } from "../sprites/friends";
+import { drawFriendFrame, friendManifest } from "../sprites/friends";
 import { backingScale } from "./pixelGrid";
 import {
   meetingFrameKey,
@@ -66,6 +71,45 @@ function drawHoot(o: CanvasRenderingContext2D, handingTape: boolean) {
   o.drawImage(hootBuf, x, y, size, size);
 }
 
+/**
+ * yap-1106-main-character-switch — the friend who sits in the pill, at Yappy's
+ * spot, 24 px high (nearest-neighbour like Hoot), with headphones on. Returns
+ * false for an id that is not a friend, so the caller falls back to Yappy.
+ */
+const mainBufs = new Map<string, HTMLCanvasElement>();
+function drawMainFriend(o: CanvasRenderingContext2D, id: string, acting: boolean): boolean {
+  const m = friendManifest(id);
+  if (!m) return false;
+  let buf = mainBufs.get(id);
+  if (!buf) {
+    buf = document.createElement("canvas");
+    buf.width = m.w;
+    buf.height = m.h;
+    mainBufs.set(id, buf);
+  }
+  const c = buf.getContext("2d");
+  if (!c) return false;
+  c.imageSmoothingEnabled = false;
+  c.clearRect(0, 0, m.w, m.h);
+  drawFriendFrame(c, id, acting ? "action" : "idle");
+  const { x, y, size } = SCENE_LAYOUT.main;
+  const w = Math.max(1, Math.round((size * m.w) / Math.max(m.w, m.h)));
+  const h = Math.max(1, Math.round((size * m.h) / Math.max(m.w, m.h)));
+  const dx = x + Math.floor((size - w) / 2);
+  const dy = y + (size - h);
+  o.imageSmoothingEnabled = false;
+  o.drawImage(buf, dx, dy, w, h);
+  // headphones: the band over the head, the left cup; the right cup is the
+  // recording light (`model.cup`, painted by the caller).
+  o.fillStyle = INK;
+  o.fillRect(dx + 2, dy - 1, w - 4, 2);
+  o.fillRect(dx - 1, dy + 1, 2, 6);
+  o.fillRect(dx + w - 1, dy + 1, 2, 6);
+  o.fillStyle = "#3b3f4a";
+  o.fillRect(dx - 3, dy + 7, 4, 6);
+  return true;
+}
+
 /** Paint one frame of the scene into an art-pixel context (SCENE_W x SCENE_H). */
 export function paintMeetingScene(o: CanvasRenderingContext2D, m: MeetingSceneModel): void {
   const { rct, ell } = px(o);
@@ -94,14 +138,23 @@ export function paintMeetingScene(o: CanvasRenderingContext2D, m: MeetingSceneMo
     rct(r.x, r.y, 1, 1, "#e8e6e1");
   }
   rct(t.reels[0].x, t.y + t.h - 3, t.reels[1].x - t.reels[0].x, 1, "#1e2025"); // tape path
-  drawHoot(o, m.hoot.handingTape);
+  // Hoot walks over to the tape only when someone else sits in the pill.
+  if (m.hoot.visiting) drawHoot(o, m.hoot.handingTape);
   // the stop beat: the tape itself, on its way from Hoot to Yappy
-  if (m.hoot.handingTape) {
+  if (m.hoot.handingTape && m.hoot.visiting) {
     const hx = L.handover.x, hy = L.handover.y;
     rct(hx, hy, 9, 6, INK);
     rct(hx + 1, hy + 1, 7, 4, "#e8e6e1");
     rct(hx + 2, hy + 2, 2, 2, "#8b6a3a");
     rct(hx + 5, hy + 2, 2, 2, "#8b6a3a");
+  }
+  // yap-1106-main-character-switch — a friend in the pill takes Yappy's spot
+  // (Yappy stays at the studio typewriter); the cup is the recording light.
+  if (m.cast.main !== "yappy" && drawMainFriend(o, m.cast.main, m.hoot.handingTape || m.pose === "notepad")) {
+    const fc = m.cup;
+    rct(fc.x - 1, fc.y - 1, fc.w + 2, fc.h + 2, INK);
+    rct(fc.x, fc.y, fc.w, fc.h, m.recLight.on ? "#9a2a24" : "#5a2420");
+    return;
   }
   // Yappy
   const { cx, feetY } = L.yappy;
@@ -132,6 +185,7 @@ export function paintMeetingScene(o: CanvasRenderingContext2D, m: MeetingSceneMo
   rct(cx - rx - 2, cy - 2, 2, 1, "#5a606e");
   const c = L.cup;
   rct(c.x - 1, c.y - 1, c.w + 2, c.h + 2, INK);
+  // (Yappy's own cup: L.cup, which `model.cup` equals when he sits in the pill.)
   rct(c.x, c.y, c.w, c.h, m.recLight.on ? "#9a2a24" : "#5a2420");
 }
 
@@ -139,17 +193,20 @@ export default function MeetingWorld({
   elapsedS,
   dictating = false,
   handover = false,
+  occupant = null,
 }: {
   elapsedS: number;
   dictating?: boolean;
   handover?: boolean;
+  /** yap-1106-main-character-switch — who sits in the pill (absent = Yappy). */
+  occupant?: string | null;
 }) {
   const reduceMotion = useMemo(
     () => typeof window !== "undefined" && typeof window.matchMedia === "function"
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
-  const input = { elapsedS, dictating, handover, reduceMotion };
+  const input = { elapsedS, dictating, handover, reduceMotion, occupant };
   const model = meetingScene(input);
   const key = meetingFrameKey(input);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -178,6 +235,11 @@ export default function MeetingWorld({
     }
   }, [key]);
 
+  // One line per cast (who records this meeting), never per tick.
+  useEffect(() => {
+    console.info(`pill meeting_scene_cast main=${model.cast.main.replace(/[^a-z0-9-]/gi, "").slice(0, 24)} hoot_visits=${model.hoot.visiting}`);
+  }, [model.cast.main, model.hoot.visiting]);
+
   useEffect(() => {
     if (model.pose === "glance") console.info(`pill meeting_scene_glance minute=${Math.floor(elapsedS / 60)}`);
   }, [model.pose === "glance"]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -194,6 +256,8 @@ export default function MeetingWorld({
       data-meeting-scene
       data-pose={model.pose}
       data-handover={handover ? "true" : undefined}
+      data-meeting-main={model.cast.main}
+      data-hoot-visiting={model.hoot.visiting ? "true" : "false"}
       style={style}
       aria-hidden
     >
@@ -208,7 +272,7 @@ export default function MeetingWorld({
       <i
         className={`meeting-cup-light${model.recLight.pulsing ? " pulsing" : ""}${model.recLight.on ? "" : " off"}`}
         data-rec-light
-        style={{ left: `${L.cup.x}px`, top: `${L.cup.y}px`, width: `${L.cup.w}px`, height: `${L.cup.h}px` }}
+        style={{ left: `${model.cup.x}px`, top: `${model.cup.y}px`, width: `${model.cup.w}px`, height: `${model.cup.h}px` }}
       />
       <span
         className="meeting-scene-time"

@@ -847,7 +847,7 @@ function Float() {
   }, [partialUp]);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} lowPower={FORCED?.battery === true} longTake={FORCED?.longTake === true} fixedWords={FORCED ? (forcedFixedWords(window.location.search) ?? 0) : fixedWords} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} lowPower={FORCED?.battery === true} longTake={FORCED?.longTake === true} fixedWords={FORCED ? (forcedFixedWords(window.location.search) ?? 0) : fixedWords} occupant={character.id} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />

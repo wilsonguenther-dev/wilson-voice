@@ -18,11 +18,16 @@
 //! them loses nothing), and a ladder number would collide with other schema
 //! work landing in parallel.
 //!
-//! Telemetry: `news rank fetched=… added=… dup_url=… dup_title=… seen=…
+//! * `news_class` (yap-1107-news-no-off-topic-stories) — the cloud's
+//!   category label per url key, so a story is sent to the cloud once
+//!   ([`classify_batch`]); kept as long as a cached story.
+//!
+//! Telemetry: `news classify candidates=… cached=… sent=… labelled=…
+//! calls=… ms=… fallback=…` per refresh with undeclared stories, `news rank fetched=… added=… dup_url=… dup_title=… seen=…
 //! off_topic=… expired=… kept=… ms=…` per ingest, `news seen_marked count=…`,
 //! `news cache_cleared reason=… rows=…`. No titles or URLs are ever logged.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use rusqlite::{params, Connection};
@@ -30,6 +35,7 @@ use serde::Serialize;
 
 use super::feeds::{Source, Story};
 use super::rank::{self, DedupeCounts, Keyed, RankedStory};
+use super::sources::{self, Category, Labels};
 use crate::news_prefs::NewsPrefs;
 
 const HOUR_MS: i64 = 60 * 60 * 1000;
@@ -64,6 +70,11 @@ CREATE TABLE IF NOT EXISTS news_seen (
   key TEXT PRIMARY KEY,
   seen_ms INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS news_class (
+  url_key TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  classified_ms INTEGER NOT NULL
+);
 "#;
 
 pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -97,6 +108,11 @@ pub fn prune(conn: &Connection, now_ms: i64) -> rusqlite::Result<usize> {
     let seen = conn.execute(
         "DELETE FROM news_seen WHERE seen_ms <= ?1",
         params![now_ms - SEEN_TTL_MS],
+    )?;
+    // Labels live as long as the story they label could be cached.
+    conn.execute(
+        "DELETE FROM news_class WHERE classified_ms <= ?1",
+        params![now_ms - TTL_MS],
     )?;
     Ok(stories + seen)
 }
@@ -175,7 +191,160 @@ pub fn ranked(
         .filter(|k| !is_seen(&seen, k))
         .collect();
     let (kept, _) = rank::dedupe(items);
-    Ok(rank::rank(kept, prefs, now_ms, limit))
+    let labels = cloud_labels(conn)?;
+    Ok(rank::rank_with(kept, prefs, now_ms, limit, &labels))
+}
+
+/// yap-1107-news-no-off-topic-stories — every cached cloud label, by url key.
+pub fn cloud_labels(conn: &Connection) -> rusqlite::Result<Labels> {
+    let mut stmt = conn.prepare("SELECT url_key, category FROM news_class")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out: Labels = HashMap::new();
+    for row in rows {
+        let (key, tag) = row?;
+        if let Some(c) = Category::parse(&tag) {
+            out.insert(key, c);
+        }
+    }
+    Ok(out)
+}
+
+/// One fetched story waiting for a cloud label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    pub url_key: String,
+    pub title: String,
+    pub outlet: Option<String>,
+}
+
+/// What one classification batch did — the `news classify` record.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassifyReport {
+    /// Fetched stories with no declared source category.
+    pub candidates: usize,
+    /// Of those, already labelled (no request for them).
+    pub cached: usize,
+    pub sent: usize,
+    /// Cloud calls made: 0 or 1 per refresh.
+    pub calls: usize,
+    pub labelled: usize,
+    pub fallback: Option<String>,
+    pub ms: u64,
+}
+
+/// The stories the cloud should label: undeclared Google News stories not
+/// labelled yet, one per url key, at most [`sources::CLASSIFY_MAX`].
+pub fn classify_pending(
+    conn: &Connection,
+    stories: &[Story],
+) -> rusqlite::Result<(Vec<Pending>, ClassifyReport)> {
+    let labels = cloud_labels(conn)?;
+    let mut report = ClassifyReport::default();
+    let mut keys = HashSet::new();
+    let mut pending = Vec::new();
+    for s in stories {
+        if sources::declared_category(s.source, s.outlet.as_deref()).is_some() {
+            continue;
+        }
+        let key = rank::url_key(&s.url);
+        if !keys.insert(key.clone()) {
+            continue;
+        }
+        report.candidates += 1;
+        if labels.contains_key(&key) {
+            report.cached += 1;
+        } else if pending.len() < sources::CLASSIFY_MAX {
+            pending.push(Pending {
+                url_key: key,
+                title: s.title.clone(),
+                outlet: s.outlet.clone(),
+            });
+        }
+    }
+    Ok((pending, report))
+}
+
+/// The ONE cloud call of a batch (none when nothing is pending). A failed
+/// call labels nothing and the keywords decide; its tag is the fallback.
+pub fn ask_cloud(
+    pending: &[Pending],
+    report: &mut ClassifyReport,
+    call: &mut dyn FnMut(&str, &str) -> Result<String, &'static str>,
+) -> Vec<Option<Category>> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    let items: Vec<(String, Option<String>)> = pending
+        .iter()
+        .map(|p| (p.title.clone(), p.outlet.clone()))
+        .collect();
+    let (system, user) = sources::classify_prompt(&items);
+    report.sent = pending.len();
+    report.calls = 1;
+    match call(&system, &user) {
+        Ok(text) => sources::parse_labels(&text, pending.len()),
+        Err(tag) => {
+            report.fallback = Some(tag.to_string());
+            vec![None; pending.len()]
+        }
+    }
+}
+
+/// Write the labels the cloud gave. Returns how many were written.
+pub fn store_labels(
+    conn: &Connection,
+    pending: &[Pending],
+    labels: &[Option<Category>],
+    now_ms: i64,
+) -> rusqlite::Result<usize> {
+    let mut n = 0usize;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO news_class (url_key, category, classified_ms)
+             VALUES (?1, ?2, ?3)",
+        )?;
+        for (p, label) in pending.iter().zip(labels.iter()) {
+            if let Some(c) = label {
+                n += stmt.execute(params![p.url_key, c.tag(), now_ms])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
+pub fn log_classify(report: &ClassifyReport) {
+    log::info!(
+        "news classify candidates={} cached={} sent={} labelled={} calls={} ms={} fallback={}",
+        report.candidates,
+        report.cached,
+        report.sent,
+        report.labelled,
+        report.calls,
+        report.ms,
+        report.fallback.as_deref().unwrap_or("none")
+    );
+}
+
+/// Pending -> one call -> stored labels, on one connection (tests; the app
+/// splits it so no lock is held during the call, see `news::classify_cloud`).
+pub fn classify_batch(
+    conn: &Connection,
+    stories: &[Story],
+    now_ms: i64,
+    call: &mut dyn FnMut(&str, &str) -> Result<String, &'static str>,
+) -> rusqlite::Result<ClassifyReport> {
+    let t0 = Instant::now();
+    let (pending, mut report) = classify_pending(conn, stories)?;
+    let labels = ask_cloud(&pending, &mut report, call);
+    report.labelled = store_labels(conn, &pending, &labels, now_ms)?;
+    report.ms = t0.elapsed().as_millis() as u64;
+    if report.candidates > 0 {
+        log_classify(&report);
+    }
+    Ok(report)
 }
 
 /// What one [`ingest`] did — the `news rank` telemetry record.
@@ -288,6 +457,7 @@ pub fn clear(conn: &Connection, reason: &str) -> rusqlite::Result<usize> {
     let tx = conn.unchecked_transaction()?;
     let stories = tx.execute("DELETE FROM news_cache", [])?;
     let seen = tx.execute("DELETE FROM news_seen", [])?;
+    tx.execute("DELETE FROM news_class", [])?;
     tx.commit()?;
     log::info!("news cache_cleared reason={reason} rows={}", stories + seen);
     Ok(stories + seen)
@@ -356,7 +526,9 @@ mod tests {
     #[test]
     fn ingest_dedupes_by_url_and_title_against_the_cache() {
         let c = db();
-        let p = prefs(&["tech"], &[], &[]);
+        // "Rocket lands on a barge" is Science by its own words: the search
+        // stamp "tech" no longer decides, so Science is picked too.
+        let p = prefs(&["tech", "science"], &[], &[]);
         ingest(
             &c,
             &[story(
@@ -571,5 +743,97 @@ mod tests {
             db.with_news_cache(|c| Ok(count(c, "news_cache"))).unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn one_cloud_call_per_batch_and_none_for_cached_urls() {
+        use crate::news::sources::ClassifiedBy;
+        use std::cell::Cell;
+        let c = db();
+        // Distinct headlines (no dedupe), none declared by their outlet.
+        let titles = [
+            "Quiet morning across the valley",
+            "Officials review harbor expansion plan",
+            "Crowds gather downtown for parade",
+            "Late vote delays county budget",
+            "Bakery owner marks fifty years",
+        ];
+        let mut all: Vec<Story> = titles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                story(
+                    "tech",
+                    t,
+                    &format!("https://news.example/{i}"),
+                    Some("Reuters"),
+                    Some(1),
+                )
+            })
+            .collect();
+        // A declared outlet never goes to the cloud.
+        all.push(story(
+            "tech",
+            "Putt drops on the last hole",
+            "https://pgatour.com/1",
+            Some("PGA TOUR"),
+            Some(1),
+        ));
+        let calls = Cell::new(0usize);
+        let lines = Cell::new(0usize);
+        let mut call = |_system: &str, user: &str| -> Result<String, &'static str> {
+            calls.set(calls.get() + 1);
+            lines.set(user.lines().count());
+            Ok("1. tech\n2. sports\n3. business\n4. world\n5. other".to_string())
+        };
+        let first = classify_batch(&c, &all, NOW, &mut call).unwrap();
+        assert_eq!(calls.get(), 1, "N stories => one call");
+        assert_eq!(lines.get(), 5, "only undeclared stories are sent");
+        assert_eq!(
+            (
+                first.candidates,
+                first.cached,
+                first.sent,
+                first.calls,
+                first.labelled
+            ),
+            (5, 0, 5, 1, 5)
+        );
+        assert_eq!(count(&c, "news_class"), 5);
+
+        let second = classify_batch(&c, &all, NOW + HOUR, &mut call).unwrap();
+        assert_eq!(calls.get(), 1, "second refresh => no call for cached urls");
+        assert_eq!((second.cached, second.calls, second.sent), (5, 0, 0));
+
+        // The cached label decides: only the story labelled tech is kept.
+        let r = ingest(&c, &all, &prefs(&["tech"], &[], &[]), NOW, 10).unwrap();
+        assert_eq!(r.stories.len(), 1);
+        assert_eq!(r.stories[0].story.url, "https://news.example/0");
+        assert_eq!(r.stories[0].classified_by, ClassifiedBy::Cloud);
+        assert_eq!(r.off_topic, 5);
+
+        // Feature off deletes the labels too.
+        clear(&c, "test").unwrap();
+        assert_eq!(count(&c, "news_class"), 0);
+    }
+
+    #[test]
+    fn a_failed_cloud_call_falls_through_to_the_keywords() {
+        let c = db();
+        let s = vec![story(
+            "world",
+            "Nvidia unveils new chip",
+            "https://news.example/chip",
+            Some("Reuters"),
+            Some(1),
+        )];
+        let mut call = |_: &str, _: &str| -> Result<String, &'static str> { Err("offline") };
+        let r = classify_batch(&c, &s, NOW, &mut call).unwrap();
+        assert_eq!(r.fallback.as_deref(), Some("offline"));
+        assert_eq!((r.calls, r.labelled), (1, 0));
+        let out = ingest(&c, &s, &prefs(&["tech"], &[], &[]), NOW, 10).unwrap();
+        assert_eq!(out.stories.len(), 1);
+        // Found by the "world" search, shown as Tech: its own category.
+        assert_eq!(out.stories[0].story.topic, "tech");
     }
 }

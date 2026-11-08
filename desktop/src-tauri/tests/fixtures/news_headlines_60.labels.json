@@ -1,0 +1,242 @@
+[
+ {
+  "title": "Chris Kirk sinks 14-foot putt for eagle at World Wide Technology",
+  "category": "sports"
+ },
+ {
+  "title": "Zachary Bauchou shoots 63 to take lead at World Wide Technology Championship",
+  "category": "sports"
+ },
+ {
+  "title": "Big names who missed the cut at the World Wide Technology Championship",
+  "category": "sports"
+ },
+ {
+  "title": "Technology stocks fall as bond yields climb",
+  "category": "stocks"
+ },
+ {
+  "title": "World Series: Dodgers beat Blue Jays in Game 7 to win title",
+  "category": "sports"
+ },
+ {
+  "title": "The science of sleep: why your brain needs deep rest",
+  "category": "science"
+ },
+ {
+  "title": "World Cup qualifier: USA rallies past Jamaica",
+  "category": "sports"
+ },
+ {
+  "title": "Apple stock drops after earnings miss",
+  "category": "stocks"
+ },
+ {
+  "title": "Culture war in Congress stalls spending bill",
+  "category": "world"
+ },
+ {
+  "title": "Tech billionaire buys NBA team for $6 billion",
+  "category": "sports"
+ },
+ {
+  "title": "Nvidia unveils next-generation AI chip",
+  "category": "tech"
+ },
+ {
+  "title": "OpenAI releases new reasoning model for developers",
+  "category": "tech"
+ },
+ {
+  "title": "Rust 1.91 released with faster compile times",
+  "category": "developer"
+ },
+ {
+  "title": "Show HN: A tiny SQLite clone written in Zig",
+  "category": "developer"
+ },
+ {
+  "title": "Linux kernel 6.18 adds new scheduler",
+  "category": "developer"
+ },
+ {
+  "title": "GitHub launches agent mode for pull requests",
+  "category": "developer"
+ },
+ {
+  "title": "Python 3.14 brings free-threaded mode to the mainstream",
+  "category": "developer"
+ },
+ {
+  "title": "Dow jumps 400 points as inflation cools",
+  "category": "stocks"
+ },
+ {
+  "title": "S&P 500 hits record high on rate-cut hopes",
+  "category": "stocks"
+ },
+ {
+  "title": "Fed holds interest rates steady, signals patience",
+  "category": "business"
+ },
+ {
+  "title": "Boeing names new CEO after turbulent year",
+  "category": "business"
+ },
+ {
+  "title": "Starbucks to close hundreds of stores in restructuring",
+  "category": "business"
+ },
+ {
+  "title": "Amazon announces 14,000 corporate layoffs",
+  "category": "business"
+ },
+ {
+  "title": "Retail sales rise more than expected in October",
+  "category": "business"
+ },
+ {
+  "title": "James Webb telescope spots water on distant exoplanet",
+  "category": "science"
+ },
+ {
+  "title": "Scientists discover new species of deep-sea octopus",
+  "category": "science"
+ },
+ {
+  "title": "Study links ultra-processed food to higher cancer risk",
+  "category": "science"
+ },
+ {
+  "title": "Physicists achieve record quantum entanglement distance",
+  "category": "science"
+ },
+ {
+  "title": "Ukraine and Russia agree to prisoner exchange",
+  "category": "world"
+ },
+ {
+  "title": "EU leaders meet in Brussels over migration plan",
+  "category": "world"
+ },
+ {
+  "title": "Israel and Hamas begin second phase of ceasefire talks",
+  "category": "world"
+ },
+ {
+  "title": "Japan elects first female prime minister",
+  "category": "world"
+ },
+ {
+  "title": "Earthquake of magnitude 7.1 strikes off the coast of Chile",
+  "category": "world"
+ },
+ {
+  "title": "Louvre reopens gallery after jewel heist",
+  "category": "culture"
+ },
+ {
+  "title": "Booker Prize goes to debut novel about Haitian family",
+  "category": "culture"
+ },
+ {
+  "title": "Metropolitan Opera opens season with new production",
+  "category": "culture"
+ },
+ {
+  "title": "Smithsonian unveils Black history exhibition",
+  "category": "culture"
+ },
+ {
+  "title": "Taylor Swift's new album breaks streaming record",
+  "category": "entertainment"
+ },
+ {
+  "title": "Box office: horror sequel tops weekend with $40 million",
+  "category": "entertainment"
+ },
+ {
+  "title": "Celebrity couple announce split after five years",
+  "category": "entertainment"
+ },
+ {
+  "title": "Emmy nominations: streaming dramas dominate",
+  "category": "entertainment"
+ },
+ {
+  "title": "Patriots quarterback throws four touchdowns in win",
+  "category": "sports"
+ },
+ {
+  "title": "Lakers star out for season with knee injury",
+  "category": "sports"
+ },
+ {
+  "title": "Rory McIlroy birdies final hole to win in Dubai",
+  "category": "sports"
+ },
+ {
+  "title": "Manchester United sack manager after poor start",
+  "category": "sports"
+ },
+ {
+  "title": "Verstappen wins Mexico City Grand Prix",
+  "category": "sports"
+ },
+ {
+  "title": "Apple Watch Series 11 review: better battery, same look",
+  "category": "tech"
+ },
+ {
+  "title": "Microsoft patches zero-day flaw exploited by hackers",
+  "category": "tech"
+ },
+ {
+  "title": "Samsung unveils tri-fold smartphone",
+  "category": "tech"
+ },
+ {
+  "title": "Tesla shares slide after robotaxi delay",
+  "category": "stocks"
+ },
+ {
+  "title": "Bitcoin falls below $90,000 as investors pull back",
+  "category": "stocks"
+ },
+ {
+  "title": "Google faces antitrust ruling on search monopoly",
+  "category": "tech"
+ },
+ {
+  "title": "Wall Street ends higher as tech rally broadens",
+  "category": "stocks"
+ },
+ {
+  "title": "NASA delays Artemis moon mission to 2027",
+  "category": "science"
+ },
+ {
+  "title": "Venezuela opposition leader wins Nobel Peace Prize",
+  "category": "world"
+ },
+ {
+  "title": "Shohei Ohtani homers twice as Dodgers take series lead",
+  "category": "sports"
+ },
+ {
+  "title": "Netflix stock soars on record subscriber growth",
+  "category": "stocks"
+ },
+ {
+  "title": "Hurricane Melissa makes landfall in Jamaica as Category 5 storm",
+  "category": "world"
+ },
+ {
+  "title": "New Broadway musical about Haitian revolution earns rave reviews",
+  "category": "culture"
+ },
+ {
+  "title": "OpenAI's Sora app tops App Store charts",
+  "category": "tech"
+ }
+]

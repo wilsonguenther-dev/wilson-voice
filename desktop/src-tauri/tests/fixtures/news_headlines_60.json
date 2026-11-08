@@ -1,0 +1,302 @@
+[
+ {
+  "title": "Chris Kirk sinks 14-foot putt for eagle at World Wide Technology",
+  "outlet": "PGA TOUR",
+  "source": "google_news"
+ },
+ {
+  "title": "Zachary Bauchou shoots 63 to take lead at World Wide Technology Championship",
+  "outlet": "Golfweek",
+  "source": "google_news"
+ },
+ {
+  "title": "Big names who missed the cut at the World Wide Technology Championship",
+  "outlet": "Golfweek",
+  "source": "google_news"
+ },
+ {
+  "title": "Technology stocks fall as bond yields climb",
+  "outlet": "Reuters",
+  "source": "google_news"
+ },
+ {
+  "title": "World Series: Dodgers beat Blue Jays in Game 7 to win title",
+  "outlet": "AP News",
+  "source": "google_news"
+ },
+ {
+  "title": "The science of sleep: why your brain needs deep rest",
+  "outlet": "NPR",
+  "source": "google_news"
+ },
+ {
+  "title": "World Cup qualifier: USA rallies past Jamaica",
+  "outlet": "The Guardian",
+  "source": "google_news"
+ },
+ {
+  "title": "Apple stock drops after earnings miss",
+  "outlet": "MarketWatch",
+  "source": "google_news"
+ },
+ {
+  "title": "Culture war in Congress stalls spending bill",
+  "outlet": "Politico",
+  "source": "google_news"
+ },
+ {
+  "title": "Tech billionaire buys NBA team for $6 billion",
+  "outlet": "Axios",
+  "source": "google_news"
+ },
+ {
+  "title": "Nvidia unveils next-generation AI chip",
+  "outlet": "The Verge",
+  "source": "google_news"
+ },
+ {
+  "title": "OpenAI releases new reasoning model for developers",
+  "outlet": "TechCrunch",
+  "source": "google_news"
+ },
+ {
+  "title": "Rust 1.91 released with faster compile times",
+  "outlet": null,
+  "source": "hacker_news"
+ },
+ {
+  "title": "Show HN: A tiny SQLite clone written in Zig",
+  "outlet": null,
+  "source": "hacker_news"
+ },
+ {
+  "title": "Linux kernel 6.18 adds new scheduler",
+  "outlet": "LWN.net",
+  "source": "google_news"
+ },
+ {
+  "title": "GitHub launches agent mode for pull requests",
+  "outlet": "The GitHub Blog",
+  "source": "google_news"
+ },
+ {
+  "title": "Python 3.14 brings free-threaded mode to the mainstream",
+  "outlet": "InfoWorld",
+  "source": "google_news"
+ },
+ {
+  "title": "Dow jumps 400 points as inflation cools",
+  "outlet": "CNN",
+  "source": "google_news"
+ },
+ {
+  "title": "S&P 500 hits record high on rate-cut hopes",
+  "outlet": "Reuters",
+  "source": "google_news"
+ },
+ {
+  "title": "Fed holds interest rates steady, signals patience",
+  "outlet": "The Washington Post",
+  "source": "google_news"
+ },
+ {
+  "title": "Boeing names new CEO after turbulent year",
+  "outlet": "The Wall Street Journal",
+  "source": "google_news"
+ },
+ {
+  "title": "Starbucks to close hundreds of stores in restructuring",
+  "outlet": "Fortune",
+  "source": "google_news"
+ },
+ {
+  "title": "Amazon announces 14,000 corporate layoffs",
+  "outlet": "USA Today",
+  "source": "google_news"
+ },
+ {
+  "title": "Retail sales rise more than expected in October",
+  "outlet": "Bloomberg",
+  "source": "google_news"
+ },
+ {
+  "title": "James Webb telescope spots water on distant exoplanet",
+  "outlet": "Space.com",
+  "source": "google_news"
+ },
+ {
+  "title": "Scientists discover new species of deep-sea octopus",
+  "outlet": "BBC News",
+  "source": "google_news"
+ },
+ {
+  "title": "Study links ultra-processed food to higher cancer risk",
+  "outlet": "The New York Times",
+  "source": "google_news"
+ },
+ {
+  "title": "Physicists achieve record quantum entanglement distance",
+  "outlet": "Quanta Magazine",
+  "source": "google_news"
+ },
+ {
+  "title": "Ukraine and Russia agree to prisoner exchange",
+  "outlet": "Al Jazeera",
+  "source": "google_news"
+ },
+ {
+  "title": "EU leaders meet in Brussels over migration plan",
+  "outlet": "Euronews",
+  "source": "google_news"
+ },
+ {
+  "title": "Israel and Hamas begin second phase of ceasefire talks",
+  "outlet": "BBC News",
+  "source": "google_news"
+ },
+ {
+  "title": "Japan elects first female prime minister",
+  "outlet": "CNN",
+  "source": "google_news"
+ },
+ {
+  "title": "Earthquake of magnitude 7.1 strikes off the coast of Chile",
+  "outlet": "Reuters",
+  "source": "google_news"
+ },
+ {
+  "title": "Louvre reopens gallery after jewel heist",
+  "outlet": "The Guardian",
+  "source": "google_news"
+ },
+ {
+  "title": "Booker Prize goes to debut novel about Haitian family",
+  "outlet": "The New York Times",
+  "source": "google_news"
+ },
+ {
+  "title": "Metropolitan Opera opens season with new production",
+  "outlet": "NPR",
+  "source": "google_news"
+ },
+ {
+  "title": "Smithsonian unveils Black history exhibition",
+  "outlet": "Smithsonian Magazine",
+  "source": "google_news"
+ },
+ {
+  "title": "Taylor Swift's new album breaks streaming record",
+  "outlet": "Variety",
+  "source": "google_news"
+ },
+ {
+  "title": "Box office: horror sequel tops weekend with $40 million",
+  "outlet": "The Hollywood Reporter",
+  "source": "google_news"
+ },
+ {
+  "title": "Celebrity couple announce split after five years",
+  "outlet": "People.com",
+  "source": "google_news"
+ },
+ {
+  "title": "Emmy nominations: streaming dramas dominate",
+  "outlet": "Deadline",
+  "source": "google_news"
+ },
+ {
+  "title": "Patriots quarterback throws four touchdowns in win",
+  "outlet": "ESPN",
+  "source": "google_news"
+ },
+ {
+  "title": "Lakers star out for season with knee injury",
+  "outlet": "Bleacher Report",
+  "source": "google_news"
+ },
+ {
+  "title": "Rory McIlroy birdies final hole to win in Dubai",
+  "outlet": "Golf Digest",
+  "source": "google_news"
+ },
+ {
+  "title": "Manchester United sack manager after poor start",
+  "outlet": "Sky Sports",
+  "source": "google_news"
+ },
+ {
+  "title": "Verstappen wins Mexico City Grand Prix",
+  "outlet": "The Athletic",
+  "source": "google_news"
+ },
+ {
+  "title": "Apple Watch Series 11 review: better battery, same look",
+  "outlet": "Engadget",
+  "source": "google_news"
+ },
+ {
+  "title": "Microsoft patches zero-day flaw exploited by hackers",
+  "outlet": "BleepingComputer",
+  "source": "google_news"
+ },
+ {
+  "title": "Samsung unveils tri-fold smartphone",
+  "outlet": "CNET",
+  "source": "google_news"
+ },
+ {
+  "title": "Tesla shares slide after robotaxi delay",
+  "outlet": "Barron's",
+  "source": "google_news"
+ },
+ {
+  "title": "Bitcoin falls below $90,000 as investors pull back",
+  "outlet": "CoinDesk",
+  "source": "google_news"
+ },
+ {
+  "title": "Google faces antitrust ruling on search monopoly",
+  "outlet": "The Verge",
+  "source": "google_news"
+ },
+ {
+  "title": "Wall Street ends higher as tech rally broadens",
+  "outlet": "MarketWatch",
+  "source": "google_news"
+ },
+ {
+  "title": "NASA delays Artemis moon mission to 2027",
+  "outlet": "Reuters",
+  "source": "google_news"
+ },
+ {
+  "title": "Venezuela opposition leader wins Nobel Peace Prize",
+  "outlet": "Reuters",
+  "source": "google_news"
+ },
+ {
+  "title": "Shohei Ohtani homers twice as Dodgers take series lead",
+  "outlet": "Los Angeles Times",
+  "source": "google_news"
+ },
+ {
+  "title": "Netflix stock soars on record subscriber growth",
+  "outlet": "Investopedia",
+  "source": "google_news"
+ },
+ {
+  "title": "Hurricane Melissa makes landfall in Jamaica as Category 5 storm",
+  "outlet": "CNN",
+  "source": "google_news"
+ },
+ {
+  "title": "New Broadway musical about Haitian revolution earns rave reviews",
+  "outlet": "The New Yorker",
+  "source": "google_news"
+ },
+ {
+  "title": "OpenAI's Sora app tops App Store charts",
+  "outlet": "9to5Mac",
+  "source": "google_news"
+ }
+]

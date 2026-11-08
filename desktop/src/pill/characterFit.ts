@@ -211,13 +211,16 @@ export interface PillFit {
  * 2x the open capsule (228 x 53) draws cell 3 (1.5 CSS px per art px, 96
  * percent of the artifact) with a one-art-px hop.
  */
-export function pillFit(stadium: FitBox, dprRaw: number): PillFit {
+export function pillFit(stadium: FitBox, dprRaw: number, boxFor: (lift: number) => FitBox = chickBoxFor): PillFit {
   const dpr = backingScale(dprRaw);
-  const whole = Math.max(1, largestFittingCell(stadium, chickBox(), POSITION_GUARD));
+  // yap-1106-main-character-switch — `boxFor` is the box of whoever sits in the
+  // pill at a lift budget: Yappy's (`chickBoxFor`, the default) or a friend's
+  // (pill/occupant.ts `occupantBoxFor`), so a taller friend is never cropped.
+  const whole = Math.max(1, largestFittingCell(stadium, boxFor(MAX_LIFT), POSITION_GUARD));
   const ceiling = Math.floor(ARTIFACT_SPRITE_SCALE * (1 + ARTIFACT_TOLERANCE) * dpr + 1e-9);
   for (let c = ceiling; c > whole; c--) {
     for (let l = MAX_LIFT - 1; l >= 0; l--) {
-      if (largestFittingCell(stadium, chickBoxFor(l), POSITION_GUARD) >= c) return { cell: c, lift: l };
+      if (largestFittingCell(stadium, boxFor(l), POSITION_GUARD) >= c) return { cell: c, lift: l };
     }
   }
   return { cell: whole, lift: MAX_LIFT };
@@ -348,12 +351,13 @@ export interface PillCamera {
  * box inside the visible stadium — and never a cell so small the world stops
  * covering the capsule (the buffer is sized so that never bites).
  */
-export function pillCamera(capsule: CssRect, dprRaw: number): PillCamera {
+export function pillCamera(capsule: CssRect, dprRaw: number, boxFor: (lift: number) => FitBox = chickBoxFor): PillCamera {
   const dpr = backingScale(dprRaw);
   const { clip, stadium } = capsuleStadium(capsule, dpr);
   // yap-1107-pill-matches-artifact-size — the approved artifact's size, whole.
-  const fit = pillFit(stadium, dpr);
-  const env = chickBoxFor(fit.lift);
+  // yap-1106-main-character-switch — framed on whoever sits in the pill.
+  const fit = pillFit(stadium, dpr, boxFor);
+  const env = boxFor(fit.lift);
   const cell = Math.max(fit.cell, coverCell(clip.w, clip.h, PILL_SCENE.w, PILL_SCENE.h));
   const view = { w: clip.w / cell, h: clip.h / cell };
   // yap-1107-parity-pill — whole when a whole cell holds his box; otherwise

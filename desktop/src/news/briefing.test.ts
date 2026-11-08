@@ -82,6 +82,14 @@ describe("yap-1106-news-home-briefing", () => {
     expect(ranksHigher(short, [story("a", 9), story("y", 1)])).toBe(true);
   });
 
+  it("home_briefing_carries_the_why_this_story_line", () => {
+    // yap-1107-news-no-off-topic-stories — the backend's line rides through.
+    const [w] = buildBriefing([story("w", 1, { why: "From The Verge (Tech) · matches Tech" })], null, NOW).stories;
+    expect(w.why).toBe("From The Verge (Tech) · matches Tech");
+    const [old] = buildBriefing([story("o", 1)], null, NOW).stories;
+    expect(old.why ?? null).toBeNull();
+  });
+
   it("home_briefing_every_story_names_its_source_and_market_quotes_are_delayed", () => {
     const [hn] = buildBriefing([story("h", 1, { source: "hacker_news", topic: "developer", points: 412, outlet: null })], null, NOW).stories;
     expect(sourceLabel(hn, [])).toBe("Hacker News · 412 points");

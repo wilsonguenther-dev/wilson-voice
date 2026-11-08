@@ -58,7 +58,36 @@ export const SCENE_LAYOUT = {
   cup: { x: 98, y: 18, w: 4, h: 6 },
   /** The stop beat: the tape on its way from Hoot to Yappy (top-left of the cassette). */
   handover: { x: 64, y: 20 },
+  /**
+   * yap-1106-main-character-switch — where a friend who SITS in the pill
+   * stands for the meeting (Yappy's spot, at Hoot's 24 px), headphones on.
+   * yap-1107-parity-pill: moved +14 x / -4 y with the rest of the 140 x 36 layout.
+   */
+  main: { x: 76, y: 7, size: 24 },
+  /** That friend's right ear cup — the recording light. */
+  mainCup: { x: 101, y: 15, w: 4, h: 6 },
 } as const;
+
+/**
+ * yap-1106-main-character-switch — who is on stage during a meeting
+ * (companions.html section 04, "Jobs never move"). Meetings are always
+ * Hoot's: if Hoot sits in the pill he records the meeting himself, headphones
+ * on, and there is NO visit; if anyone else sits in the pill, Hoot still comes
+ * over to the tape machine, as before. Yappy is only on stage when he is the
+ * one in the pill; otherwise he stays at the studio typewriter.
+ */
+export interface MeetingCast {
+  /** Who sits in the pill (the `pill_style` character id; empty reads as Yappy). */
+  main: string;
+  /** Hoot walked over to record (false when Hoot IS the main character). */
+  hootVisits: boolean;
+}
+
+/** The meeting's cast for whoever sits in the pill. Pure. */
+export function meetingCast(occupant?: string | null): MeetingCast {
+  const main = typeof occupant === "string" && occupant.trim() !== "" ? occupant.trim() : "yappy";
+  return { main, hootVisits: main !== "hoot" };
+}
 
 export type SkyPhase = "day" | "dusk";
 
@@ -134,6 +163,8 @@ export interface MeetingSceneInput {
   reduceMotion?: boolean;
   /** The stop beat: Hoot is handing over the tape. */
   handover?: boolean;
+  /** yap-1106-main-character-switch — who sits in the pill (absent = Yappy). */
+  occupant?: string | null;
 }
 
 export interface MeetingSceneModel {
@@ -143,10 +174,18 @@ export interface MeetingSceneModel {
   pose: YappyMeetingPose;
   /** The tape keeps running through dictation; it stops for the hand-over. */
   reelsTurning: boolean;
-  /** Hoot is at the tape machine; `visitCapMs` is Infinity for the meeting. */
-  hoot: { present: true; handingTape: boolean; visitCapMs: number };
+  /**
+   * Hoot records every meeting; `visitCapMs` is Infinity for the meeting.
+   * `visiting` is false when Hoot is the main character: he records from the
+   * pill himself, headphones on, with no visit.
+   */
+  hoot: { present: true; visiting: boolean; handingTape: boolean; visitCapMs: number };
+  /** yap-1106-main-character-switch — who is on stage. */
+  cast: MeetingCast;
   /** The recording light: the right ear cup, pulsing (steady under reduce motion). */
   recLight: { pulseMs: number; pulsing: boolean; on: boolean };
+  /** Where that ear cup is: on Yappy's headphones, or on the main friend's. */
+  cup: { x: number; y: number; w: number; h: number };
   timeLabel: string;
   /** Where the time sits: under the sun (or the moon) inside the scene. */
   timeAnchor: { x: number; y: number };
@@ -160,14 +199,18 @@ export function meetingScene(i: MeetingSceneInput): MeetingSceneModel {
   const body = (sun ?? moon) as { x: number; y: number };
   const handover = i.handover === true;
   const pose: YappyMeetingPose = i.dictating ? "notepad" : isGlancing(s, i) ? "glance" : "listening";
+  const cast = meetingCast(i.occupant);
+  const cup = cast.main === "yappy" ? SCENE_LAYOUT.cup : SCENE_LAYOUT.mainCup;
   return {
     sky: skyPhase(s),
     sun,
     moon,
     pose,
     reelsTurning: !handover && !i.reduceMotion,
-    hoot: { present: true, handingTape: handover, visitCapMs: visitCapMs("hoot", { meeting: true }) },
+    hoot: { present: true, visiting: cast.hootVisits, handingTape: handover, visitCapMs: visitCapMs("hoot", { meeting: true }) },
+    cast,
     recLight: { pulseMs: REC_LIGHT_PULSE_MS, pulsing: !handover && !i.reduceMotion, on: !handover },
+    cup: { x: cup.x, y: cup.y, w: cup.w, h: cup.h },
     timeLabel: sceneTimeLabel(s),
     timeAnchor: { x: body.x, y: body.y + 5 },
   };
@@ -182,7 +225,7 @@ export function meetingScene(i: MeetingSceneInput): MeetingSceneModel {
 export function meetingFrameKey(i: MeetingSceneInput): string {
   const s = secs(i.elapsedS);
   const m = meetingScene(i);
-  return `${Math.floor(s / 60)}|${m.sky}|${m.pose}|${i.handover ? "h" : "-"}`;
+  return `${Math.floor(s / 60)}|${m.sky}|${m.pose}|${i.handover ? "h" : "-"}|${m.cast.main}`;
 }
 
 /** Count of canvas repaints across [fromS, toS] stepping one backend tick a second. */
