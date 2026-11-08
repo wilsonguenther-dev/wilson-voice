@@ -2326,6 +2326,7 @@ html[data-one-pill="true"] .meeting-offer-wrap,
 html[data-one-pill="true"] .language-offer-wrap,
 html[data-one-pill="true"] .meeting-dictation-wrap,
 html[data-one-pill="true"] .who-card-wrap,
+html[data-one-pill="true"] .backtrack-caught-wrap,
 html[data-one-pill="true"][data-dock] .nudge-row,
 html[data-one-pill="true"] .polish-reveal-wrap {
   left: var(--card-x);
@@ -2844,7 +2845,25 @@ html[data-dock="right"] .friend-visit {
 /* The call app's name steps aside while the stepper shows (it is still on
    the Stop button's label and returns when the pointer leaves). */
 .meeting-badge:is(:hover, :focus-within):has(> .rec-swap > .rec-people) > .rec-app {
-  display: none;
+  /* integrate(fb-02): visibility, not display — the name keeps its width so
+     pointing at the clock never reflows the row and slides Stop away from the
+     pointer before the first press lands. */
+  visibility: hidden;
+}
+/* integrate(yap-1106-fb-02-pill-first-click): the column keeps the SAME box at
+   rest as when the stepper shows (the approved row already budgets ONE 46 px
+   column for it). Before, the swap was display: contents at rest and a 46 px
+   box on hover, so in the rest scenes (idle, sleepy, trial) the centred badge
+   re-laid out the instant the pointer arrived and Stop slid out from under it:
+   the first press on the meeting stop hit nothing (pill-matrix --clicks). */
+.meeting-badge > .rec-swap:has(> .rec-people) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 46px;
+  min-width: 0;
+  max-width: 46px;
+  overflow: hidden;
 }
 .meeting-badge > .rec-stop {
   flex: none;
