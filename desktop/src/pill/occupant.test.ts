@@ -111,7 +111,14 @@ describe("who is painted in the one pill (yap-1106-main-character-switch)", () =
       const shells = { rest: { w: REST_CAPSULE.w, h: REST_CAPSULE.h }, open: { w: OPEN_CAPSULE.w, h: OPEN_CAPSULE.h } };
       for (const phase of ["rest", "open"] as const) for (const dpr of [1, 2]) {
         const cam = pillCamera({ x: 0, y: 0, ...shells[phase] }, dpr, env);
-        expect(cam.fits, `${id} ${phase} dpr=${dpr}`).toBe(true);
+        // yap-1107-parity-pill — the resting shell is the approved 72 x 28 nub
+        // (characterFit ARTIFACT_REST_SHELL): at 2x every friend is framed whole
+        // (its box sits inside Yappy's clamped box, so a whole cell that holds
+        // the chick holds the friend); below 2x the nub keeps the head in view,
+        // the same "head" framing rule characterFit.test applies to Yappy.
+        const ok = cam.fits || (dpr < 2 && cam.framing === "head" && cam.char.y >= cam.stadium.y);
+        expect(ok, `${id} ${phase} dpr=${dpr} framing=${cam.framing}`).toBe(true);
+        if (dpr === 2) expect(cam.framing, `${id} ${phase} dpr=${dpr}`).toBe("whole");
         expect(Number.isInteger(cam.blit.cell), `${id} ${phase} dpr=${dpr}`).toBe(true);
         // The framed box is the friend's whole box at the lift the camera chose.
         const box = occupantBoxFor(m, cam.lift);

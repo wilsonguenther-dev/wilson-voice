@@ -504,15 +504,18 @@ body,
   position: absolute;
   transform: translate(-50%, calc(-100% + 4px)) scale(0.96);
   width: max-content;
+  /* yap-1107-parity-pill — pill.html .ybub, measured: light card, dark ink,
+     500 12px/1.2, padding 6px 10px, radius 9, no rim, soft 0 2px 8px shadow. */
   background: var(--pill-bubble-surface);
   color: var(--pill-bubble-text);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 12px;
-  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--pill-bubble-radius);
+  padding: 6px 10px;
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0;
+  box-shadow: var(--pill-bubble-shadow);
   white-space: normal;
   max-width: min(200px, 92%);
   opacity: 0;
@@ -535,7 +538,7 @@ body,
   -webkit-line-clamp: 2;
   line-clamp: 2;
   overflow: hidden;
-  line-height: 1.25;
+  line-height: 1.2; /* yap-1107-parity-pill: pill.html .ybub 12px/1.2 */
   overflow-wrap: anywhere;
   text-wrap: balance;
 }
@@ -565,9 +568,7 @@ body,
   transform: translateX(-50%) rotate(45deg);
   width: 8px;
   height: 8px;
-  background: inherit;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  background: inherit; /* pill.html .ybub::before: an 8 px rotated square, no rim */
 }
 
 /* ── YV95 · MEETING RECORDING ─────────────────────────────────────────────────
@@ -609,8 +610,9 @@ body,
 }
 .meeting-cup-light {
   position: absolute;
-  background: hsl(var(--accent-meeting));
-  box-shadow: 0 0 4px hsl(var(--accent-meeting) / 0.8);
+  /* yap-1107-parity-pill — pill.html .recdot: var(--rec) #e5484d, flat (no
+     glow), the approved recording red inside the meeting pill. */
+  background: var(--pill-rec);
 }
 .meeting-cup-light.pulsing {
   animation: rec-cup-pulse var(--rec-pulse, 1.6s) steps(1, end) infinite;
@@ -1152,7 +1154,8 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
 .kami-gate-lock:hover { color: rgba(251, 191, 36, 1); }
 /* A license arrived by deep link from the site: Yappy hops once. The canvas
    moves as one compositor layer; the duration is DURATION.yappyHop. */
-.kami-hop .kami-canvas {
+.kami-hop .kami-canvas,
+.kami-hop .yappy-capsule-box {
   animation: kami-hop var(--dur-hop, 720ms) var(--ease-state, ease-out) 1;
 }
 @keyframes kami-hop {
@@ -1234,7 +1237,7 @@ html[data-dock="right"] .kami-license { --lic-x: 254px; }
   inset: 0 auto 0 0;
   width: 100%;
   border-radius: 2px;
-  background: hsl(38 92% 55%);
+  background: var(--pill-bar-fill); /* yap-1107-parity-pill: pill.html .bar i (the gold in tokens.css) */
   transform-origin: left center;
   transform: scaleX(var(--progress, 0));
 }
@@ -2231,10 +2234,11 @@ html[data-one-pill="true"][data-meeting-shell="true"] .kami-stage .meeting-shell
   box-sizing: border-box;
   border-radius: 14px;
   pointer-events: none;
-  background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
+  /* yap-1107-parity-pill — pill.html .ypill: flat --shell, a 1 px rim, soft shadow. */
+  background: var(--pill-shell);
   box-shadow:
-    inset 0 0 0 0.5px hsl(var(--accent-meeting) / 0.42),
-    0 8px 20px rgba(0, 0, 0, 0.42);
+    inset 0 0 0 1px var(--pill-shell-line),
+    var(--pill-shell-shadow);
 }
 /* Inside the one shell the clock is a segment: no capsule, no shadow of its own. */
 html[data-one-pill="true"][data-meeting-shell="true"] .kami-stage .meeting-badge {
@@ -2247,7 +2251,20 @@ html[data-one-pill="true"][data-meeting-shell="true"][data-dock="right"] .kami-s
   border-radius: 14px 0 0 14px;
 }
 html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-badge {
-  border-radius: 14px;
+  border-radius: var(--meeting-pill-radius);
+  /* yap-1107-parity-pill — pill.html mtgPill: .ypill padding 4, gap 4; the
+     140 x 36 window first, then the rec segment (state.ts CLOCK_W 202 x 44). */
+  padding: var(--pill-shell-pad);
+  gap: var(--pill-shell-gap);
+  justify-content: flex-start;
+}
+html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-shell {
+  /* PK.pill radius = h / 2 for the 44-tall meeting pill. */
+  border-radius: var(--meeting-pill-radius);
+}
+html[data-one-pill="true"][data-meeting-shell="true"][data-scene-character="true"] .kami-stage .meeting-scene {
+  /* mtgPill win r: 14 */
+  border-radius: var(--meeting-window-radius);
 }
 /* Dictating mid-meeting: the clock is a small stack next to stop. */
 .meeting-badge.meeting-stacked {
@@ -2417,7 +2434,12 @@ html[data-rail-error="true"] .phase-strip { opacity: 1; color: rgba(252, 165, 16
    window's centre for a pill that publishes no layout. */
 html {
   --blob-d: 28px;
-  --blob-cx: calc(var(--char-x, calc(50% - 14px)) + var(--char-w, 28px) / 2);
+  --blob-rim: 4px; /* pill.html .blob padding */
+  /* integrate(yap-1107-parity-pill): clamped so the whole 36 px disc (face +
+     rim) stays inside the window at a side dock; face and disc move together. */
+  --blob-cx: clamp(calc(var(--blob-d) / 2 + var(--blob-rim)),
+    calc(var(--char-x, calc(50% - 14px)) + var(--char-w, 28px) / 2),
+    calc(100vw - var(--blob-d) / 2 - var(--blob-rim)));
   --blob-cy: calc(var(--char-y, calc(50% - 14px)) + var(--char-h, 28px) * 0.4);
 }
 
@@ -2435,16 +2457,24 @@ html[data-pill-drag-motion="animate"] .kami-canvas {
 html[data-pill-drag="blob"][data-pill-drag-motion="animate"] .kami-canvas {
   clip-path: circle(calc(var(--blob-d) / 2) at var(--blob-cx) var(--blob-cy));
 }
-html[data-pill-drag="blob"] .kami-stage::before {
-  content: "";
+/* yap-1107-parity-pill — the approved page's .blob (pill.html): a 36 px disc,
+   4 px of shell around the 28 px face, a 1 px inner rim, 0 10px 22px shadow.
+   A real element (.kami-blob), so the parity sheet can measure it. */
+.kami-blob {
+  display: none;
+}
+html[data-pill-drag="blob"] .kami-blob {
+  display: block;
   position: absolute;
-  left: calc(var(--blob-cx) - var(--blob-d) / 2 - 2px);
-  top: calc(var(--blob-cy) - var(--blob-d) / 2 - 2px);
-  width: calc(var(--blob-d) + 4px);
-  height: calc(var(--blob-d) + 4px);
+  left: calc(var(--blob-cx) - var(--blob-d) / 2 - var(--blob-rim));
+  top: calc(var(--blob-cy) - var(--blob-d) / 2 - var(--blob-rim));
+  width: calc(var(--blob-d) + 2 * var(--blob-rim));
+  height: calc(var(--blob-d) + 2 * var(--blob-rim));
   border-radius: 50%;
-  background: linear-gradient(180deg, var(--pill-shell-top) 0%, var(--pill-shell-bottom) 100%);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  background: var(--pill-shell-top);
+  box-shadow:
+    inset 0 0 0 1px var(--pill-shell-line),
+    var(--pill-blob-shadow);
   pointer-events: none;
 }
 
@@ -2640,7 +2670,7 @@ html[data-pill-drag-motion="instant"] :is(.pill, .kami-canvas) {
   inset: 0 auto 0 0;
   width: 100%;
   border-radius: 2px;
-  background: var(--pill-warmup-fill);
+  background: var(--pill-warmup-fill); /* = --pill-bar-fill, pill.html .bar i (the gold in tokens.css) */
   transform-origin: left center;
 }
 .warmup-retry {
@@ -2697,6 +2727,152 @@ html[data-dock="right"] .friend-visit {
 }
 @media (prefers-reduced-motion: reduce) {
   .friend-visit { animation: none; }
+}
+
+/* yap-1107-parity-pill — the approved shell (pill.html .ypill): a PAINTED DOM
+   box, --pill-shell #1e2025 with --pill-shell-pad / --pill-shell-gap 4 px and
+   the --pill-shell-line rim, holding the ONE sky window canvas (.yappy-win, the
+   approved .win) YappyPill draws the sky and Yappy into. YappyPill writes
+   left/top/width/height and data-shape each time the drawn box changes. Only
+   the horizontal capsule is painted here; the side dock and a resting meeting
+   draw their own shell (data-shape side-* / scene keep it hidden). Never hit:
+   the drag handlers stay on .kami-canvas underneath. */
+.yappy-capsule-box {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--pill-shell-gap);
+  padding: var(--pill-shell-pad);
+  background: var(--pill-shell);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--pill-shell-line), var(--pill-shell-shadow);
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 0;
+}
+.yappy-capsule-box[data-shape="capsule"] {
+  visibility: visible;
+}
+.yappy-win {
+  display: block;
+  flex: none;
+  image-rendering: pixelated;
+}
+/* yap-1107-parity-pill (bounce fix: text, keycap, stop and buttons sat OUTSIDE
+   the shell) — the approved .ypill .seg.r, INSIDE .yappy-capsule-box after the
+   sky window: gap 6, padding 0 6, 500 12px on --pill-on-shell. YappyPill sizes
+   the shell around the window plus this segment's measured width (shellSegment
+   shellBounds). Visual only: a click anywhere on the pill lands on .kami-canvas
+   underneath (hands-free stop, retry, the gate), as before. */
+.yappy-seg {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  color: var(--pill-on-shell);
+  font: 500 12px/1 var(--font-body, ui-sans-serif, -apple-system, system-ui, sans-serif);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.yappy-seg:empty {
+  display: none;
+}
+.yappy-seg-sub {
+  color: var(--pill-on-shell-2);
+  font-weight: 400;
+}
+.yappy-seg-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.yappy-seg-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 5px;
+  background: var(--pill-shell-2);
+  color: var(--pill-on-shell);
+  font: 500 11px/1 var(--font-mono);
+}
+.yappy-seg-stop {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--pill-shell-2);
+  color: var(--pill-stop);
+}
+/* yap-1107-parity-pill — the open side shell's stop (pill.html #vstage .vshell
+   .sbtn.red, 24 px, radius 8), centred under the 56 x 180 room at the shell's
+   bottom padding (vdock.ts vStopRect; the shell is 64 x 216 like .vshell).
+   Visual only, like .yappy-seg: the click lands on .kami-canvas underneath. */
+.yappy-vstop {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--pill-shell-2);
+  color: var(--pill-stop);
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 1;
+}
+.yappy-vstop[data-show="true"] {
+  visibility: visible;
+}
+.yappy-seg-cta {
+  display: inline-block;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--pill-cta);
+  color: var(--pill-cta-text);
+  font: 500 12px/24px var(--font-body, ui-sans-serif, -apple-system, system-ui, sans-serif);
+}
+.yappy-seg-bar {
+  display: block;
+  width: 44px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--pill-bar-track);
+  overflow: hidden;
+}
+.yappy-seg-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--pill-bar-fill);
+}
+.yappy-seg-stack {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+}
+.yappy-seg-stack-t {
+  font: 500 11px/1 var(--font-mono);
+  color: var(--pill-on-shell);
+}
+/* The words now live in the shell: the old strip under it would say them twice. */
+html[data-pill-seg="1"] .phase-strip {
+  visibility: hidden;
+}
+html[data-pill-seg="live"] .hands-free-hint,
+html[data-pill-seg="live"] .lock-chip {
+  visibility: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .yappy-seg-bar > i { transition: none; }
 }
 
 /* yap-1106-fb-22a — "Who's talking right now?" under the pill. Same card

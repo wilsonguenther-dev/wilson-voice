@@ -75,13 +75,31 @@ describe("parity companions: Hoot in the pill (companions.html s04)", () => {
     expect(hm.size).toBe(m.w);
     expect(m.w).toBe(40);
     expect(m.h).toBe(40);
-    // Fully inside the 112 x 40 buffer (no cropped character).
-    expect(hm.x).toBeGreaterThanOrEqual(0);
-    expect(hm.y).toBeGreaterThanOrEqual(0);
-    expect(hm.x + m.w).toBeLessThanOrEqual(SCENE_W);
-    expect(hm.y + m.h).toBeLessThanOrEqual(SCENE_H);
-    // Centred where Yappy stands (cx 74).
+    // Fully inside the 140 x 36 buffer (no cropped character): measure the
+    // PAINTED box of the 1:1 sprite (headphones on), not its 40 x 40 cell —
+    // the cell's empty top rows may clip, a painted pixel may not.
+    const r = new Raster(m.w, m.h);
+    expect(drawFriendFrame(r, "hoot", "idle")).toBe(true);
+    let top = m.h, bottom = -1, left = m.w, right = -1;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        if (r.data[(y * m.w + x) * 4 + 3] > 0) {
+          top = Math.min(top, y); bottom = Math.max(bottom, y);
+          left = Math.min(left, x); right = Math.max(right, x);
+        }
+      }
+    }
+    expect(bottom).toBeGreaterThanOrEqual(top);
+    expect(hm.x + left).toBeGreaterThanOrEqual(0);
+    expect(hm.y + top).toBeGreaterThanOrEqual(0);
+    expect(hm.x + right).toBeLessThan(SCENE_W);
+    expect(hm.y + bottom).toBeLessThan(SCENE_H);
+    // Centred where Yappy stands (cx 88 in the 140 x 36 layout).
     expect(hm.x + m.w / 2).toBe(SCENE_LAYOUT.yappy.cx);
+    // The recording cup is inside the buffer too (its glow ring included).
+    const cup = SCENE_LAYOUT.hootCup;
+    expect(cup.y - 1).toBeGreaterThanOrEqual(0);
+    expect(cup.y + cup.h + 1).toBeLessThanOrEqual(SCENE_H);
     // Clear of the tape machine on his left.
     const t = SCENE_LAYOUT.tape;
     expect(hm.x).toBeGreaterThanOrEqual(t.x + t.w);

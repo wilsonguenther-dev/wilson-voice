@@ -191,3 +191,25 @@ describe("yap-1106-yappy-detail-pass — the detail-pass Yappy stands whole in t
     });
   }
 });
+
+describe("yap-1107-parity-pill x yap-1106-main-character-switch — a friend's meeting spot moved with the 140 x 36 layout", () => {
+  it("main_friend_spot_fits_the_140x36_buffer: the 24 px friend, headphones and ear-cup light all inside", () => {
+    const { main, mainCup, cup, yappy, groundY } = SCENE_LAYOUT;
+    // MeetingWorld drawMainFriend: the band is one row above the box, the left cup 3 columns left of it
+    expect(main.y - 1).toBeGreaterThanOrEqual(0);
+    expect(main.x - 3).toBeGreaterThanOrEqual(0);
+    expect(main.x + main.size).toBeLessThanOrEqual(SCENE_W);
+    expect(main.y + main.size).toBeLessThanOrEqual(SCENE_H);
+    // stands on the grass exactly as before the move (feet one row into the ground)
+    expect(main.y + main.size).toBe(groundY + 1);
+    // the recording light keeps its 1 px ink frame inside the buffer
+    expect(mainCup.x - 1).toBeGreaterThanOrEqual(0);
+    expect(mainCup.x + mainCup.w + 1).toBeLessThanOrEqual(SCENE_W);
+    expect(mainCup.y - 1).toBeGreaterThanOrEqual(0);
+    expect(mainCup.y + mainCup.h + 1).toBeLessThanOrEqual(SCENE_H);
+    // same offsets from Yappy's spot and his cup as the switch item drew them (+14 x / -4 y together)
+    expect(main.x - yappy.cx).toBe(-12);
+    expect(mainCup.x - cup.x).toBe(3);
+    expect(mainCup.y - cup.y).toBe(-3);
+  });
+});
