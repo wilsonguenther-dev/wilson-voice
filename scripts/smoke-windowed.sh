@@ -93,8 +93,10 @@ DRIVER="$ROOT/scripts/smoke-windowed.mjs"
 # The two window sizes under test. 980x700 is the comfortable desktop window;
 # 720x520 is the smallest size the window is allowed to reach, which is where
 # overflow and clipping actually show up.
-export YAP_SMOKE_W1=980 YAP_SMOKE_H1=700
-export YAP_SMOKE_W2=720 YAP_SMOKE_H2=520
+# yap-1107-parity-home: a caller may set the sizes (the parity sheets capture Home
+# at 1188x1600, where the main column holds the 3x room and Home down to its end).
+export YAP_SMOKE_W1="${YAP_SMOKE_W1:-980}" YAP_SMOKE_H1="${YAP_SMOKE_H1:-700}"
+export YAP_SMOKE_W2="${YAP_SMOKE_W2:-720}" YAP_SMOKE_H2="${YAP_SMOKE_H2:-520}"
 
 # Condition 5's marker attribute. A view with nothing to show must SAY it has
 # nothing to show; data-empty-state is how it says so.
@@ -128,7 +130,9 @@ case "${1:-}" in
 esac
 
 SHOTS_ROOT="${YAP_SMOKE_SHOTS:-docs/smoke-shots}"
-RUN="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+# yap-1107-parity-home: a caller-named run (YAP_SMOKE_RUN=parity-home-<date>, as
+# the parity integrator steps pass it) is honoured; unset = a timestamped run.
+RUN="${YAP_SMOKE_RUN:-$(date -u +%Y-%m-%dT%H-%M-%SZ)}"
 export YAP_SMOKE_RUN="$RUN" YAP_SMOKE_SHOTS="$SHOTS_ROOT"
 mkdir -p "$SHOTS_ROOT/$RUN"
 

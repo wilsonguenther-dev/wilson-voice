@@ -684,6 +684,7 @@ export function FlowBarSlots(
             type="button"
             className="slot"
             data-slot={p.id}
+            data-pill-control={`slot-${p.id}`}
             data-tip-side={side}
             aria-label={tip}
             aria-keyshortcuts={key ?? undefined}

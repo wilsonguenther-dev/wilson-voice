@@ -293,7 +293,7 @@ export default function WarmupEngine({
         <i style={{ transform: `scaleX(${(model.bar / 100).toFixed(4)})` }} />
       </span>
       {model.showRetry && (
-        <button ref={retryRef} type="button" className="warmup-retry" onClick={retry} disabled={retrying}>
+        <button ref={retryRef} type="button" className="warmup-retry" data-pill-control="retry" onClick={retry} disabled={retrying}>
           {retrying ? "Retrying" : "Retry"}
         </button>
       )}

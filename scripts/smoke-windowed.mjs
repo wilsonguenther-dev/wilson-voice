@@ -29,7 +29,16 @@
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { TAURI_SHIM, evaluate, openChrome as openHeadlessChrome, sleep } from "./headless-chrome.mjs";
+import {
+  PARITY_CLOCK,
+  PARITY_COLOR_SCHEME,
+  TAURI_SHIM,
+  evaluate,
+  openChrome as openHeadlessChrome,
+  pinColorScheme,
+  pinnedClockScript,
+  sleep,
+} from "./headless-chrome.mjs";
 
 /* ── the contract ───────────────────────────────────────────────────────── */
 
@@ -220,14 +229,21 @@ function __yapDetect(cfg) {
    pill-matrix.mjs so the two instruments launch the same headless Chrome. */
 const openChrome = () => openHeadlessChrome(CHROME, "yap-smoke");
 
+let pinLogged = false;
 async function newPage(cdp, url) {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   await cdp.send("Page.enable", {}, sessionId);
   await cdp.send("Runtime.enable", {}, sessionId);
+  const pin = parityPin();
+  if (pin.scheme) await pinColorScheme(cdp, sessionId, pin.scheme);
+  if (!pinLogged) {
+    pinLogged = true;
+    console.error("smoke-windowed event=parity-pin scale=" + SCALE + " scheme=" + (pin.scheme || "system") + " clock=" + (pin.clock || "real"));
+  }
   await cdp.send(
     "Page.addScriptToEvaluateOnNewDocument",
-    { source: "window.__YAP_FIXTURES__ = " + JSON.stringify(FIXTURES) + ";\n" + TAURI_SHIM },
+    { source: pin.clockJs + "window.__YAP_FIXTURES__ = " + JSON.stringify(FIXTURES) + ";\n" + TAURI_SHIM },
     sessionId
   );
   if (url) await cdp.send("Page.navigate", { url }, sessionId);
@@ -250,6 +266,20 @@ function smokeScale(raw) {
   return n;
 }
 const SCALE = smokeScale(process.env.YAP_SMOKE_SCALE);
+
+/* yap-1107-parity-home — a 2x run is a PARITY capture: it sits next to a light,
+   daytime design crop, so it is taken in the light scheme at 12:00 local (the
+   Mac's dark appearance and a night-tinted room are not what the page shows).
+   YAP_SMOKE_COLOR_SCHEME (light|dark|system) and YAP_SMOKE_CLOCK (HH:MM|off)
+   override; a 1x run pins nothing unless asked, byte-for-byte as before. */
+export function parityPin(env = process.env, scale = SCALE) {
+  const parity = scale !== 1;
+  const schemeRaw = (env.YAP_SMOKE_COLOR_SCHEME || (parity ? PARITY_COLOR_SCHEME : "system")).trim().toLowerCase();
+  const clockRaw = (env.YAP_SMOKE_CLOCK || (parity ? PARITY_CLOCK : "off")).trim().toLowerCase();
+  const scheme = schemeRaw === "light" || schemeRaw === "dark" ? schemeRaw : null;
+  const clockJs = clockRaw === "off" ? "" : pinnedClockScript(clockRaw);
+  return { scheme, clock: clockJs ? clockRaw : null, clockJs };
+}
 
 async function setSize(cdp, sessionId, w, h) {
   await cdp.send(
