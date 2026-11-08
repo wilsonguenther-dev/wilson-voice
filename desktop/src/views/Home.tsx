@@ -44,7 +44,9 @@ export function NeedsAttention({
           joins it only past the two takes the approved panel shows. */}
       <h3 id="needs-attention-h" className="home-panel-h">
         Needs attention{" "}
-        <span className="count home-meta">
+        {/* yap-1107-parity-home (bounce fix) — the count is plain .meta: the
+            global .count badge would add its sky background and padding. */}
+        <span className="attention-count home-meta">
           {failed.length}
           {showRetryAll(failed) ? (
             <button
@@ -65,7 +67,9 @@ export function NeedsAttention({
             {/* yap-1107-parity-home — the approved .att .it: title + time on one
                 row, one line of what is kept, then Retry and Discard. The
                 engine's own words stay one hover away on that line. */}
-            <div className="card-meta">
+            {/* Not the global .card-meta (0.66rem mono, 8 px under): the
+                approved .row is 13 px body ink with the time as 12 px meta. */}
+            <div className="attention-head">
               <strong>{attentionTitle(f.error)}</strong>
               <span>{formatTime(f.createdAt)}</span>
             </div>

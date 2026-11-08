@@ -164,6 +164,19 @@ describe("Needs attention: failed and cancelled takes, hidden when empty", () =>
     expect(page).toContain('data-home="needs-attention"');
     expect(page).not.toContain("Failed and unfinished dictations");
   });
+  it("bounce fix: the row head is never the global .card-meta and the count is plain meta (no 9.24 px font, 243.56 px panel)", () => {
+    const html = attention([failedRow("c", "Cancelled"), failedRow("f", "Engine could not transcribe")]);
+    expect(html).not.toContain('class="card-meta"');
+    expect(html.match(/class="attention-head"/g)?.length).toBe(2);
+    expect(html).toContain('class="attention-count home-meta"');
+    expect(html).not.toMatch(/class="count[ "]/);
+    const head = appCss.slice(appCss.indexOf(".attention-row .attention-head {"), appCss.indexOf("}", appCss.indexOf(".attention-row .attention-head {")));
+    expect(head).toMatch(/font-size:\s*13px/);
+    expect(head).toMatch(/margin:\s*0/);
+    const strong = appCss.slice(appCss.indexOf(".attention-row .attention-head strong {"), appCss.indexOf("}", appCss.indexOf(".attention-row .attention-head strong {")));
+    expect(strong).toMatch(/font-size:\s*13px/);
+    expect(appCss).not.toContain(".attention-row .card-meta");
+  });
 });
 
 describe('"Delete all recordings" moved to Settings → Privacy', () => {

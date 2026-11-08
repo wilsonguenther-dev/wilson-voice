@@ -1309,16 +1309,22 @@ button.link:hover {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--home-line);
 }
-.attention-row .card-meta {
+/* .att .it .row — its own class, never the global .card-meta (whose 0.66rem
+   = 9.24 px mono and 8 px margin made each row 6.6 px taller than approved). */
+.attention-row .attention-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: normal;
 }
-.attention-row .card-meta strong {
+.attention-row .attention-head strong {
+  font-size: 13px;
   font-weight: 400;
   color: var(--home-ink);
 }
-.attention-row .card-meta span {
+.attention-row .attention-head span {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--home-ink-3);
