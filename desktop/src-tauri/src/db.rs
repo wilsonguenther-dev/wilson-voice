@@ -2695,8 +2695,7 @@ impl Database {
         let mut tracks: Vec<i64> = voices.iter().map(|v| v.track).collect();
         tracks.dedup();
         // (track, loser cluster, representative cluster, name to carry)
-        type CarriedName = Option<(Option<i64>, String)>;
-        let mut moves: Vec<(i64, i64, i64, CarriedName)> = Vec::new();
+        let mut moves: Vec<(i64, i64, i64, Option<(Option<i64>, String)>)> = Vec::new();
         let mut voices_after = 0usize;
         let mut new_voice: Vec<(i64, i64, Vec<f32>, f64)> = Vec::new();
         for track in tracks {
