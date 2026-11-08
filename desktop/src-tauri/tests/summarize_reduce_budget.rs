@@ -105,6 +105,8 @@ fn scripted() -> StubModel {
 
 #[test]
 fn reduce_never_receives_an_unbounded_prompt() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
     let segments = long_meeting(700);
     let model = scripted();
     let summary = summarize_segments(&segments, &model).expect("a long meeting summarizes");
@@ -166,6 +168,8 @@ fn reduce_never_receives_an_unbounded_prompt() {
 
 #[test]
 fn a_truncated_map_pass_is_rendered_not_only_logged() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
     let segments = long_meeting(200);
     // The sidecar answers, but says it had to cut the prompt to fit.
     let model = StubModel::truncating(|req| {
@@ -205,6 +209,8 @@ fn a_truncated_map_pass_is_rendered_not_only_logged() {
 
 #[test]
 fn a_truncated_reduce_pass_is_rendered_too() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
     let segments = long_meeting(200);
     let model = StubModel::truncating(|req| {
         if req.mode == SUMMARIZE_REDUCE {
@@ -233,6 +239,8 @@ fn a_truncated_reduce_pass_is_rendered_too() {
 
 #[test]
 fn a_single_chunk_meeting_still_skips_reduce_entirely() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
     // The cheap path must survive the fold: nothing to merge, no model call, no
     // disclaimer.
     let segments = long_meeting(3);
