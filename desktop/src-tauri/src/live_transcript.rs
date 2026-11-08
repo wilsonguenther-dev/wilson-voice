@@ -291,7 +291,10 @@ static LIVE_EXPECTED_SPEAKERS: AtomicU8 = AtomicU8::new(0);
 /// See [`LIVE_EXPECTED_SPEAKERS`]. `None` or out of range = Auto.
 pub fn set_live_expected_speakers(count: Option<u8>) {
     let n = count
-        .filter(|n| (crate::meetings::EXPECTED_SPEAKERS_MIN..=crate::meetings::EXPECTED_SPEAKERS_MAX).contains(n))
+        .filter(|n| {
+            (crate::meetings::EXPECTED_SPEAKERS_MIN..=crate::meetings::EXPECTED_SPEAKERS_MAX)
+                .contains(n)
+        })
         .unwrap_or(0);
     LIVE_EXPECTED_SPEAKERS.store(n, Ordering::Relaxed);
 }
@@ -338,14 +341,18 @@ pub fn meeting_set_expected_speakers(
 ) -> Result<(), String> {
     use tauri::Manager;
     if let Some(n) = count {
-        if !(crate::meetings::EXPECTED_SPEAKERS_MIN..=crate::meetings::EXPECTED_SPEAKERS_MAX).contains(&n) {
+        if !(crate::meetings::EXPECTED_SPEAKERS_MIN..=crate::meetings::EXPECTED_SPEAKERS_MAX)
+            .contains(&n)
+        {
             log::warn!("meeting_people refused count={n}");
             return Err("People can be 1 to 12, or Auto.".into());
         }
     }
     log::info!(
         "meeting_people set count={} stored={}",
-        count.map(|n| n.to_string()).unwrap_or_else(|| "auto".into()),
+        count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "auto".into()),
         meeting_id.is_some()
     );
     set_live_expected_speakers(count);
@@ -353,10 +360,12 @@ pub fn meeting_set_expected_speakers(
         let st = app
             .try_state::<std::sync::Arc<crate::AppState>>()
             .ok_or_else(|| "Yap is still starting. Try again in a moment.".to_string())?;
-        st.db.set_meeting_expected_speakers(&id, count).map_err(|e| {
-            log::warn!("meeting_people store_failed error=\"{e}\"");
-            "Couldn't save the people count. Try again.".to_string()
-        })?;
+        st.db
+            .set_meeting_expected_speakers(&id, count)
+            .map_err(|e| {
+                log::warn!("meeting_people store_failed error=\"{e}\"");
+                "Couldn't save the people count. Try again.".to_string()
+            })?;
     }
     Ok(())
 }
@@ -385,10 +394,12 @@ pub fn meeting_recap_speakers(
             "Couldn't regroup the voices. Try again.".to_string()
         })?;
     let rows = match &out {
-        crate::meetings::RecapOutcome::Applied { .. } => st.db.meeting_label_rows(&meeting_id).unwrap_or_else(|e| {
-            log::warn!("meeting_recap rows_failed error=\"{e}\"");
-            Vec::new()
-        }),
+        crate::meetings::RecapOutcome::Applied { .. } => {
+            st.db.meeting_label_rows(&meeting_id).unwrap_or_else(|e| {
+                log::warn!("meeting_recap rows_failed error=\"{e}\"");
+                Vec::new()
+            })
+        }
         crate::meetings::RecapOutcome::NeedsConfirm { .. } => Vec::new(),
     };
     log::info!("meeting_recap done ms={}", t0.elapsed().as_millis());
@@ -406,7 +417,10 @@ pub struct RecapReply {
 
 /// The People count stored on a meeting (`None` = Auto).
 #[tauri::command]
-pub fn meeting_expected_speakers(app: tauri::AppHandle, meeting_id: String) -> Result<Option<u8>, String> {
+pub fn meeting_expected_speakers(
+    app: tauri::AppHandle,
+    meeting_id: String,
+) -> Result<Option<u8>, String> {
     use tauri::Manager;
     let st = app
         .try_state::<std::sync::Arc<crate::AppState>>()
@@ -636,7 +650,10 @@ impl LiveRoster {
             Some((i, s)) if self.pool_full() => {
                 self.join(i, embedding, speech);
                 self.last_capped = Some(s);
-                log::info!("live_speaker capped cluster={i} pct={}", (s * 100.0).round() as i32);
+                log::info!(
+                    "live_speaker capped cluster={i} pct={}",
+                    (s * 100.0).round() as i32
+                );
                 return (i, None);
             }
             _ => {
@@ -2109,8 +2126,16 @@ mod tests {
         let (capped, speakers) = run(Some(2), false);
         assert_eq!(speakers, 2, "the pool never grows past the count");
         for v in &capped[2..] {
-            assert_eq!(v.cluster, Some(1), "the drifted window is Sam's voice: {v:?}");
-            assert_ne!(v.name.as_deref(), Some(SOMEONE_NEW), "a full pool never says Someone new");
+            assert_eq!(
+                v.cluster,
+                Some(1),
+                "the drifted window is Sam's voice: {v:?}"
+            );
+            assert_ne!(
+                v.name.as_deref(),
+                Some(SOMEONE_NEW),
+                "a full pool never says Someone new"
+            );
             assert_eq!(v.name.as_deref(), Some("Speaker 2"));
         }
         assert!(
@@ -2133,7 +2158,11 @@ mod tests {
             false,
         ));
         st.set_people(Some(4), 2);
-        assert_eq!(st.roster().unwrap().cap, Some(3), "You are the mic: 3 other voices");
+        assert_eq!(
+            st.roster().unwrap().cap,
+            Some(3),
+            "You are the mic: 3 other voices"
+        );
         st.set_people(Some(4), 1);
         assert_eq!(st.roster().unwrap().cap, Some(4));
         st.set_people(None, 2);

@@ -926,7 +926,9 @@ pub const EXPECTED_SPEAKERS_MAX: u8 = 12;
 /// `Some(n)` inside 1..=12 survives; anything else is Auto.
 pub fn clamp_expected_speakers(count: Option<i64>) -> Option<u8> {
     count
-        .filter(|n| (i64::from(EXPECTED_SPEAKERS_MIN)..=i64::from(EXPECTED_SPEAKERS_MAX)).contains(n))
+        .filter(|n| {
+            (i64::from(EXPECTED_SPEAKERS_MIN)..=i64::from(EXPECTED_SPEAKERS_MAX)).contains(n)
+        })
         .map(|n| n as u8)
 }
 

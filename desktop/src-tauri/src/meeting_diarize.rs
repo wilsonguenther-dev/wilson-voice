@@ -37,8 +37,8 @@ use std::time::{Duration, Instant};
 use crate::asr_engine::TimedSpan;
 use crate::db::Database;
 use crate::diarize::{
-    attribute_clusters, cluster_track_with_voices_capped, DiarizeError, DiarizePool, DiarizedSegment,
-    MeetingTracks, TargetMode,
+    attribute_clusters, cluster_track_with_voices_capped, DiarizeError, DiarizePool,
+    DiarizedSegment, MeetingTracks, TargetMode,
 };
 use crate::diarize_metrics::CosineDistance;
 use crate::meeting_asr::{build_speaker_turns, ChunkStatus, JsonProgressStore, ProgressStore};
@@ -380,7 +380,9 @@ fn run(
         Ok(Some(n)) => Some(n),
         Ok(None) => crate::live_transcript::take_live_expected_speakers(),
         Err(e) => {
-            log::warn!("meeting_diarize expected_speakers_failed meeting={meeting_id} error=\"{e}\"");
+            log::warn!(
+                "meeting_diarize expected_speakers_failed meeting={meeting_id} error=\"{e}\""
+            );
             None
         }
     };
@@ -388,7 +390,9 @@ fn run(
         // A count set live (before the row id reached the pill) is stored now,
         // so the after-meeting header shows it and a re-merge starts from it.
         if let Err(e) = db.set_meeting_expected_speakers(meeting_id, Some(n)) {
-            log::warn!("meeting_diarize expected_speakers_store_failed meeting={meeting_id} error=\"{e}\"");
+            log::warn!(
+                "meeting_diarize expected_speakers_store_failed meeting={meeting_id} error=\"{e}\""
+            );
         }
     }
     let you_have_own_track = matches!(
@@ -398,7 +402,9 @@ fn run(
     let cap = crate::diarize::voice_pool(expected, you_have_own_track);
     log::info!(
         "meeting_diarize people meeting={meeting_id} count={} pool={}",
-        expected.map(|n| n.to_string()).unwrap_or_else(|| "auto".into()),
+        expected
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "auto".into()),
         cap.map(|n| n.to_string()).unwrap_or_else(|| "auto".into())
     );
     let (diarized, voices) = match cluster_track_with_voices_capped(

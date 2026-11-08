@@ -1279,7 +1279,11 @@ pub fn merge_to_cap(centroids: &[Vec<f32>], weights: &[f64], cap: Option<usize>)
             if width == 0 || c.len() != width {
                 return None;
             }
-            let norm = c.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>().sqrt();
+            let norm = c
+                .iter()
+                .map(|x| f64::from(*x) * f64::from(*x))
+                .sum::<f64>()
+                .sqrt();
             if !norm.is_finite() || norm <= 0.0 {
                 return None;
             }

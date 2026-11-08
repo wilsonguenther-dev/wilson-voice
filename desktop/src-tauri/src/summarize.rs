@@ -75,7 +75,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::meeting_echo::{word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD};
+use crate::meeting_echo::{
+    word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD,
+};
 use crate::meetings::{
     diarization_target, format_offset, is_two_track, speaker_label, DiarizationTarget, MeetingKind,
     MeetingSegment, MIC_TRACK, UNCLUSTERED_SPEAKER_LABEL,
@@ -2307,21 +2309,21 @@ fn summarize_run(
         .collect::<Vec<_>>()
         .join("\n");
     let narrative = strip_speaker_tag(&narrative).to_string();
-    let narrative = if !narrative.trim().is_empty() && is_verbatim_narrative(&plain_text, &narrative) {
-        log::info!(
-            "summarize narrative_refused reason=v8_verbatim stage=final containment={:.2}",
-            narrative_containment(&plain_text, &narrative)
-        );
-        let _ = reject("v8_verbatim");
-        String::new()
-    } else {
-        narrative
-    };
+    let narrative =
+        if !narrative.trim().is_empty() && is_verbatim_narrative(&plain_text, &narrative) {
+            log::info!(
+                "summarize narrative_refused reason=v8_verbatim stage=final containment={:.2}",
+                narrative_containment(&plain_text, &narrative)
+            );
+            let _ = reject("v8_verbatim");
+            String::new()
+        } else {
+            narrative
+        };
     let verbatim_refused = narrative.trim().is_empty() && run_rejected("v8_verbatim");
     if headline.title.trim().is_empty() {
-        headline.title = fallback_title(
-            meeting_started_at(segments).map(|t| t.with_timezone(&chrono::Local)),
-        );
+        headline.title =
+            fallback_title(meeting_started_at(segments).map(|t| t.with_timezone(&chrono::Local)));
     }
     // The evidence table: for every citable id, the two facts about it that are
     // already known here — when it was said, and (YV133) who said it. Both are
@@ -2358,7 +2360,13 @@ fn summarize_run(
     let mut decisions = resolve(&merged.decisions);
     let mut questions = resolve(&merged.questions);
     apply_item_guards(&mut actions, &mut decisions, &mut questions, &lines);
-    attribute_owners(&mut actions, &mut decisions, &mut questions, segments, &lines);
+    attribute_owners(
+        &mut actions,
+        &mut decisions,
+        &mut questions,
+        segments,
+        &lines,
+    );
     let markdown = render_notes_with(
         &headline,
         &names,
@@ -2413,13 +2421,24 @@ fn describes_rather_than_commits(lower: &str) -> bool {
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
         .replace('\u{2019}', "'");
-    matches!(first.as_str(), "i'm" | "im" | "it's" | "its" | "that's" | "thats" | "wow")
-        || [
-            "i am ", "i feel", "i love", "i like", "i was ", "i've been", "that was ", "it was ",
-            "this was ", "this is ", "what a ",
-        ]
-        .iter()
-        .any(|p| lower.starts_with(p))
+    matches!(
+        first.as_str(),
+        "i'm" | "im" | "it's" | "its" | "that's" | "thats" | "wow"
+    ) || [
+        "i am ",
+        "i feel",
+        "i love",
+        "i like",
+        "i was ",
+        "i've been",
+        "that was ",
+        "it was ",
+        "this was ",
+        "this is ",
+        "what a ",
+    ]
+    .iter()
+    .any(|p| lower.starts_with(p))
 }
 
 /// "Jeisil, send the deck" — an imperative addressed to a person by name.
@@ -2459,10 +2478,37 @@ pub fn action_has_commitment(text: &str) -> bool {
 /// will be dropped". Review rounds 1-4 (tests/summary_classify.rs) made these
 /// binding decisions; a description ("The weather was nice") has none.
 const DECISION_SHAPES: &[&str] = &[
-    "moves to", "moved to", "move to", "moving", "pushing", "pushed", "push ", "pushes",
-    "drop", "cut ", "switch", "will ", "won't", "stays", "stay ", "remain", "going to",
-    "is now", "are now", "from now on", "no longer", "instead", "starts", "start ",
-    "launch", "ship", "postpone", "delay", "cancel", "keep ", "skip",
+    "moves to",
+    "moved to",
+    "move to",
+    "moving",
+    "pushing",
+    "pushed",
+    "push ",
+    "pushes",
+    "drop",
+    "cut ",
+    "switch",
+    "will ",
+    "won't",
+    "stays",
+    "stay ",
+    "remain",
+    "going to",
+    "is now",
+    "are now",
+    "from now on",
+    "no longer",
+    "instead",
+    "starts",
+    "start ",
+    "launch",
+    "ship",
+    "postpone",
+    "delay",
+    "cancel",
+    "keep ",
+    "skip",
 ];
 
 /// DO 5 — a decision needs a decision marker, in its own words or in the line
@@ -2504,9 +2550,27 @@ fn starts_interrogative(lower: &str) -> bool {
         .trim_matches(|c: char| !c.is_alphanumeric());
     matches!(
         first,
-        "who" | "what" | "when" | "where" | "why" | "how" | "which" | "can" | "could"
-            | "would" | "should" | "shall" | "is" | "are" | "do" | "does" | "did" | "has"
-            | "have" | "was" | "were"
+        "who"
+            | "what"
+            | "when"
+            | "where"
+            | "why"
+            | "how"
+            | "which"
+            | "can"
+            | "could"
+            | "would"
+            | "should"
+            | "shall"
+            | "is"
+            | "are"
+            | "do"
+            | "does"
+            | "did"
+            | "has"
+            | "have"
+            | "was"
+            | "were"
     )
 }
 
@@ -2519,9 +2583,7 @@ pub fn commitment_score(text: &str) -> u8 {
         3
     } else if starts_imperative(t) || addressed_imperative(t) {
         2
-    } else if generic_commitment(&lower)
-        || DECISION_MARKERS.iter().any(|m| lower.contains(m))
-    {
+    } else if generic_commitment(&lower) || DECISION_MARKERS.iter().any(|m| lower.contains(m)) {
         1
     } else {
         0
@@ -2579,7 +2641,8 @@ pub fn apply_item_guards(
         }
         keep
     });
-    let kind_dropped = (before.0 - actions.len()) + (before.1 - decisions.len()) + (before.2 - questions.len());
+    let kind_dropped =
+        (before.0 - actions.len()) + (before.1 - decisions.len()) + (before.2 - questions.len());
 
     let pre_dedupe = decisions.len() + questions.len();
     decisions.retain(|d| !actions.iter().any(|a| same_item(&a.text, &d.text)));
@@ -2590,12 +2653,16 @@ pub fn apply_item_guards(
     let cross_section = pre_dedupe - (decisions.len() + questions.len());
 
     let mut by_segment: BTreeMap<String, Vec<(u8, usize, usize)>> = BTreeMap::new();
-    for (section, list) in [&*actions, &*decisions, &*questions].into_iter().enumerate() {
+    for (section, list) in [&*actions, &*decisions, &*questions]
+        .into_iter()
+        .enumerate()
+    {
         for (idx, item) in list.iter().enumerate() {
-            by_segment
-                .entry(item.segment.clone())
-                .or_default()
-                .push((commitment_score(&item.text), section, idx));
+            by_segment.entry(item.segment.clone()).or_default().push((
+                commitment_score(&item.text),
+                section,
+                idx,
+            ));
         }
     }
     let mut drop: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -2669,7 +2736,10 @@ pub fn attribute_owners(
     lines: &[TranscriptLine],
 ) {
     // The same numbering `transcript_lines_with` gave the lines.
-    let spoken: Vec<&MeetingSegment> = segments.iter().filter(|s| !s.text.trim().is_empty()).collect();
+    let spoken: Vec<&MeetingSegment> = segments
+        .iter()
+        .filter(|s| !s.text.trim().is_empty())
+        .collect();
     let single_voice = mic_is_single_voice(segments);
     // The label the far-side (system) track renders under in THIS meeting.
     let far_label = lines
@@ -3118,7 +3188,10 @@ where
 pub fn meeting_started_at(segments: &[MeetingSegment]) -> Option<chrono::DateTime<chrono::Utc>> {
     segments
         .iter()
-        .map(|s| s.created_at - chrono::Duration::milliseconds((s.start_seconds.max(0.0) * 1000.0) as i64))
+        .map(|s| {
+            s.created_at
+                - chrono::Duration::milliseconds((s.start_seconds.max(0.0) * 1000.0) as i64)
+        })
         .min()
 }
 
@@ -3179,7 +3252,10 @@ pub fn headline_source(
             } else {
                 parts
             };
-            log::info!("summarize headline_source parts={} even_shrink=true", parts.len());
+            log::info!(
+                "summarize headline_source parts={} even_shrink=true",
+                parts.len()
+            );
             even_shrink(&parts, MAX_NARRATIVE_WORDS * 3)
         }
     }
@@ -3321,7 +3397,10 @@ pub fn backfill_key_points(
     // heading are a re-transcript, the failure this item exists to stop.
     let kept = dedupe_key_points(points);
     if kept.len() < MIN_KEY_POINTS {
-        log::info!("summarize key_points_short count={} min={MIN_KEY_POINTS} padded=false", kept.len());
+        log::info!(
+            "summarize key_points_short count={} min={MIN_KEY_POINTS} padded=false",
+            kept.len()
+        );
     }
     let _ = (lines, names, source);
     kept
@@ -3400,8 +3479,16 @@ pub fn render_notes(
     truncated: bool,
 ) -> String {
     render_notes_with(
-        headline, names, narrative, actions, decisions, questions, truncated_chunks, chunks,
-        truncated, false,
+        headline,
+        names,
+        narrative,
+        actions,
+        decisions,
+        questions,
+        truncated_chunks,
+        chunks,
+        truncated,
+        false,
     )
 }
 

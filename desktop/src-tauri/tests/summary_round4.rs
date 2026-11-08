@@ -103,7 +103,10 @@ fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
     let s = summarize_segments(&segments_from(FIXTURE), &model).expect("a summary");
     assert!(!s.markdown.contains("### Key points"), "{}", s.markdown);
     for line in FIXTURE {
-        assert!(!s.markdown.contains(&format!("- {line}\n")) || line.contains("will"), "padded: {line}");
+        assert!(
+            !s.markdown.contains(&format!("- {line}\n")) || line.contains("will"),
+            "padded: {line}"
+        );
     }
     // No paragraph from the model → the MAP/REDUCE narrative stands in.
     assert_eq!(s.narrative, "The team reviewed pricing for the Drivia consulting tier.");

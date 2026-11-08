@@ -2702,8 +2702,10 @@ impl Database {
         for track in tracks {
             let tv: Vec<&speaker_profiles::ClusterVoice> =
                 voices.iter().filter(|v| v.track == track).collect();
-            let centroids: Vec<Vec<f32>> =
-                tv.iter().map(|v| v.embedding.clone().unwrap_or_default()).collect();
+            let centroids: Vec<Vec<f32>> = tv
+                .iter()
+                .map(|v| v.embedding.clone().unwrap_or_default())
+                .collect();
             let weights: Vec<f64> = tv.iter().map(|v| v.seconds).collect();
             let reps = crate::diarize::merge_to_cap(&centroids, &weights, cap);
             let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
@@ -2718,8 +2720,13 @@ impl Database {
                 // The name each member's lines carry (the most common one).
                 let name_of = |cluster: i64| -> Option<(Option<i64>, String)> {
                     let mut tally: Vec<((Option<i64>, String), usize)> = Vec::new();
-                    for r in rows.iter().filter(|r| r.track == track && r.cluster_index == Some(cluster)) {
-                        let Some(n) = r.speaker_name.clone() else { continue };
+                    for r in rows
+                        .iter()
+                        .filter(|r| r.track == track && r.cluster_index == Some(cluster))
+                    {
+                        let Some(n) = r.speaker_name.clone() else {
+                            continue;
+                        };
                         match tally.iter_mut().find(|(k, _)| k.1 == n) {
                             Some((_, c)) => *c += 1,
                             None => tally.push(((r.profile_id, n), 1)),
@@ -2733,10 +2740,15 @@ impl Database {
                     .collect();
                 named.sort_by(|a, b| b.0.total_cmp(&a.0));
                 let winner = named.first().map(|(_, n)| n.clone());
-                if let Some(loser) = named.iter().find(|(_, n)| winner.as_ref().is_some_and(|w| w.1 != n.1)) {
+                if let Some(loser) = named
+                    .iter()
+                    .find(|(_, n)| winner.as_ref().is_some_and(|w| w.1 != n.1))
+                {
                     if !confirm_merge {
                         let into = winner.map(|w| w.1).unwrap_or_default();
-                        log::info!("meeting_recap needs_confirm meeting={meeting_id} track={track}");
+                        log::info!(
+                            "meeting_recap needs_confirm meeting={meeting_id} track={track}"
+                        );
                         return Ok(meetings::RecapOutcome::NeedsConfirm {
                             from: loser.1 .1.clone(),
                             into,
@@ -2797,7 +2809,8 @@ impl Database {
             }
         }
         for (track, cluster, embedding, secs) in &new_voice {
-            let blob = (!embedding.is_empty()).then(|| speaker_profiles::encode_embedding(embedding));
+            let blob =
+                (!embedding.is_empty()).then(|| speaker_profiles::encode_embedding(embedding));
             tx.execute(
                 "UPDATE meeting_cluster_voices
                     SET embedding = COALESCE(?4, embedding), seconds = ?5, updated_at = ?6

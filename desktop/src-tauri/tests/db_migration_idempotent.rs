@@ -929,7 +929,11 @@ fn migration_fourteen_adds_expected_speakers_and_reopening_is_a_no_op() {
     let db = open_db(&dir);
     assert_eq!(db.schema_version().unwrap(), EXPECTED_VERSION);
     assert!(columns(&path, "meetings").contains(&"expected_speakers".to_string()));
-    assert_eq!(db.meeting_expected_speakers(&id).unwrap(), None, "old rows are Auto");
+    assert_eq!(
+        db.meeting_expected_speakers(&id).unwrap(),
+        None,
+        "old rows are Auto"
+    );
     assert!(db.set_meeting_expected_speakers(&id, Some(4)).unwrap());
     drop(db);
     for _ in 0..2 {
