@@ -60,6 +60,45 @@ export class Cdp {
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/*
+ * yap-1107-parity-home — the parity pin. The approved design pages are LIGHT
+ * and DAYTIME (sideview.js draws no room tint, home.html has no dark block),
+ * but headless Chrome follows the Mac's appearance (Wilson's Mac is dark) and
+ * the studio tints its room by the REAL clock (night = the floor's #e9cf98 is
+ * gone). A parity capture or measurement pins both so it is judged against the
+ * page it copies: prefers-color-scheme from `scheme`, and the local time of day
+ * at `clock` ("HH:MM") — the date stays today and time still runs from there,
+ * so timers, animations and relative dates behave. "system" / "off" = no pin.
+ */
+export const PARITY_COLOR_SCHEME = "light";
+export const PARITY_CLOCK = "12:00";
+export function pinnedClockScript(clock = PARITY_CLOCK) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(clock || "").trim());
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return "";
+  return `(() => {
+  const R = Date, real0 = R.now(), d = new R(real0);
+  d.setHours(${Number(m[1])}, ${Number(m[2])}, 0, 0);
+  const pin0 = d.getTime();
+  const now = () => pin0 + (R.now() - real0);
+  function PinnedDate(...a) {
+    if (!new.target) return new R(now()).toString();
+    return a.length ? new R(...a) : new R(now());
+  }
+  PinnedDate.prototype = R.prototype;
+  PinnedDate.now = now;
+  PinnedDate.parse = R.parse;
+  PinnedDate.UTC = R.UTC;
+  window.Date = PinnedDate;
+  window.__YAP_PARITY_CLOCK__ = ${JSON.stringify(m[1].padStart(2, "0") + ":" + m[2])};
+})();
+`;
+}
+export async function pinColorScheme(cdp, sessionId, scheme = PARITY_COLOR_SCHEME) {
+  if (scheme !== "light" && scheme !== "dark") return false;
+  await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] }, sessionId);
+  return true;
+}
+
 export async function waitForJson(url, tries = 100) {
   for (let i = 0; i < tries; i++) {
     try {
