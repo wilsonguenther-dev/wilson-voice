@@ -38,3 +38,8 @@ The Export list (`FloatingMenu`) is rendered into `<body>` at `position: fixed`.
 - "Delete | Row removes; toast … + Undo for 10 s". Every Delete path goes through `requestDelete` → `schedulePendingDelete`.
 - "↑/↓ move the selection, Return opens, ⌫ deletes with toast". Unchanged. While a menu is open, the menu takes the arrow keys and Escape, so the list does not move under it.
 - "nothing overlaps anything" (meetings.html §B). The capture tool checks this on every row in four states.
+
+
+## Evidence sweep 2026-11-08
+
+Sweep 2026-11-08T04:44:48Z, main e18a12d61c7f4916335c841093e23a0d9ae878b7: FAIL, nothing measured. Missing since run #4 (batch 1 #362): Before-shot from origin/main and 2x PNGs not committed to docs/loop/evidence. Blocker: this sweep ran in a code-only coder seat (loop three no-compile rule, Wilson 2026-11-06): no Yap Test build, no Vite/dist, no headless capture and no app launch were allowed, so nothing new could be captured or measured here; it needs a frontend build plus a headless capture. Follow-up item: yap-1108-evidence-meetings-row-actions-no-overlay in add-evidence-fails-2026-11-08.json.

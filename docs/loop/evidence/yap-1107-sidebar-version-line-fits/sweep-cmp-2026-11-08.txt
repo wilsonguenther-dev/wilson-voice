@@ -1,0 +1,5 @@
+sweep 2026-11-08T04:43:11Z on origin/main e18a12d61c7f4916335c841093e23a0d9ae878b7: byte compare (cmp) of the committed shipped-version crops, before vs after
+brand-before-release-900x600.png vs brand-after-release-900x600.png cmp_exit=0 identical sha=7da7a7e7d7b3/7da7a7e7d7b3
+before-release-900x600.png vs after-release-900x600.png cmp_exit=1 differs sha=b3600648ee6b/8e41ca0f854c
+brand-before-release-1190x773.png vs brand-after-release-1190x773.png cmp_exit=0 identical sha=416418e17bd9/416418e17bd9
+before-release-1190x773.png vs after-release-1190x773.png cmp_exit=1 differs sha=52c906e24748/1c74bf9917b2

@@ -15,3 +15,8 @@ the text column starts 64 px into the 220 px rail and the brand block's content 
 21 cells. "v0.9.4-loop3.8 · local · private" is 32 cells (205 px), ending at about 269 px: 49 px past the
 sidebar. The shipped "v0.9.4 · local · private" is 24 cells (154 px), ending at about 218 px: inside the
 sidebar's border (219 px) but 11 px into its right padding. It is kept exactly as it was, per acceptance (3).
+
+
+## Evidence sweep 2026-11-08
+
+Sweep 2026-11-08T04:44:48Z, main e18a12d61c7f4916335c841093e23a0d9ae878b7: measured a byte compare (cmp) of the committed shipped-version brand crops before vs after at 900x600 and 1190x773: identical 2 of 2 (sweep-cmp-2026-11-08.txt). A flaky compare can only add false differences, never a false match, so acceptance (3) PASSES; the full-window release shots differ 2 of 2 outside the brand crop and are not part of that check.
