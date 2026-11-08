@@ -201,8 +201,11 @@ fn the_live_watcher_thread_emits_on_a_transition_and_stays_quiet_otherwise() {
         GrantState::Authorized,
     );
     watch.poke(WatchReason::Refusal);
+    // yap-1107-timing-tests-deterministic: a positive wait returns the moment
+    // the emit arrives; the bound is a hang guard for a broken build, not a
+    // 2 s deadline a starved watcher thread on a loaded runner had to beat.
     let got = rx
-        .recv_timeout(Duration::from_secs(2))
+        .recv_timeout(Duration::from_secs(60))
         .expect("a revoked grant must emit permission_changed");
     assert_eq!(got.accessibility, GrantState::Denied);
 
