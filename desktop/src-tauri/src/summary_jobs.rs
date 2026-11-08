@@ -962,27 +962,13 @@ mod tests {
     fn terminal_phases_emit_even_without_the_meeting_row() {
         for phase in [NotesPhase::Ready, NotesPhase::Failed, NotesPhase::Cancelled] {
             assert!(phase.is_terminal());
-            assert_eq!(
-                progress_durations(phase, None),
-                Some((0.0, 0.0)),
-                "{phase:?}"
-            );
-            assert_eq!(
-                progress_durations(phase, Some((12.0, 30.0))),
-                Some((12.0, 30.0))
-            );
+            assert_eq!(progress_durations(phase, None), Some((0.0, 0.0)), "{phase:?}");
+            assert_eq!(progress_durations(phase, Some((12.0, 30.0))), Some((12.0, 30.0)));
         }
-        for phase in [
-            NotesPhase::Queued,
-            NotesPhase::PreparingNotes,
-            NotesPhase::Summarizing,
-        ] {
+        for phase in [NotesPhase::Queued, NotesPhase::PreparingNotes, NotesPhase::Summarizing] {
             assert!(!phase.is_terminal());
             assert_eq!(progress_durations(phase, None), None, "{phase:?}");
-            assert_eq!(
-                progress_durations(phase, Some((1.0, 2.0))),
-                Some((1.0, 2.0))
-            );
+            assert_eq!(progress_durations(phase, Some((1.0, 2.0))), Some((1.0, 2.0)));
         }
     }
 
@@ -999,20 +985,10 @@ mod tests {
         let (j, seen) = jobs(&stub);
         assert!(j.submit("fbd4eea9"));
         wait_phase(&j, "fbd4eea9", NotesPhase::Ready);
-        assert_eq!(
-            stub.calls.load(Ordering::SeqCst),
-            2,
-            "one retry, then the notes"
-        );
-        assert_eq!(
-            stub.stored.lock().unwrap().as_slice(),
-            ["fbd4eea9".to_string()]
-        );
+        assert_eq!(stub.calls.load(Ordering::SeqCst), 2, "one retry, then the notes");
+        assert_eq!(stub.stored.lock().unwrap().as_slice(), ["fbd4eea9".to_string()]);
         let seen = seen.lock().unwrap();
-        assert!(
-            seen.iter().all(|s| s.phase != NotesPhase::Failed),
-            "no false failure: {seen:?}"
-        );
+        assert!(seen.iter().all(|s| s.phase != NotesPhase::Failed), "no false failure: {seen:?}");
         assert_eq!(seen.last().map(|s| s.phase), Some(NotesPhase::Ready));
         assert!(seen.last().map(|s| s.phase.is_terminal()).unwrap_or(false));
     }
@@ -1027,25 +1003,14 @@ mod tests {
         let (j, seen) = jobs(&stub);
         assert!(j.submit("m-del"));
         wait_phase(&j, "m-del", NotesPhase::Summarizing);
-        assert!(
-            j.cancel("m-del"),
-            "a running job is cancelled by the delete"
-        );
+        assert!(j.cancel("m-del"), "a running job is cancelled by the delete");
         let _ = tx.send(());
         wait_phase(&j, "m-del", NotesPhase::Cancelled);
         assert!(!j.is_busy("m-del"));
-        let last = seen
-            .lock()
-            .unwrap()
-            .last()
-            .cloned()
-            .expect("a status was reported");
+        let last = seen.lock().unwrap().last().cloned().expect("a status was reported");
         assert_eq!(last.phase, NotesPhase::Cancelled);
         assert_eq!(progress_durations(last.phase, None), Some((0.0, 0.0)));
-        assert!(
-            stub.stored.lock().unwrap().is_empty(),
-            "a cancel stores nothing"
-        );
+        assert!(stub.stored.lock().unwrap().is_empty(), "a cancel stores nothing");
     }
 
     // B3 — two triggers for one meeting (the live hook and the launch resume)
