@@ -45,7 +45,7 @@ entirely; it was not done in this seat.
 | tests/diarize_sidecar_pool.rs:250 | D | a sticky-failed pool answers in under 200 ms | assert "no launch, no wait entered" via a counter on the pool instead of elapsed |
 | tests/diarize_sidecar_pool.rs:279, :308; tests/matrix_row7_diarize_sidecar_wedge.rs:82 | D (lower bound + 10x upper) | a real child process and a real readiness deadline | low risk (10x headroom); a fake clock in `DiarizePool` would make it exact |
 | tests/matrix_row5_journal_backpressure.rs:97, :131, :173 | D | an overflowing journal append returns under 500 ms / 2 s | count blocking waits in the journal instead of timing them |
-| tests/summary_round3.rs:250; tests/summary_download_lock.rs:188 | D | no retry after cancel (< 2 s); backoff total < 6 s | expose the backoff schedule (attempt count) and assert it |
+| tests/summary_round3.rs:250; tests/summary_download_lock.rs:195 | D | no retry after cancel (< 2 s); backoff total < 6 s | expose the backoff schedule (attempt count) and assert it |
 | tests/permission_transitions.rs:192, :205, :212 | N + D | no emit within 400 ms; the revoke emit within 2 s | wait for the watcher's read counter to advance past the poke, then `try_recv` |
 | tests/polish_long_form.rs:142, :430, :654-672; tests/transforms.rs:71 | S/D | a stub sleeping past its deadline; a 25 s wall budget | stub should block on a gate the deadline path opens |
 | tests/cloud_route_mock.rs:119-136, :251 | D | 400 ms TTFT against 20 ms / 1200 ms stub pieces | 3x-30x margins, low risk; fake TTFT clock in `cloud_route` |
