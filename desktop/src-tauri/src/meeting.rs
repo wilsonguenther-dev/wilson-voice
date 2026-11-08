@@ -4405,8 +4405,10 @@ mod tests {
         let journal = MeetingJournal::start(&dir, 1).expect("journal");
         let tone: Vec<f32> = (0..TARGET_RATE as usize / 2).map(|_| 0.25).collect();
         assert_eq!(journal.append(0, &tone), tone.len());
-        // Give the writer a moment to land the bytes, then "crash".
-        thread::sleep(Duration::from_millis(400));
+        // "Crash". No sleep first (yap-1107-timing-tests-deterministic):
+        // `abandon` joins the writer, which drains every queued append and
+        // writes the spill before it exits, so the bytes are on disk however
+        // slowly the writer thread was scheduled.
         journal.abandon();
         assert!(marker_exists(&dir), "a crash leaves the marker behind");
 
@@ -4433,7 +4435,19 @@ mod tests {
         journal.bind_row("ROW-LIVE").expect("bind");
         let tone: Vec<f32> = (0..TARGET_RATE as usize * 2).map(|_| 0.25).collect();
         assert_eq!(journal.append(0, &tone), tone.len());
-        thread::sleep(Duration::from_millis(400));
+        // Wait for the event, not a guessed 400 ms (yap-1107-timing-tests-
+        // deterministic): the writer thread creates the spills, then the
+        // marker, then the index files before it reads its first message, so
+        // once every index file exists the journal's file set is final and the
+        // `before` snapshot below cannot race a late create.
+        let files_until = Instant::now() + Duration::from_secs(60);
+        while !journal.indexes.iter().all(|p| p.exists()) {
+            assert!(
+                Instant::now() < files_until,
+                "the journal writer never created its files"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         let listing = |dir: &Path| {
             let mut names: Vec<String> = std::fs::read_dir(dir)
                 .unwrap()

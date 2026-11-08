@@ -5408,19 +5408,26 @@ mod tests {
         // own cadence and learns nothing has changed.
         assert!(!stop.wait_stopped(Duration::from_millis(10)));
 
-        let signaller = stop.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(10));
-            signaller.stop();
-        });
-        let started = Instant::now();
         // A long tick must NOT be waited out: the condvar wakes on the signal,
         // which is the whole point of YV38 (the old flag was read every 50 ms).
-        assert!(stop.wait_stopped(Duration::from_secs(5)));
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "stop took {:?} — it should wake on the signal, not on the tick",
-            started.elapsed()
+        // yap-1107-timing-tests-deterministic: no wall-clock bound. The waiter
+        // parks on an HOUR-long tick on its own thread and announces that it is
+        // about to park; the test then raises the stop. Waiting the tick out
+        // cannot beat the 60 s hang guard, waking on the signal always does,
+        // however loaded the machine is.
+        let waiter = stop.clone();
+        let (parking_tx, parking_rx) = mpsc::channel::<()>();
+        let (woke_tx, woke_rx) = mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let _ = parking_tx.send(());
+            let _ = woke_tx.send(waiter.wait_stopped(Duration::from_secs(3_600)));
+        });
+        parking_rx.recv().expect("the waiter thread started");
+        stop.stop();
+        assert_eq!(
+            woke_rx.recv_timeout(Duration::from_secs(60)),
+            Ok(true),
+            "stop should wake the waiter on the signal, not on the hour-long tick"
         );
         // Already stopped → returns without parking at all.
         assert!(stop.is_stopped());
@@ -5682,13 +5689,17 @@ mod tests {
         // frame, never an error the capture path has to handle.
         let (tx, rx) = mpsc::sync_channel::<JournalWrite>(2);
         let queue = JournalQueue::new(tx);
-        let started = Instant::now();
-        for i in 0..6i16 {
-            queue.offer(JournalWrite::Frames(vec![i; 4]));
-        }
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "offering into a full journal queue must not park the capture path"
+        // yap-1107-timing-tests-deterministic: proven without a wall-clock
+        // bound. Nobody drains `rx` while the offers run, so an offer that
+        // parked on the full queue would never return.
+        let queue = returns_while_nobody_drains(
+            "offering into a full journal queue must not park the capture path",
+            move || {
+                for i in 0..6i16 {
+                    queue.offer(JournalWrite::Frames(vec![i; 4]));
+                }
+                queue
+            },
         );
         assert_eq!(
             queue.dropped(),
@@ -5703,6 +5714,24 @@ mod tests {
         drop(rx);
         queue.offer(JournalWrite::Frames(vec![9i16; 4]));
         assert_eq!(queue.dropped(), 5);
+    }
+
+    /// Run `offers` on a helper thread while the test holds the queue's
+    /// receiver and drains nothing. An offer that parks on the full queue never
+    /// returns and fails at the hang guard (a broken build only; a healthy
+    /// offer returns in microseconds).
+    fn returns_while_nobody_drains<T: Send + 'static>(
+        what: &str,
+        offers: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (done_tx, done_rx) = mpsc::channel::<T>();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(offers());
+        });
+        match done_rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(v) => v,
+            Err(_) => panic!("{what}"),
+        }
     }
 
     fn queued_frames(write: JournalWrite) -> Vec<i16> {
@@ -5732,13 +5761,16 @@ mod tests {
         queue.offer(JournalWrite::Frames(vec![7i16; 4]));
 
         let line = serde_json::json!({"kind": "device_change", "segment_index": 1}).to_string();
-        let started = Instant::now();
-        for _ in 0..64 {
-            queue.offer(JournalWrite::Marker(line.clone()));
-        }
-        assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "a marker must never park the path that holds the audio callback's lock"
+        // yap-1107-timing-tests-deterministic: no wall-clock bound; nobody
+        // drains `rx` while the markers are offered (see the helper).
+        let queue = returns_while_nobody_drains(
+            "a marker must never park the path that holds the audio callback's lock",
+            move || {
+                for _ in 0..64 {
+                    queue.offer(JournalWrite::Marker(line.clone()));
+                }
+                queue
+            },
         );
         assert_eq!(
             queue.dropped(),
@@ -7209,21 +7241,34 @@ mod tests {
     /// `STOP_EDGE_BUDGET` of the stop edge even when the focus/AX context reads
     /// stall (the walk's ~3.3 s). The pre-fix order — reads, then the worker's
     /// Disarm — ends it after the stall and fails this.
+    ///
+    /// yap-1107-timing-tests-deterministic: this used to time a spawned thread
+    /// against the 300 ms budget while the reads slept 1.2 s, so a loaded CI
+    /// runner that started the capture thread late failed a correct build. The
+    /// property the budget protects is ORDERING: the capture's end never waits
+    /// for the context reads. Proven here with no clock at all: the context
+    /// read stays blocked until the capture has ended. The pre-fix order (reads
+    /// first, then Disarm) can never satisfy that, so it fails every time,
+    /// however idle or busy the machine is.
     #[test]
     fn capture_ends_within_budget_of_the_stop_edge_while_context_reads_stall() {
-        let edge = Instant::now();
+        let (ended_tx, ended_rx) = mpsc::channel::<()>();
         let (capture, ctx) = end_at_stop_edge(
-            move || edge.elapsed(),
-            || {
-                thread::sleep(Duration::from_millis(1200));
-                "context"
+            move || {
+                let _ = ended_tx.send(());
+                "ended"
+            },
+            // A context read that stalls until the capture has ended. The 60 s
+            // is a hang guard for a broken build, not a healthy-path deadline.
+            move || match ended_rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(()) => "context",
+                Err(_) => "context read finished while the capture was still waiting on it",
             },
         );
-        let ended_after = capture.join().unwrap();
-        assert_eq!(ctx, "context");
-        assert!(
-            ended_after <= STOP_EDGE_BUDGET,
-            "capture ended {ended_after:?} after the stop edge (budget {STOP_EDGE_BUDGET:?})"
+        assert_eq!(capture.join().unwrap(), "ended");
+        assert_eq!(
+            ctx, "context",
+            "the capture must end while the context reads are still stalled"
         );
     }
 
