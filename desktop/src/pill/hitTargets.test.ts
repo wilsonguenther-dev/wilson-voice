@@ -335,3 +335,61 @@ describe("fb-02 — the browser hit test agrees with the panel's rects", () => {
     expect(n).toBeGreaterThanOrEqual(6);
   });
 });
+
+/**
+ * fb-02 (loop three) — every clickable button on the pill carries
+ * `data-pill-control`, so it is measured into the panel's hit rects, drawn at
+ * least 24 x 24 pt, given the square hit layer and logged as `pill.click`. Read
+ * from the component sources: a button added later without the tag fails here
+ * before it can become the next "first click does nothing".
+ */
+const CONTROL_SOURCES = [
+  "BacktrackCaughtCard.tsx",
+  "CallOffer.tsx",
+  "CopyCard.tsx",
+  "GovernorChip.tsx",
+  "LanguageChip.tsx",
+  "LanguageOfferCard.tsx",
+  "LaunchWalkScene.tsx",
+  "MeetingBadge.tsx",
+  "MeetingDictationCard.tsx",
+  "MeetingOfferCard.tsx",
+  "NudgeRow.tsx",
+  "PolishRevealCard.tsx",
+  "SilentMicRow.tsx",
+  "StyleChipButton.tsx",
+  "WarmupEngine.tsx",
+  "WhoTalkingCard.tsx",
+  "YappyPill.tsx",
+] as const;
+
+describe("fb-02 — every pill button is a tagged control", () => {
+  it("every_pill_button_carries_data_pill_control — each <button> with an onClick names itself before the handler", () => {
+    const untagged: string[] = [];
+    let seen = 0;
+    for (const file of CONTROL_SOURCES) {
+      const src = readFileSync(new URL(`./${file}`, import.meta.url), "utf8") as string;
+      const starts = [...src.matchAll(/<button\b/g)].map((m) => m.index ?? 0);
+      for (const at of starts) {
+        const rest = src.slice(at + 1);
+        const next = rest.search(/<button\b|<\/button>/);
+        const head = next < 0 ? rest : rest.slice(0, next);
+        const click = head.indexOf("onClick=");
+        if (click < 0) continue;
+        seen += 1;
+        if (!head.slice(0, click).includes("data-pill-control")) {
+          untagged.push(`${file}:${src.slice(0, at).split("\n").length}`);
+        }
+      }
+    }
+    expect(seen).toBeGreaterThanOrEqual(CONTROL_SOURCES.length);
+    expect(untagged, `buttons with no data-pill-control: ${untagged.join(", ")}`).toEqual([]);
+  });
+
+  it("retry_buttons_share_one_control_name — the warm-up and launch-walk Retry log as pill.click control=retry", () => {
+    for (const file of ["LaunchWalkScene.tsx", "WarmupEngine.tsx"]) {
+      const src = readFileSync(new URL(`./${file}`, import.meta.url), "utf8") as string;
+      expect(src).toContain('data-pill-control="retry"');
+    }
+  });
+});

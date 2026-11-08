@@ -60,6 +60,7 @@ export default function GovernorChip() {
         <button
           type="button"
           className="governor-run"
+          data-pill-control="governor-run-anyway"
           disabled={busy}
           onClick={(e) => void onRunAnyway(e)}
           title="Transcribe now, on battery"

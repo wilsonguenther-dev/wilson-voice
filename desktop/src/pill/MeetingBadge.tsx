@@ -299,6 +299,7 @@ export default function MeetingBadge({
         <button
           type="button"
           className="rec-stop"
+          data-pill-control="meeting-stop"
           aria-label={`Stop meeting — recording for ${elapsedLabel(status)}${audioLine ? `. ${audioLine}` : ""}`}
           onClick={(e) => {
             e.stopPropagation();

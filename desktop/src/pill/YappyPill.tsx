@@ -1199,6 +1199,7 @@ export default function YappyPill(
         <button
           type="button"
           className="kami-license kami-license-ended kami-gate-lock"
+          data-pill-control="trial-ended-lock"
           aria-label={GATE_LOCK_LABEL}
           title={GATE_BUY_TOOLTIP}
           onClick={() => openGatePurchase("nub")}

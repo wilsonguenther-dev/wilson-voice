@@ -337,7 +337,7 @@ export default function LaunchWalk({
         </span>
       )}
       {model.showRetry && (
-        <button ref={retryRef} type="button" className="launch-walk-retry" onClick={retry} disabled={retrying}>
+        <button ref={retryRef} type="button" className="launch-walk-retry" data-pill-control="retry" onClick={retry} disabled={retrying}>
           {retrying ? "Retrying" : "Retry"}
         </button>
       )}
