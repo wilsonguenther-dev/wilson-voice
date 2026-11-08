@@ -19,6 +19,23 @@ use wilson_voice_lib::model_providers::{
 };
 use wilson_voice_lib::summary_jobs::CancelToken;
 
+/// yap-1107-timing-tests-deterministic — wait for an EVENT, not for a sleep.
+///
+/// The listener threads count a connection when they `accept` it, which happens
+/// when the scheduler runs them, not when the client connects. A fixed sleep
+/// before reading the counter is a bet on runner load; this waits for the
+/// count itself. `deadline` is a hang guard only, never a measurement.
+fn wait_until(what: &str, deadline: Duration, mut cond: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !cond() {
+        assert!(
+            start.elapsed() < deadline,
+            "timed out after {deadline:?} waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// Port B: counts every connection, answers 200 `{}`.
 fn counter() -> (u16, Arc<AtomicUsize>) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -75,7 +92,10 @@ fn a_307_to_a_second_port_is_never_followed() {
         ],
         &serde_json::json!({"model": "m", "messages": []}),
     );
-    std::thread::sleep(Duration::from_millis(400));
+    // No sleep: the 307 the client just read was written AFTER the
+    // redirector's `fetch_add`, and following the redirect would have meant
+    // reading B's answer, written after B's `fetch_add`. Both counters are
+    // final the moment the call returns (yap-1107-timing-tests-deterministic).
     assert_eq!(
         a_hits.load(Ordering::SeqCst),
         1,
@@ -97,7 +117,11 @@ fn a_307_to_a_second_port_is_never_followed() {
 
     // Control: B does count a connection made to it.
     drop(TcpStream::connect(("127.0.0.1", b)).unwrap());
-    std::thread::sleep(Duration::from_millis(200));
+    // The kernel completes the handshake; B's thread counts it only when it
+    // runs `accept`. Wait for that, then pin the exact count.
+    wait_until("B to accept the direct connection", Duration::from_secs(30), || {
+        b_hits.load(Ordering::SeqCst) >= 1
+    });
     assert_eq!(b_hits.load(Ordering::SeqCst), 1, "the counter works");
 }
 
@@ -120,7 +144,10 @@ fn the_provider_path_reports_the_redirect_in_plain_words() {
         build_client(Duration::from_secs(5)).unwrap(),
     );
     let err = p.complete("s", "u", 10, &CancelToken::new()).unwrap_err();
-    std::thread::sleep(Duration::from_millis(400));
+    // No sleep: the 307 the client just read was written AFTER the
+    // redirector's `fetch_add`, and following the redirect would have meant
+    // reading B's answer, written after B's `fetch_add`. Both counters are
+    // final the moment the call returns (yap-1107-timing-tests-deterministic).
     assert_eq!(err.plain(), "redirected to 127.0.0.1 — not followed");
     assert_eq!(b_hits.load(Ordering::SeqCst), 0);
 }
@@ -143,7 +170,7 @@ fn control_the_default_policy_would_have_followed() {
             .map(|r| r.status().as_u16())
     })
     .expect("default client completes");
-    std::thread::sleep(Duration::from_millis(200));
+    // A 200 can only have come from B, written after B counted the connection.
     assert_eq!(status, 200, "the default client ended at B");
     assert_eq!(
         b_hits.load(Ordering::SeqCst),

@@ -163,7 +163,11 @@ fn crash(dir: &Path, tracks: usize, delivering: &[usize], row: Option<&str>, sec
             spilled_samples: (second + 1) * TARGET_RATE as u64,
         });
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // yap-1107-timing-tests-deterministic: no sleep for the 250 ms flush timer.
+    // `abandon()` drops the queue's sender and JOINS the writer
+    // (`MeetingJournal::hang_up`), whose loop drains the queue, writes the last
+    // index records and flushes every spill before it exits — so the bytes
+    // are on disk when `abandon` returns, whatever the runner's load.
     journal.abandon();
 }
 

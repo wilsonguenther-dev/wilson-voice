@@ -325,7 +325,18 @@ fn the_pump_thread_reads_the_injected_source_and_never_counts_yap() {
         source,
         OwnProcesses::new(YAP),
     );
-    std::thread::sleep(Duration::from_millis(2_300));
+    // yap-1107-timing-tests-deterministic: the pump samples other processes
+    // about once a second. Sleeping 2.3 s bet that its thread got two turns in
+    // that window; on a loaded runner it may get none. Wait for the first
+    // sample itself (the deadline is a hang guard, not a measurement).
+    let waiting = std::time::Instant::now();
+    while tap.output_evidence().samples < 1 {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(60),
+            "the pump never sampled the injected source"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     pump.finish();
     let evidence = tap.output_evidence();
     assert!(

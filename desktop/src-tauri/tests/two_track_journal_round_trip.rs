@@ -349,8 +349,11 @@ fn a_crash_mid_two_track_meeting_recovers_both_tracks() {
             spilled_samples: sys.len() as u64,
         },
     );
-    // The writer flushes on a 250 ms timer, so give it one before the "crash".
-    std::thread::sleep(Duration::from_millis(400));
+    // yap-1107-timing-tests-deterministic: no sleep for the 250 ms flush timer.
+    // `abandon()` drops the queue's sender and JOINS the writer
+    // (`MeetingJournal::hang_up`), whose loop drains the queue, writes the last
+    // index records and flushes every spill before it exits — so the bytes
+    // are on disk when `abandon` returns, whatever the runner's load.
     journal.abandon();
 
     let recovered = recover_orphaned_meetings(&dir);

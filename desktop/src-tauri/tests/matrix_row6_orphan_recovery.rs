@@ -15,7 +15,6 @@
 //! every clean stop, instead of being the path nobody runs until it matters.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use wilson_voice_lib::meeting::{
     recover_orphaned_meetings, IndexRecord, MeetingJournal, MeetingState, TARGET_RATE,
@@ -61,9 +60,11 @@ fn crash_mid_meeting(dir: &Path, tracks: usize, seconds: usize) {
             spilled_samples: (second as u64 + 1) * TARGET_RATE as u64,
         });
     }
-    // The writer batches its flushes on a 250 ms timer; let it land the bytes
-    // the way a real crash would find them.
-    std::thread::sleep(Duration::from_millis(500));
+    // yap-1107-timing-tests-deterministic: no sleep for the 250 ms flush timer.
+    // `abandon()` drops the queue's sender and JOINS the writer
+    // (`MeetingJournal::hang_up`), whose loop drains the queue, writes the last
+    // index records and flushes every spill before it exits — so the bytes
+    // are on disk when `abandon` returns, whatever the runner's load.
     journal.abandon();
 }
 
@@ -170,7 +171,8 @@ fn a_marker_with_no_audio_is_cleaned_up_rather_than_becoming_a_row() {
     // MIN_CLIP_SAMPLES floor for a stray tap.
     let dir = tmpdir("empty");
     let journal = MeetingJournal::start(&dir, 1).expect("journal opens");
-    std::thread::sleep(Duration::from_millis(300));
+    // No sleep: the writer creates the marker before its loop, and `abandon`
+    // joins the writer (yap-1107-timing-tests-deterministic).
     journal.abandon();
     assert_eq!(entries(&dir, "meeting.in_progress.json").len(), 1);
 

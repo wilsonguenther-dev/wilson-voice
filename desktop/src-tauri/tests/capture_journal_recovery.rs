@@ -114,9 +114,11 @@ fn an_app_that_dies_mid_meeting_is_recovered_as_partial() {
         captured_samples: audio.len() as u64,
         spilled_samples: audio.len() as u64,
     });
-    // The writer flushes on a 250 ms timer (finding #12: a timer, not every
-    // callback), so give it one before simulating the crash.
-    std::thread::sleep(Duration::from_millis(400));
+    // yap-1107-timing-tests-deterministic: no sleep for the 250 ms flush timer.
+    // `abandon()` drops the queue's sender and JOINS the writer
+    // (`MeetingJournal::hang_up`), whose loop drains the queue, writes the last
+    // index records and flushes every spill before it exits — so the bytes
+    // are on disk when `abandon` returns, whatever the runner's load.
     journal.abandon();
 
     let recovered = recover_orphaned_meetings(&dir);

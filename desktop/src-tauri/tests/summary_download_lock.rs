@@ -24,6 +24,51 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
+/// yap-1107-timing-tests-deterministic — wait for an EVENT, not for a sleep.
+/// `deadline` is a hang guard only, never a measurement.
+fn wait_until(what: &str, deadline: Duration, mut cond: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !cond() {
+        assert!(
+            start.elapsed() < deadline,
+            "timed out after {deadline:?} waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Raise `stop` after `after`, and record WHEN it was actually raised.
+///
+/// The cancel-latency assertions used to measure `t0.elapsed() - 300 ms`,
+/// assuming the setter thread woke on time. On a loaded runner it wakes late,
+/// and that lateness was charged to the download's cancel path: a shared
+/// deadline between two independent threads. Measuring from the recorded
+/// instant charges the download only for its own latency.
+fn cancel_after(
+    stop: Arc<AtomicBool>,
+    after: Duration,
+) -> Arc<std::sync::Mutex<Option<Instant>>> {
+    let raised_at = Arc::new(std::sync::Mutex::new(None));
+    let r2 = Arc::clone(&raised_at);
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        // Stamp first, then raise: the stamp can only be EARLIER than the
+        // moment the download can observe the flag, never later.
+        *r2.lock().unwrap() = Some(Instant::now());
+        stop.store(true, Ordering::SeqCst);
+    });
+    raised_at
+}
+
+/// Latency from the recorded raise to `returned`.
+fn since_raise(raised_at: &std::sync::Mutex<Option<Instant>>, returned: Instant) -> Duration {
+    let raised = raised_at
+        .lock()
+        .unwrap()
+        .expect("the download returned DOWNLOAD_CANCELLED, so the flag was raised");
+    returned.saturating_duration_since(raised)
+}
+
 /// Serve every connection with `respond`, counting connections.
 fn serve(respond: fn(std::net::TcpStream)) -> (u16, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -98,8 +143,13 @@ fn settings_and_a_notes_job_share_one_download() {
     let job_seen = Arc::new(AtomicU64::new(0));
     let settings_seen = Arc::new(AtomicU64::new(0));
     let job = run(job_seen.clone());
-    // Settings is pressed while the notes job is mid-download.
-    std::thread::sleep(Duration::from_millis(60));
+    // Settings is pressed while the notes job is mid-download. Wait for the job
+    // to TAKE the slot rather than sleeping 60 ms and hoping its thread ran
+    // (yap-1107-timing-tests-deterministic). The stub paces the body over
+    // 24 x 15 ms, so the slot stays held well past this point.
+    wait_until("the notes job to take the download slot", Duration::from_secs(30), || {
+        models::download_in_progress(&dest).is_some()
+    });
     assert!(models::download_in_progress(&dest).is_some(), "the job holds the slot");
     let settings = run(settings_seen.clone());
     assert_eq!(job.join().unwrap().unwrap(), dest);
@@ -152,12 +202,7 @@ fn cancel_interrupts_the_backoff_sleep() {
     let (port, _) = serve(always_503);
     let dir = temp_dir("backoff");
     let stop = Arc::new(AtomicBool::new(false));
-    let s2 = stop.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        s2.store(true, Ordering::SeqCst);
-    });
-    let t0 = Instant::now();
+    let raised_at = cancel_after(stop.clone(), Duration::from_millis(300));
     let cancel = move || stop.load(Ordering::SeqCst);
     let err = tauri::async_runtime::block_on(download_file_cancellable(
         &[format!("http://127.0.0.1:{port}/m.gguf")],
@@ -169,7 +214,7 @@ fn cancel_interrupts_the_backoff_sleep() {
     ))
     .unwrap_err();
     assert_eq!(err, DOWNLOAD_CANCELLED);
-    let after_cancel = t0.elapsed().saturating_sub(Duration::from_millis(300));
+    let after_cancel = since_raise(&raised_at, Instant::now());
     assert!(after_cancel <= Duration::from_millis(500), "took {after_cancel:?} after the cancel");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -187,12 +232,7 @@ fn cancel_interrupts_a_stalled_chunk() {
     let (port, _) = serve(stalls);
     let dir = temp_dir("stall");
     let stop = Arc::new(AtomicBool::new(false));
-    let s2 = stop.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        s2.store(true, Ordering::SeqCst);
-    });
-    let t0 = Instant::now();
+    let raised_at = cancel_after(stop.clone(), Duration::from_millis(300));
     let cancel = move || stop.load(Ordering::SeqCst);
     let err = tauri::async_runtime::block_on(download_file_cancellable(
         &[format!("http://127.0.0.1:{port}/m.gguf")],
@@ -204,7 +244,7 @@ fn cancel_interrupts_a_stalled_chunk() {
     ))
     .unwrap_err();
     assert_eq!(err, DOWNLOAD_CANCELLED);
-    let after_cancel = t0.elapsed().saturating_sub(Duration::from_millis(300));
+    let after_cancel = since_raise(&raised_at, Instant::now());
     assert!(after_cancel <= Duration::from_millis(500), "took {after_cancel:?} after the cancel");
     let _ = std::fs::remove_dir_all(&dir);
 }
