@@ -126,8 +126,9 @@ export const CLOCK_REACH_PT = 12;
 export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /**
  * Yappy's widest open capsule, rounded up: the panel envelope. yap-1107-pill-matches-artifact-size:
- * OPEN_CAPSULE is now the artifact's 228 x 54 (265 x 63 at the desk tier x 1.16); the envelope keeps
- * its old 236 x 60 x 1.16 size so the window, hit targets and dock math do not move.
+ * OPEN_CAPSULE is now 228 x 53 (the artifact's 228 x 52; yap-1107-parity-pill), and a prop tier only
+ * widens it (openCapsuleFor: 265 x 53 at the desk tier x 1.16); the envelope keeps its old
+ * 236 x 60 x 1.16 size so the window, hit targets and dock math do not move.
  */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
 /**

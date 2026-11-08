@@ -1,0 +1,1427 @@
+{
+  "item": "yap-1107-parity-pill",
+  "writtenAt": "2026-11-07T16:59:18Z",
+  "designDir": "~/Obsidian/Wilson-Brain/Projects/Yap/design-2026-11-06 (scripts/parity-crops.mjs DESIGN_DIR)",
+  "source": "measured with node scripts/parity-crops.mjs --page pill.html (headless Chrome, 2x, frame 1200 ms) on the approved page",
+  "frameMs": 1200,
+  "approvedShell": {
+    "fill": "#1e2025",
+    "line": "rgba(255,255,255,.09)",
+    "text": "#eceae4",
+    "sub": "#a9a59c",
+    "button": "#2b2e35",
+    "stop": "#ff8a8d",
+    "rec": "#e5484d",
+    "bar": "#f2c14e",
+    "bubble": {
+      "surface": "#fffdf7",
+      "text": "#1d1c1a",
+      "font": "500 12px/1.2",
+      "padding": "6px 10px",
+      "radius": 9
+    },
+    "padding": 4,
+    "gap": 4,
+    "segFontPx": 12,
+    "monoFontPx": 11
+  },
+  "states": [
+    {
+      "id": "resting",
+      "name": "Resting",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(1) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/idle__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 72,
+        "h": 28,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025"
+        ],
+        "sprite": [
+          {
+            "w": 64,
+            "h": 20
+          }
+        ]
+      }
+    },
+    {
+      "id": "asleep",
+      "name": "Asleep",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(2) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=sleepy&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/sleepy__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 72,
+        "h": 28,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025"
+        ],
+        "sprite": [
+          {
+            "w": 64,
+            "h": 20
+          }
+        ]
+      }
+    },
+    {
+      "id": "holding-fn",
+      "name": "Holding fn",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(3) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 228,
+        "h": 52,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025"
+        ],
+        "sprite": [
+          {
+            "w": 220,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "hands-free",
+      "name": "Hands-free",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(4) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening-locked&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening_locked__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 295.2,
+        "h": 52,
+        "fontPx": [
+          11,
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#2b2e35",
+          "#eceae4",
+          "#ff8a8d",
+          "#fffdf7",
+          "#ffffff38"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "long-take",
+      "name": "Long take",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(5) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 307.2,
+        "h": 52,
+        "fontPx": [
+          11,
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#2b2e35",
+          "#eceae4",
+          "#ff8a8d",
+          "#fffdf7",
+          "#ffffff38"
+        ],
+        "sprite": [
+          {
+            "w": 208,
+            "h": 44
+          }
+        ]
+      },
+      "note": "essay tier (desk prop)"
+    },
+    {
+      "id": "meeting-recording",
+      "name": "Meeting recording",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(6) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/idle__yappy__bottom__recording.png"
+      },
+      "expect": {
+        "w": 144.5,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#2b2e35",
+          "#e5484d",
+          "#eceae4",
+          "#ff8a8d"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "meeting-dictating",
+      "name": "Meeting + dictating",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(7) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=bottom&meeting=recording&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening__yappy__bottom__recording.png"
+      },
+      "expect": {
+        "w": 296,
+        "h": 52,
+        "fontPx": [
+          11,
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#2b2e35",
+          "#e5484d",
+          "#eceae4",
+          "#ff8a8d",
+          "#fffdf7",
+          "#ffffff38"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "warming-up",
+      "name": "Warming up",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(8) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=model-loading&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/model_loading__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 184.16,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4",
+          "#f2c14e",
+          "#ffffff24"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "writing-it-up",
+      "name": "Writing it up",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(9) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=transcribing&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/transcribing__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 264,
+        "h": 52,
+        "fontPx": [
+          11,
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#eceae4",
+          "#f2c14e",
+          "#fffdf7",
+          "#ffffff24"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "polishing",
+      "name": "Polishing",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(10) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=polishing&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/polishing__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 270.14,
+        "h": 52,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "pasting",
+      "name": "Pasting",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(11) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=pasting&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/pasting__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 280.8,
+        "h": 52,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "pasted",
+      "name": "Pasted",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(12) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=done&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/done__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 297.45,
+        "h": 52,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#a9a59c",
+          "#eceae4",
+          "#fffdf7"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "nothing-heard",
+      "name": "Nothing heard",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(13) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=empty&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/empty__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 154.63,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "cancelled",
+      "name": "Cancelled",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(14) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=cancelled&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/cancelled__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 122.39,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#eceae4",
+          "#fffdf7"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "failed-retry",
+      "name": "Failed, Retry",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(15) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=error&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/error__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 216.36,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#eceae4",
+          "#efece4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "mic-blocked",
+      "name": "Microphone blocked",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(16) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=blocked&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/blocked__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 159.64,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#eceae4",
+          "#efece4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "waiting-mic",
+      "name": "Waiting for mic prompt",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(17) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=waiting&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/waiting__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 215.28,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "trial-ended",
+      "name": "Trial ended",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(18) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=gated&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/gated__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 195.08,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#eceae4",
+          "#efece4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "fn-off-password",
+      "name": "fn off in password fields",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(19) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=blind&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/blind__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 222.3,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#a9a59c",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "saving-battery",
+      "name": "Saving battery",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(20) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/idle__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 167.05,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      },
+      "note": "proposed state (low power); app target = idle until the battery mode is forced"
+    },
+    {
+      "id": "hover-tray",
+      "name": "Hover tray",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(21) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&rail=open",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/rail__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 72,
+        "h": 28,
+        "fontPx": [
+          11,
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#2b2e35",
+          "#eceae4",
+          "#fffdf7",
+          "#ffffff38"
+        ],
+        "sprite": [
+          {
+            "w": 64,
+            "h": 20
+          }
+        ]
+      }
+    },
+    {
+      "id": "dragging",
+      "name": "Dragging",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(22) .blob",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&drag=blob",
+        "selector": ".kami-blob",
+        "capture": "app/drag-blob__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 36,
+        "h": 36,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": null,
+          "col": null
+        },
+        "colors": [
+          "#1e2025"
+        ],
+        "sprite": [
+          {
+            "w": 28,
+            "h": 28
+          }
+        ]
+      }
+    },
+    {
+      "id": "docked-side",
+      "name": "Docked on a side",
+      "section": "#states",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#rows>.cmp:nth-child(23) .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=right&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening__yappy__right__none.png"
+      },
+      "expect": {
+        "w": 244,
+        "h": 52,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#2b2e35",
+          "#ff8a8d",
+          "#fffdf7"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      }
+    },
+    {
+      "id": "timer-sun-sky-b",
+      "name": "meeting clock with sun sky B",
+      "section": "#timer",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#clocks .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/idle__yappy__bottom__recording.png"
+      },
+      "expect": {
+        "w": 202,
+        "h": 44,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#2b2e35",
+          "#e5484d",
+          "#ff8a8d"
+        ],
+        "sprite": [
+          {
+            "w": 140,
+            "h": 36
+          },
+          {
+            "w": 14,
+            "h": 14
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    },
+    {
+      "id": "hoot-b-tape",
+      "name": "option B: Hoot at the tape machine",
+      "section": "#hoot",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#hootB .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=recording&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/idle__yappy__bottom__recording.png"
+      },
+      "expect": {
+        "w": 188,
+        "h": 44,
+        "fontPx": [
+          10
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#20361a",
+          "#2b2e35",
+          "#ff8a8d",
+          "#fffef6bf"
+        ],
+        "sprite": [
+          {
+            "w": 140,
+            "h": 36
+          },
+          {
+            "w": 14,
+            "h": 14
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    },
+    {
+      "id": "warm",
+      "name": "warming up: Yappy starts the engine",
+      "section": "#warm",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#warmS .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=model-loading&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/model_loading__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 203.56,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4",
+          "#ffffff24"
+        ],
+        "sprite": [
+          {
+            "w": 72,
+            "h": 24
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    },
+    {
+      "id": "props",
+      "name": "notepad / desk / typewriter",
+      "section": "#props",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#propsG .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 204,
+        "h": 52,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    },
+    {
+      "id": "vdock",
+      "name": "tall side dock, never wider than 64 px",
+      "section": "#vdock",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#vstage .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=listening&pill=yappy&dock=left&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/listening__yappy__left__none.png"
+      },
+      "expect": {
+        "w": 244,
+        "h": 52,
+        "fontPx": [],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#2b2e35",
+          "#ff8a8d"
+        ],
+        "sprite": [
+          {
+            "w": 196,
+            "h": 44
+          },
+          {
+            "w": 14,
+            "h": 14
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    },
+    {
+      "id": "trial",
+      "name": "trial ended hover / press / click",
+      "section": "#trial",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#trialS .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=gated&pill=yappy&dock=bottom&meeting=none&sky=day",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/gated__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 196.23,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1d1c1a",
+          "#1e2025",
+          "#eceae4",
+          "#efece4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    },
+    {
+      "id": "wispr",
+      "name": "toast states incl. Backtrack caught",
+      "section": "#wispr",
+      "artifact": {
+        "page": "pill.html",
+        "selector": "#wrows .ypill",
+        "sprites": []
+      },
+      "app": {
+        "page": "float.html",
+        "query": "phase=idle&pill=yappy&dock=bottom&meeting=none&sky=day&backtrack=1",
+        "selector": ".yappy-capsule-box",
+        "capture": "app/backtrack-caught__yappy__bottom__none.png"
+      },
+      "expect": {
+        "w": 167.05,
+        "h": 32,
+        "fontPx": [
+          12
+        ],
+        "padding": {
+          "t": 4,
+          "r": 4,
+          "b": 4,
+          "l": 4
+        },
+        "gap": {
+          "row": 4,
+          "col": 4
+        },
+        "colors": [
+          "#1e2025",
+          "#eceae4"
+        ],
+        "sprite": [
+          {
+            "w": 44,
+            "h": 24
+          },
+          {
+            "w": 14,
+            "h": 14
+          }
+        ]
+      },
+      "note": "section-level state: the row compares the app's pill box and colours against the pill(s) this section draws; the section box itself is page layout, not a pill size"
+    }
+  ],
+  "buildShell": {
+    "openCapsule": {
+      "w": 228,
+      "h": 53,
+      "source": "desktop/src/pill/characterFit.ts OPEN_CAPSULE",
+      "deltaPctVsArtifact": {
+        "w": 0,
+        "h": 1.9
+      }
+    },
+    "propTiers": "openCapsuleFor(tier): width x tier (1, 1.05, 1.16), height fixed at 53 like the page's 52-tall shells (was height x tier: 63 at the desk tier, +21 percent)",
+    "why53": "52 leaves a 0 art px hop at the artifact's 2x scale (cell 3); 53 is the least height with a 1 art px hop and is inside the 3 percent rule"
+  },
+  "knownConflicts": [
+    {
+      "state": "hands-free, long-take, meeting-dictating, writing-it-up, polishing, pasting, pasted, docked-side",
+      "artifact": ".ypill measures the whole shell including the right segment (lock, fn key, stop, word count)",
+      "build": ".yappy-capsule-box measures the drawn capsule only; the segments are DOM slots beside it",
+      "why": "the rows' width compares different boxes until the slot row has its own measured twin; the integrator's sheet shows the delta per row"
+    }
+  ],
+  "resolvedConflicts": [
+    {
+      "state": "resting, asleep, hover-tray",
+      "artifact": "72 x 28 nub (pill.html PK.pill h 28, win 64 x 20; 'Shell grows from 72 x 28 to 228 x 52')",
+      "build": "REST_CAPSULE = ARTIFACT_REST_SHELL 72 x 28 (characterFit.ts); on 2x every pill character sits whole in it at one device px per art px; below 2x Yappy's camera uses 'head' framing (sprout, eyes, beak in view, feet leave the nub)",
+      "why": "batch-7 bounce: the item text said 56 tall, the senior standard says build the artifact when they conflict. Cost, for Wilson: at rest on Retina Yappy draws at 0.5 CSS px per art px (whole, crisp, but half his open scale), because no larger whole cell fits a 26 px clip; the artifact itself shows a face close-up there, which fb-10 removed after 'the heads cropped'."
+    }
+  ],
+  "nonVisual": [
+    {
+      "id": "heavy",
+      "section": "#heavy",
+      "reason": "#heavy is a behaviour table (how often Yappy talks after the 50th take), not a drawn pill: no pill box exists on the page to measure. Proven in code by the chatter-ladder tests, not by a pixel row."
+    },
+    {
+      "id": "chatshots",
+      "section": "#chatshots",
+      "reason": "#chatshots are screenshots of TODAY's (pre-redesign) pill pasted from chat, showing defects (nub over terminal text, clipped timer). Matching them would degrade the approved design; the approved states are the #states/#timer/#hoot rows."
+    }
+  ],
+  "captures": "pill-matrix.mjs --out <captures>/app writes <matrix id>__yappy__<bottom|left|right>__<none|recording|saved>.png; every app.capture is that name under app/",
+  "rewrittenAt": "2026-11-08T00:48:30Z"
+}

@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { BatteryLow, Check, ClipboardPaste, Lock, MicOff, Square } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { MouthDriver } from "./mouth";
 import { drawChick as drawChickArt } from "../sprites/art";
@@ -60,7 +61,7 @@ import { DURATION } from "./motion";
 import { backingScale, dockCentreX, toDevice } from "./pixelGrid";
 // yap-1106-fb-10 — no character is ever cropped: the scene buffer, the pose
 // range, the resting capsule and the camera all come from one pure rule.
-import { CHICK_DESK_SHIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, pillCamera, scaleEvent } from "./characterFit";
+import { CAPSULE_BORDER, CHICK_DESK_SHIFT, PILL_SCENE, REST_CAPSULE, clampChickPose, cropWarning, openCapsuleFor, pillCamera, restFramingEvent, scaleEvent, shellWindow } from "./characterFit";
 // yap-1106-one-pill — the ONE layout (float-main publishes it): Yappy is drawn
 // in the character box it places, and the bubble in the bubble box above it.
 import { capsuleCentre, currentPillLayout, meetingClockStacked, PILL_LAYOUT_EVENT, type PillLayout } from "./state";
@@ -70,6 +71,8 @@ import { TAB_ART, VDOCK_RADIUS, VDOCK_SCENE, drawTabChick, drawTallRoom, sideDoc
 // yap-1106-pill-sky — the sky is the Home room's time of day (option C), one
 // cached backdrop blitted once per redraw (pill/sky.ts).
 import { SkyBackdrop, blitSky, skyForced } from "./sky";
+// yap-1107-parity-pill — the approved right segment (words, keycap, stop, CTA) INSIDE the shell.
+import { segCapsule, segClassFor, segEvent, segmentFor, shellBounds, type SegClass, type SegItem } from "./shellSegment";
 // yap-1106-stuck-pill-keeps-its-scene — a stuck engine never strips the scene.
 import { SCENE_IDLE, reduceStuckScene, sceneFramePlan, watchCanvasLoss, type RepaintReason, type SceneEvent, type SceneState } from "./stuckScene";
 import type { EngineHealth } from "./engineHealth";
@@ -214,6 +217,18 @@ export default function YappyPill(
   const curseRef = useRef<boolean>(curse);
   curseRef.current = curse;
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // yap-1107-parity-pill — the approved .ypill shell, painted by the DOM, and
+  // the ONE sky window canvas inside it (the approved .win) the scene is drawn
+  // into, so the parity sheet measures what is painted, never a twin.
+  const capsuleBoxRef = useRef<HTMLDivElement | null>(null);
+  const winRef = useRef<HTMLCanvasElement | null>(null);
+  // yap-1107-parity-pill — the shell's right segment: rendered below from the
+  // float's phase (gate), measured by a ResizeObserver, and read by the draw
+  // loop so the painted shell is the window PLUS the segment (pill.html .ypill).
+  const segRef = useRef<HTMLDivElement | null>(null);
+  const segWRef = useRef(0);
+  const segInfoRef = useRef<{ cls: SegClass; items: SegItem[] }>({ cls: "none", items: [] });
+  const [doneWords, setDoneWords] = useState(0);
   // yap-1106-yappy-states-and-motion — the clamped text lives in its own span
   // so the 2-line clamp's overflow never clips the bubble's tail.
   const bubbleTextRef = useRef<HTMLSpanElement | null>(null);
@@ -411,6 +426,20 @@ export default function YappyPill(
 
   useEffect(() => {
     const cv = canvasRef.current!, bubble = bubbleRef.current!;
+    const capsuleBox = capsuleBoxRef.current;
+    const win = winRef.current;
+    const wctx = win ? win.getContext("2d") : null;
+    let winKey = "";
+    let capsuleBoxKey = "";
+    const syncCapsuleBox = (x: number, y: number, w: number, h: number, shape: string) => {
+      if (!capsuleBox) return;
+      const key = `${Math.round(x * 4)}|${Math.round(y * 4)}|${Math.round(w * 4)}|${Math.round(h * 4)}|${shape}`;
+      if (key === capsuleBoxKey) return;
+      capsuleBoxKey = key;
+      capsuleBox.style.left = x + "px"; capsuleBox.style.top = y + "px";
+      capsuleBox.style.width = w + "px"; capsuleBox.style.height = h + "px";
+      capsuleBox.dataset.shape = shape;
+    };
     const ctx = cv.getContext("2d")!;
     // prefers-reduced-motion: render ONE calm static frame (resting pill, mouth
     // closed, level 0) instead of the 60fps loop — matches YappyHouse.
@@ -499,6 +528,7 @@ export default function YappyPill(
     let warnedCrop = false;
     // yap-1107-pill-matches-artifact-size — the last sprite scale logged (scaleEvent)
     let loggedScale = { cell: 0, lift: -1, dpr: 0 };
+    let loggedFraming: "whole" | "head" | "" = "";
     const resize = () => {
       DPR = backingScale(devicePixelRatio);
       const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
@@ -514,6 +544,9 @@ export default function YappyPill(
     const mouth = new MouthDriver();
     let blinkT = -1, nextBlink = 1.4, elapsed = 0, tPrev = 0, mood = 0, moodT = 0, idleFor = 0, level = 0, beakFrame = 0, beakHold = 0;
     let chatterTimer = 0, words = 0, doneUntil = 0, openV = 0, propV = 0;
+    // yap-1107-parity-pill — the eased segment capsule and the last logged class.
+    let segSize: { w: number; h: number } | null = null;
+    let loggedSeg = "";
     // YV71 — the live commentary state machine (live.ts) owns the tier ladder,
     // the speech estimate and the chatter schedule for the whole take.
     const live = createLiveState();
@@ -726,6 +759,7 @@ export default function YappyPill(
     }).then((u) => (dead ? u() : unsubs.push(u)));
     listen<Transcript>("transcript", (e) => {
       words = e.payload?.wordCount ?? 0;
+      setDoneWords(words);
       const vad = e.payload?.speechSeconds;
       logLiveLines(typeof vad === "number" && Number.isFinite(vad) ? vad : null);
       setPhase("done"); doneUntil = Date.now() + DURATION.doneHold; window.setTimeout(() => { if (phase === "done") setPhase("idle"); }, DURATION.doneHold); }).then((u) => (dead ? u() : unsubs.push(u)));
@@ -746,6 +780,26 @@ export default function YappyPill(
       ctx.closePath();
     }
     let warnedVCrop = false, lastVMode = "";
+    // yap-1107-parity-pill — a rounded-rect path on the window canvas (device px).
+    function winPath(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+      const k = Math.max(0, Math.min(r, w / 2, h / 2));
+      c.beginPath();
+      c.moveTo(x + k, y);
+      c.lineTo(x + w - k, y); c.arcTo(x + w, y, x + w, y + k, k);
+      c.lineTo(x + w, y + h - k); c.arcTo(x + w, y + h, x + w - k, y + h, k);
+      c.lineTo(x + k, y + h); c.arcTo(x, y + h, x, y + h - k, k);
+      c.lineTo(x, y + k); c.arcTo(x, y, x + k, y, k);
+      c.closePath();
+    }
+    // yap-1107-parity-pill — the side-dock shell paints the approved shell
+    // colour (pill.html --shell, tokens.css --pill-shell #1e2025) and its 1 px
+    // rim (--pill-shell-line), read once from the token rather than a literal.
+    let shellFill = "", shellLine = "";
+    const readShellTokens = () => {
+      const cs = getComputedStyle(document.documentElement);
+      shellFill = cs.getPropertyValue("--pill-shell").trim() || "#1e2025";
+      shellLine = cs.getPropertyValue("--pill-shell-line").trim() || "rgba(255,255,255,0.09)";
+    };
     // The tall room / resting tab, placed by vdock.ts (the same functions
     // vdock.test.ts walks): a dark shell flush to the edge, the scene inside it
     // at a whole number of device px per art px, the right dock mirrored, and
@@ -757,12 +811,14 @@ export default function YappyPill(
       if (vkey !== lastVMode) { lastVMode = vkey; console.info(`pill vdock_mode dock=${sd} mode=${f.mode} shellW=${Math.round(f.shell.w)}`); }
       const s = f.shell, acc = ACC[phase];
       reportPillHitbox(s.x, s.y, s.w, s.h);
+      syncCapsuleBox(s.x, s.y, s.w, s.h, `side-${f.mode}`);
       const rad = f.mode === "room" ? VDOCK_RADIUS.open : VDOCK_RADIUS.tab;
       ctx.save();
       if (ov > .05) { ctx.shadowColor = `hsla(${acc}, ${.45 * ov})`; ctx.shadowBlur = 16 * ov; }
-      ctx.fillStyle = "#1d1c1a"; edgeRect(s.x, s.y, s.w, s.h, rad, sd); ctx.fill();
+      if (!shellFill) readShellTokens();
+      ctx.fillStyle = shellFill; edgeRect(s.x, s.y, s.w, s.h, rad, sd); ctx.fill();
       ctx.restore();
-      ctx.lineWidth = 1; ctx.strokeStyle = ov > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)";
+      ctx.lineWidth = 1; ctx.strokeStyle = ov > .05 ? `hsla(${acc}, ${.55})` : shellLine;
       edgeRect(s.x + .5, s.y + .5, s.w - 1, s.h - 1, rad, sd); ctx.stroke();
       const d = f.innerD, a = f.art;
       const pose = clampChickPose(A);
@@ -909,8 +965,25 @@ export default function YappyPill(
       if (sd && sideLay && sideLay.dock === sd) { sky.current(performance.now()); drawSide(sd, sideLay, scenePose, openV); return; }
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
-      // yap-1106-fb-10 — the resting capsule holds a WHOLE character (characterFit REST_CAPSULE).
-      const capW = lerp(REST_CAPSULE.w, OPEN_CAPSULE.w * tierOpen, openV), capH = lerp(REST_CAPSULE.h, OPEN_CAPSULE.h * tierOpen, openV);
+      // yap-1107-parity-pill — the resting capsule is the approved 72 x 28 nub (characterFit REST_CAPSULE): whole on 2x, head kept in view below.
+      // yap-1107-parity-pill — a prop tier widens the open capsule, never heightens
+      // it: the approved page keeps every open shell 52 tall (built at 53).
+      const openCap = openCapsuleFor(tierOpen);
+      let capW = lerp(REST_CAPSULE.w, openCap.w, openV), capH = lerp(REST_CAPSULE.h, openCap.h, openV);
+      // yap-1107-parity-pill — with a right segment the page draws a different
+      // window: 44 x 24 in a 32-tall status shell, 196 x 44 (208 at the desk) in
+      // the open one. Eased toward it from wherever the capsule is, so a phase
+      // change still slides instead of snapping.
+      const seg = segInfoRef.current;
+      const segCap = segCapsule(seg.cls, wantProp === "desk");
+      if (segCap) {
+        if (!segSize) segSize = { w: capW, h: capH };
+        const k = reduce ? 1 : Math.min(1, dt * 14);
+        segSize.w += (segCap.w - segSize.w) * k; segSize.h += (segCap.h - segSize.h) * k;
+        if (Math.abs(segCap.w - segSize.w) < 0.05) segSize.w = segCap.w;
+        if (Math.abs(segCap.h - segSize.h) < 0.05) segSize.h = segCap.h;
+        capW = segSize.w; capH = segSize.h;
+      } else segSize = null;
       // YV53 — dock edge (read live off <html data-dock>, set by float-main): the
       // window is parked flush to that screen edge, so the capsule hugs it instead
       // of sitting mid-window. ONLY the anchor moves — capsule size and the camera
@@ -923,7 +996,21 @@ export default function YappyPill(
       const cc = lay ? capsuleCentre(lay, capW) : null;
       const cx = cc ? cc.x : dockCentreX(document.documentElement.dataset.dock, W, capW);
       const cy = cc ? cc.y : H * 0.56;
-      const x0 = cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
+      // The whole shell (capsule + gap + segment) is centred on the anchor and
+      // kept inside the panel; the window stays the shell's first child.
+      const segW = segCap ? segWRef.current : 0;
+      const sb = shellBounds(cx, { w: capW, h: capH }, segW, W);
+      const shellW = sb.w;
+      const x0 = segCap ? sb.capX : cx - capW / 2, y0 = cy - capH / 2, acc = ACC[phase];
+      // <html data-pill-seg>: "1" = the shell carries the phase's words, so the old
+      // strip under it is hidden (float.css); "live" = hands-free, where the strip
+      // keeps the live partial words and only its keycap hint (now in the shell) goes.
+      const segKey = `${seg.cls}|${gateRef.current}`;
+      if (segKey !== loggedSeg) {
+        loggedSeg = segKey;
+        document.documentElement.dataset.pillSeg = seg.cls === "none" ? "0" : gateRef.current === "listening-locked" ? "live" : "1";
+        if (seg.cls !== "none") console.info(segEvent(gateRef.current, seg.cls, seg.items, shellW));
+      }
       // YV65 — the capsule IS the grab handle: publish exactly where it was just
       // drawn (canvas coords are logical points here — the DPR lives in the
       // context transform) so the panel only takes the cursor over the pill.
@@ -932,44 +1019,75 @@ export default function YappyPill(
       // so this canvas draws no second capsule and no second Yappy beside it.
       // The hitbox is the scene's box, so drag and hover still land on the pill.
       if (lay && lay.sceneCharacter) {
+        // integrate(yap-1107-parity-pill): this branch draws no scene, so keep the
+        // cached sky current here (as the side dock does) and <html data-sky> set.
+        sky.current(performance.now());
         reportPillHitbox(lay.char.x, lay.char.y, lay.char.w, lay.char.h);
+        syncCapsuleBox(lay.char.x, lay.char.y, lay.char.w, lay.char.h, "scene");
       } else {
-      reportPillHitbox(x0, y0, capW, capH);
+      reportPillHitbox(x0, y0, segCap ? shellW : capW, capH);
+      syncCapsuleBox(x0, y0, segCap ? shellW : capW, capH, "capsule");
       // ambient glow when active
       if (openV > .05) { ctx.save(); ctx.shadowColor = `hsla(${acc}, ${.5 * openV})`; ctx.shadowBlur = 22 * openV; rr(x0, y0, capW, capH, capH / 2); ctx.fillStyle = "rgba(0,0,0,0.001)"; ctx.fill(); ctx.restore(); }
-      // the capsule fill is the same time-of-day sky (not obsidian)
-      const look = sky.look, gKey = `${look ? look.time : "-"}|${y0}|${capH}`;
-      if (!capGrad || gKey !== capGradKey) {
-        capGrad = ctx.createLinearGradient(0, y0, 0, y0 + capH);
-        capGrad.addColorStop(0, look ? look.top : "#8fd6ff"); capGrad.addColorStop(1, look ? look.bot : "#c6ecff");
-        capGradKey = gKey;
+      // yap-1107-parity-pill (bounce fix: the sheet measured an unpainted twin) —
+      // the approved .ypill is a dark shell (--pill-shell #1e2025, 4 px padding,
+      // the --pill-shell-line rim) around a rounded sky WINDOW. The shell is the
+      // painted DOM box synced above (.yappy-capsule-box); the sky and Yappy are
+      // drawn into the window canvas inside it (.yappy-win), the capsule less
+      // SHELL_PAD each side (72 x 28 nub -> 64 x 20 window, open 52 -> 44 tall).
+      // The main canvas paints only the ambient glow behind the shell.
+      const wr = shellWindow({ x: x0, y: y0, w: capW, h: capH });
+      if (win && wctx) {
+        const dw = toDevice(wr.w, DPR), dh = toDevice(wr.h, DPR);
+        const ox = Math.round(wr.x * DPR), oy = Math.round(wr.y * DPR);
+        const wk = `${dw}|${dh}|${wr.r}`;
+        if (wk !== winKey) {
+          winKey = wk;
+          if (win.width !== dw) win.width = dw;
+          if (win.height !== dh) win.height = dh;
+          win.style.width = wr.w + "px"; win.style.height = wr.h + "px";
+          win.style.borderRadius = wr.r + "px";
+        }
+        wctx.setTransform(1, 0, 0, 1, 0, 0); wctx.clearRect(0, 0, dw, dh);
+        // window-local device px: the camera's blit is in main-canvas device px
+        wctx.setTransform(1, 0, 0, 1, -ox, -oy);
+        wctx.save();
+        winPath(wctx, ox, oy, dw, dh, wr.r * DPR); wctx.clip(); wctx.imageSmoothingEnabled = false;
+        // the window's sky is the same time-of-day sky (not obsidian)
+        const look = sky.look, gKey = `${look ? look.time : "-"}|${oy}|${dh}`;
+        if (!capGrad || gKey !== capGradKey) {
+          capGrad = wctx.createLinearGradient(0, oy, 0, oy + dh);
+          capGrad.addColorStop(0, look ? look.top : "#8fd6ff"); capGrad.addColorStop(1, look ? look.bot : "#c6ecff");
+          capGradKey = gKey;
+        }
+        wctx.fillStyle = capGrad; wctx.fillRect(ox, oy, dw, dh);
+        // yap-1107-parity-pill — the resting window is the approved 64 x 20: on
+        // 2x the camera keeps his head in view (cam.framing "head", the approved
+        // face crop of pill.html Resting); a "whole" camera that does not fit
+        // still warns.
+        // CAMERA (yap-1106-fb-10): centred on Yappy's whole bounding box — tufts,
+        // wings, tail, a hop — at the largest WHOLE number of device px per art px
+        // that keeps all of it inside the window's rounded clip. pillCamera clips
+        // CAPSULE_BORDER inside the box it is given, so it is given the window
+        // grown by that border: its clip IS the window.
+        const camBox = { x: wr.x - CAPSULE_BORDER, y: wr.y - CAPSULE_BORDER, w: wr.w + 2 * CAPSULE_BORDER, h: wr.h + 2 * CAPSULE_BORDER };
+        const winSize = { w: wr.w, h: wr.h };
+        const cam = pillCamera(camBox, DPR);
+        if (!cam.fits && cam.framing === "whole" && !warnedCrop) { warnedCrop = true; console.warn(cropWarning("yappy", winSize, DPR)); }
+        if (cam.framing !== loggedFraming) { loggedFraming = cam.framing; console.info(restFramingEvent(cam.framing, winSize, DPR)); }
+        // one line when the settled sprite scale changes (open / rest, display, tier)
+        if ((openV < 0.01 || openV > 0.99) && (cam.blit.cell !== loggedScale.cell || cam.lift !== loggedScale.lift || DPR !== loggedScale.dpr)) {
+          loggedScale = { cell: cam.blit.cell, lift: cam.lift, dpr: DPR };
+          console.info(scaleEvent({ cell: cam.blit.cell, lift: cam.lift }, winSize, DPR));
+        }
+        drawScene({ ...scenePose, lift: cam.lift });
+        const blit = cam.blit;
+        wctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
+        // sparkles (done) inside the window — 2 CSS px squares, snapped to whole device px
+        const sparkPx = Math.max(1, Math.round(2 * DPR));
+        for (const q of sparkle) { wctx.globalAlpha = Math.max(0, q.life); wctx.fillStyle = q.heart ? "#ff6f9c" : "#ffd24a"; wctx.fillRect(Math.round((cx + q.x - 1) * DPR), Math.round((cy + q.y - 1) * DPR), sparkPx, sparkPx); }
+        wctx.restore();
       }
-      ctx.fillStyle = capGrad; rr(x0, y0, capW, capH, capH / 2); ctx.fill();
-      ctx.save(); rr(x0 + 1, y0 + 1, capW - 2, capH - 2, (capH - 2) / 2); ctx.clip(); ctx.imageSmoothingEnabled = false;
-      // CAMERA (yap-1106-fb-10): centred on Yappy's whole bounding box — tufts,
-      // wings, tail, a hop — at the largest WHOLE number of device px per art px
-      // that keeps all of it inside the capsule's rounded clip (never zoomed onto
-      // his face, which cropped his head at rest). The leftover margin is more of
-      // the world at the same cell, never a stretch; the buffer covers every
-      // capsule at that cell, so it is never letterboxed. Drawn under an identity
-      // transform (the clip above is already in device space).
-      const cam = pillCamera({ x: x0, y: y0, w: capW, h: capH }, DPR);
-      if (!cam.fits && !warnedCrop) { warnedCrop = true; console.warn(cropWarning("yappy", { w: capW, h: capH }, DPR)); }
-      // one line when the settled sprite scale changes (open / rest, display, tier)
-      if ((openV < 0.01 || openV > 0.99) && (cam.blit.cell !== loggedScale.cell || cam.lift !== loggedScale.lift || DPR !== loggedScale.dpr)) {
-        loggedScale = { cell: cam.blit.cell, lift: cam.lift, dpr: DPR };
-        console.info(scaleEvent({ cell: cam.blit.cell, lift: cam.lift }, { w: capW, h: capH }, DPR));
-      }
-      drawScene({ ...scenePose, lift: cam.lift });
-      const blit = cam.blit;
-      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
-      // sparkles (done) inside the pill — 2 CSS px squares, snapped to whole device px
-      const sparkPx = Math.max(1, Math.round(2 * DPR));
-      for (const q of sparkle) { ctx.globalAlpha = Math.max(0, q.life); ctx.fillStyle = q.heart ? "#ff6f9c" : "#ffd24a"; ctx.fillRect(Math.round((cx + q.x - 1) * DPR), Math.round((cy + q.y - 1) * DPR), sparkPx, sparkPx); }
-      ctx.restore();
-      ctx.restore();
-      ctx.lineWidth = 1; ctx.strokeStyle = openV > .05 ? `hsla(${acc}, ${.55})` : "rgba(255,255,255,0.12)"; rr(x0 + .5, y0 + .5, capW - 1, capH - 1, capH / 2); ctx.stroke();
       }
 
       // speech bubble above the capsule — centred on it, but kept inside the
@@ -1066,6 +1184,26 @@ export default function YappyPill(
   }, [gate, chordLabel]);
   // Y3-C — and the transcribing phase from the progress prop (float-main owns it).
   useEffect(() => { applyProgressRef.current(progress); }, [progress]);
+
+  // yap-1107-parity-pill — the approved right segment for this phase, published
+  // to the draw loop (class + items) and measured once per layout change.
+  const segItems = segmentFor({
+    phase: gate,
+    words: doneWords,
+    progress: progress ? { chunk: progress.chunk, of: progress.of } : null,
+    stopKey: chordLabel,
+  });
+  segInfoRef.current = { cls: segClassFor(gate, segItems), items: segItems };
+  useEffect(() => {
+    const el = segRef.current;
+    if (!el) return;
+    const read = () => { segWRef.current = el.offsetWidth; };
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Y5-C — Yappy's own art for the phase, from her own table. Total record, so
   // a new phase cannot reach the canvas without a pose to draw.
@@ -1166,6 +1304,10 @@ export default function YappyPill(
       aria-label={phaseAccessibleName(gate, progress, chordLabel)}
     >
       <PhaseAnnouncer phase={gate} chordLabel={chordLabel} />
+      {/* yap-1107-parity-pill — the drag blob's shell disc is a REAL element
+          (was .kami-stage::before) so the parity sheet measures it against the
+          approved page's 36 px .blob; CSS shows it only under data-pill-drag. */}
+      <span className="kami-blob" aria-hidden="true" />
       <div ref={bubbleRef} className="kami-bubble"><span ref={bubbleTextRef} className="kami-bubble-text"></span></div>
       {/* Y3-C — the determinate fill and its numeral ride ABOVE the canvas as
           DOM: the bar is a compositor transform and the numeral is text in
@@ -1230,6 +1372,14 @@ export default function YappyPill(
           second capsule beside the pill. Hidden without a meeting. */}
       <div className="meeting-shell" data-meeting-shell aria-hidden />
       <canvas ref={canvasRef} className="kami-canvas" aria-hidden {...drag.handlers} />
+      <div ref={capsuleBoxRef} className="yappy-capsule-box" data-parity="capsule" aria-hidden>
+        <canvas ref={winRef} className="yappy-win" aria-hidden />
+        {/* yap-1107-parity-pill — pill.html .seg.r, inside the shell. Visual: the
+            accessible name is the stage's aria-label, clicks land on the canvas. */}
+        <div ref={segRef} className="yappy-seg" data-parity="seg" aria-hidden>
+          {segItems.map((it, i) => renderSegItem(it, i))}
+        </div>
+      </div>
       {/* YV95 — the recording state is a DOM overlay, not a canvas layer, so
           the pulse is a compositor animation and the clock is text the backend
           already rendered. That is only half of OS-12 fix (1): the canvas loop
@@ -1290,4 +1440,37 @@ export default function YappyPill(
       <GovernorChip />
     </div>
   );
+}
+
+/** yap-1107-parity-pill — one piece of the shell's right segment (pill.html .seg.r). */
+const SEG_ICONS = { lock: Lock, paste: ClipboardPaste, check: Check, mute: MicOff, batt: BatteryLow } as const;
+function renderSegItem(it: SegItem, i: number) {
+  switch (it.kind) {
+    case "icon": {
+      const Icon = SEG_ICONS[it.icon];
+      return <Icon key={i} className="yappy-seg-icon" size={14} strokeWidth={2} aria-hidden />;
+    }
+    case "text":
+      return (
+        <span key={i}>
+          {it.text}
+          {it.sub ? <> <span className="yappy-seg-sub">{it.sub}</span></> : null}
+        </span>
+      );
+    case "kbd":
+      return <kbd key={i} className="yappy-seg-kbd">{it.text}</kbd>;
+    case "stop":
+      return <span key={i} className="yappy-seg-stop"><Square size={14} strokeWidth={2.4} aria-hidden /></span>;
+    case "cta":
+      return <span key={i} className="yappy-seg-cta">{it.text}</span>;
+    case "bar":
+      return <span key={i} className="yappy-seg-bar"><i style={{ width: `${Math.round(it.fraction * 100)}%` }} /></span>;
+    case "stack":
+      return (
+        <span key={i} className="yappy-seg-stack">
+          <span className="yappy-seg-stack-t">{it.top}</span>
+          <span className="yappy-seg-bar"><i style={{ width: `${Math.round(it.fraction * 100)}%` }} /></span>
+        </span>
+      );
+  }
 }
