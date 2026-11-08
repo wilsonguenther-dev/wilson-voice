@@ -121,3 +121,12 @@ No approved design-2026-11-06 page covers the Permissions list; the row reuses t
 existing `perm-list` row markup (StatusDot + text + one button) with no new styles, so
 nothing approved changes. Approved sentence kept verbatim: "Your Mac opens the emoji picker
 on a lone Fn tap; Yap can turn that off", button "Turn it off", control "Put it back".
+
+## Acceptance line 5 — 2x captures (integrator, 2026-11-08T06:56:32Z, integration-2 at dc9cc169)
+
+`node scripts/globe-key-shots.mjs --out docs/loop/evidence` exit 0 (vite build to a scratch dir, real Chrome --headless=new, Permissions page at 1190x773 scale 2, globe_key_status fixture per state; both lines and their one button checked):
+
+- `yap-1107-globe-key-conflict-guard-conflict@2x.png` and `-conflict-page@2x.png`: "Your Mac opens the emoji picker on a lone Fn tap; Yap can turn that off" with "Turn it off".
+- `yap-1107-globe-key-conflict-guard-off@2x.png` and `-off-page@2x.png`: "A lone Fn tap now does nothing. macOS applies this fully after you restart your Mac." with "Put it back".
+
+Integration note: GlobeKeyRow.tsx moved to desktop/src/views/settings/parts/ (views.test.tsx allows one module per Nav value in views/), and the injected-runner test now expects the status read that precedes turn_off's own prior read.
