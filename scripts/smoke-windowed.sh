@@ -93,6 +93,8 @@ DRIVER="$ROOT/scripts/smoke-windowed.mjs"
 # The two window sizes under test. 980x700 is the comfortable desktop window;
 # 720x520 is the smallest size the window is allowed to reach, which is where
 # overflow and clipping actually show up.
+# yap-1107-parity-home: a caller may set the sizes (the parity sheets capture Home
+# at 1188x1600, where the main column holds the 3x room and Home down to its end).
 # yap-1107-parity-news — a caller's sizes win (a parity run captures Home at the
 # approved page's 880x760); unset keeps the 980x700 + 720x520 pair.
 export YAP_SMOKE_W1="${YAP_SMOKE_W1:-980}" YAP_SMOKE_H1="${YAP_SMOKE_H1:-700}"

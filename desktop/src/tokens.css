@@ -362,6 +362,36 @@
   --who-card-w: 252px;
   --who-toast-bg: #1d1c1a;
   --who-toast-ink: #f3efe6;
+
+  /* yap-1107-parity-home — the approved Home page's palette (design-2026-11-06
+     home.html + assets/review.css), measured hex for hex. Home and the footer
+     paint ONLY these, so the parity sheet's colour set matches the artifact. */
+  --home-ink: #1d1c1a; /* review.css --ink */
+  --home-ink-2: #56534d; /* --ink-2: stats labels, recent rows */
+  --home-ink-3: #8b877f; /* --ink-3: meta, search hint, footer */
+  --home-line: rgba(29, 28, 26, 0.11); /* --line */
+  --home-sheet: #fbfaf7; /* .panel / .search background */
+  --home-btn-bg: #ffffff; /* .b */
+  --home-btn-dark: #1d1c1a; /* .b.dark */
+  --home-btn-dark-ink: #ffffff;
+  --home-foot-bg: #f3f2ee; /* .appfoot */
+  --home-ok: #2f8f5b; /* --ok: the footer engine dot */
+  --home-kbd-ink: #eceae4; /* review.css .kbd (--on-shell), as approved in the footer */
+  --home-kbd-line: rgba(255, 255, 255, 0.22);
+  --home-room-wood: #3a2418; /* .room.lay: the wood behind the 3x studio */
+  --home-room-label-bg: rgba(29, 28, 26, 0.72); /* .room .label */
+  --home-room-label-ink: #f2efe6;
+  --home-room-label-dot: #6fd08c;
+  /* Measured sizes (CSS px) of the same page. */
+  --home-gap: 16px; /* .scroll gap between Home's blocks */
+  --home-room-bleed: 20px; /* .room.lay margin 0 -20px: edge to edge */
+  /* measured on the approved page (parity-crops, 2x): the .stats line box and
+     the room label's box, so the fonts this Mac draws cannot drift them. */
+  --home-stats-h: 30.69px; /* .stats: 2 + 26.69 + 2 */
+  --home-panel-h-lh: 1.3; /* .panel h4 font shorthand = line-height normal (1.3) */
+  --home-room-label-w: 134.3px; /* .room .label "Yappy · at his desk" */
+  --home-room-label-lh: 15px; /* .room .label: 5 + 15 + 5 = 25 px tall */
+
   /* yap-1107-parity-news — Yappy News, measured from the approved News page
      (design-2026-11-06/news.html; its review.css palette). §01 is the
      onboarding step (.ob), §02 the Home briefing card (.bcard). */
@@ -389,6 +419,17 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* yap-1107-parity-home — dark has no approved Home page; the Home
+       palette follows the app's own dark tokens so nothing turns light. */
+    --home-ink: var(--text-primary);
+    --home-ink-2: var(--text-primary);
+    --home-ink-3: var(--text-muted);
+    --home-line: var(--border-subtle);
+    --home-sheet: var(--surface-card);
+    --home-btn-bg: var(--surface-raised);
+    --home-btn-dark: var(--text-primary);
+    --home-btn-dark-ink: var(--surface);
+    --home-foot-bg: var(--surface);
     --surface: #201811;
     --surface-sidebar: rgba(40, 32, 26, 0.55);
     --surface-card: rgba(48, 40, 32, 0.55);

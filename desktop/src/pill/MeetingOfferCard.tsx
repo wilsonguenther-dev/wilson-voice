@@ -51,10 +51,10 @@ export function MeetingOfferView({
         </p>
       )}
       <div className="meeting-offer-actions">
-        <button type="button" className="meeting-offer-record" onClick={() => onChoose("record")}>
+        <button type="button" className="meeting-offer-record" data-pill-control="meeting-offer-record" onClick={() => onChoose("record")}>
           Record
         </button>
-        <button type="button" className="meeting-offer-snooze" onClick={() => onChoose("snooze")}>
+        <button type="button" className="meeting-offer-snooze" data-pill-control="meeting-offer-snooze" onClick={() => onChoose("snooze")}>
           Not now
         </button>
       </div>

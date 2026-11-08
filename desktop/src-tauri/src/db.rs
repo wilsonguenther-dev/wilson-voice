@@ -717,6 +717,8 @@ fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             // yap-1106-auto-label-and-correct — the per-line correction lock
             // and the "this was NOT them" voice samples.
             13 => crate::speaker_profiles::MIGRATION_13_SPEAKER_CORRECTIONS,
+            // yap-1106-fb-23 — "How many people are in this meeting?"
+            14 => meetings::MIGRATION_14_EXPECTED_SPEAKERS,
             // Unreachable while SCHEMA_VERSION and this match are edited
             // together, which is the point of failing loudly if they are not.
             other => {
@@ -2625,6 +2627,213 @@ impl Database {
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(voices.len())
+    }
+
+    /// yap-1106-fb-23 — the meeting's People count (`None` = Auto, or no row).
+    pub fn meeting_expected_speakers(&self, meeting_id: &str) -> Result<Option<u8>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let raw: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT expected_speakers FROM meetings WHERE id = ?1",
+                params![meeting_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(meetings::clamp_expected_speakers(raw.flatten()))
+    }
+
+    /// yap-1106-fb-23 — store the People count (`None` = Auto). Out-of-range
+    /// values are refused, never clamped into a number nobody chose.
+    pub fn set_meeting_expected_speakers(
+        &self,
+        meeting_id: &str,
+        count: Option<u8>,
+    ) -> Result<bool, String> {
+        if let Some(n) = count {
+            if !(meetings::EXPECTED_SPEAKERS_MIN..=meetings::EXPECTED_SPEAKERS_MAX).contains(&n) {
+                return Err(format!("people count {n} is outside 1..=12"));
+            }
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE meetings SET expected_speakers = ?2 WHERE id = ?1",
+                params![meeting_id, count.map(i64::from)],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// yap-1106-fb-23 — an after-meeting People change. Re-runs ONLY the
+    /// merge step ([`crate::diarize::merge_to_cap`]) on the stored per-cluster
+    /// voices (`meeting_cluster_voices`): no ASR, no embedding, no sidecar.
+    /// Relabels the turns (`meeting_segments.cluster_index`) and keeps names:
+    /// a merged group takes the name of its largest NAMED member; a merge of
+    /// two differently named people returns [`meetings::RecapOutcome::NeedsConfirm`]
+    /// and writes nothing until `confirm_merge`. A count above the current
+    /// voices never splits anyone (it is stored for the next pass). Lines a
+    /// person corrected (`speaker_locked`) keep their name.
+    pub fn recap_meeting_speakers(
+        &self,
+        meeting_id: &str,
+        count: Option<u8>,
+        confirm_merge: bool,
+    ) -> Result<meetings::RecapOutcome, String> {
+        let meeting = self
+            .get_meeting(meeting_id)?
+            .ok_or_else(|| "meeting not found".to_string())?;
+        let you_have_own_track = matches!(
+            meetings::diarization_target(meeting.kind(), meeting.sys_wav_path.is_some()),
+            meetings::DiarizationTarget::MicIsMe
+        );
+        let cap = crate::diarize::voice_pool(count, you_have_own_track);
+        let voices = self.meeting_cluster_voices(meeting_id)?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let rows = Self::label_rows_on(&tx, meeting_id)?;
+        let mut tracks: Vec<i64> = voices.iter().map(|v| v.track).collect();
+        tracks.dedup();
+        // (track, loser cluster, representative cluster, name to carry)
+        type CarriedName = Option<(Option<i64>, String)>;
+        let mut moves: Vec<(i64, i64, i64, CarriedName)> = Vec::new();
+        let mut voices_after = 0usize;
+        let mut new_voice: Vec<(i64, i64, Vec<f32>, f64)> = Vec::new();
+        for track in tracks {
+            let tv: Vec<&speaker_profiles::ClusterVoice> =
+                voices.iter().filter(|v| v.track == track).collect();
+            let centroids: Vec<Vec<f32>> = tv
+                .iter()
+                .map(|v| v.embedding.clone().unwrap_or_default())
+                .collect();
+            let weights: Vec<f64> = tv.iter().map(|v| v.seconds).collect();
+            let reps = crate::diarize::merge_to_cap(&centroids, &weights, cap);
+            let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+            for (i, r) in reps.iter().enumerate() {
+                groups.entry(*r).or_default().push(i);
+            }
+            voices_after += groups.len();
+            for (rep, members) in groups {
+                if members.len() < 2 {
+                    continue;
+                }
+                // The name each member's lines carry (the most common one).
+                let name_of = |cluster: i64| -> Option<(Option<i64>, String)> {
+                    let mut tally: Vec<((Option<i64>, String), usize)> = Vec::new();
+                    for r in rows
+                        .iter()
+                        .filter(|r| r.track == track && r.cluster_index == Some(cluster))
+                    {
+                        let Some(n) = r.speaker_name.clone() else {
+                            continue;
+                        };
+                        match tally.iter_mut().find(|(k, _)| k.1 == n) {
+                            Some((_, c)) => *c += 1,
+                            None => tally.push(((r.profile_id, n), 1)),
+                        }
+                    }
+                    tally.into_iter().max_by_key(|(_, c)| *c).map(|(k, _)| k)
+                };
+                let mut named: Vec<(f64, (Option<i64>, String))> = members
+                    .iter()
+                    .filter_map(|m| name_of(tv[*m].cluster_index).map(|n| (tv[*m].seconds, n)))
+                    .collect();
+                named.sort_by(|a, b| b.0.total_cmp(&a.0));
+                let winner = named.first().map(|(_, n)| n.clone());
+                if let Some(loser) = named
+                    .iter()
+                    .find(|(_, n)| winner.as_ref().is_some_and(|w| w.1 != n.1))
+                {
+                    if !confirm_merge {
+                        let into = winner.map(|w| w.1).unwrap_or_default();
+                        log::info!(
+                            "meeting_recap needs_confirm meeting={meeting_id} track={track}"
+                        );
+                        return Ok(meetings::RecapOutcome::NeedsConfirm {
+                            from: loser.1 .1.clone(),
+                            into,
+                        });
+                    }
+                }
+                let rep_cluster = tv[rep].cluster_index;
+                let mut sum: Vec<f32> = Vec::new();
+                let mut secs = 0.0f64;
+                for m in &members {
+                    let v = tv[*m];
+                    secs += v.seconds;
+                    if let Some(e) = v.embedding.as_ref() {
+                        if sum.is_empty() {
+                            sum = vec![0.0; e.len()];
+                        }
+                        if e.len() == sum.len() {
+                            for (a, x) in sum.iter_mut().zip(e) {
+                                *a += x * v.seconds.max(1e-6) as f32;
+                            }
+                        }
+                    }
+                    moves.push((track, v.cluster_index, rep_cluster, winner.clone()));
+                }
+                let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm.is_finite() && norm > 0.0 {
+                    sum.iter_mut().for_each(|x| *x /= norm);
+                } else {
+                    sum.clear();
+                }
+                new_voice.push((track, rep_cluster, sum, secs));
+            }
+        }
+        let now = Utc::now().to_rfc3339();
+        for (track, from, into, name) in &moves {
+            tx.execute(
+                "UPDATE meeting_segments SET cluster_index = ?4
+                  WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3",
+                params![meeting_id, track, from, into],
+            )
+            .map_err(|e| e.to_string())?;
+            if let Some((pid, n)) = name {
+                tx.execute(
+                    "UPDATE meeting_segments SET speaker_name = ?3, speaker_profile_id = ?4
+                      WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?5
+                        AND speaker_locked = 0",
+                    params![meeting_id, track, n, pid, into],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if from != into {
+                tx.execute(
+                    "DELETE FROM meeting_cluster_voices
+                      WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3",
+                    params![meeting_id, track, from],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        for (track, cluster, embedding, secs) in &new_voice {
+            let blob =
+                (!embedding.is_empty()).then(|| speaker_profiles::encode_embedding(embedding));
+            tx.execute(
+                "UPDATE meeting_cluster_voices
+                    SET embedding = COALESCE(?4, embedding), seconds = ?5, updated_at = ?6
+                  WHERE meeting_id = ?1 AND track = ?2 AND cluster_index = ?3",
+                params![meeting_id, track, cluster, blob, secs, now],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute(
+            "UPDATE meetings SET expected_speakers = ?2 WHERE id = ?1",
+            params![meeting_id, count.map(i64::from)],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        let merged = moves.iter().filter(|(_, f, i, _)| f != i).count();
+        log::info!(
+            "meeting_recap applied meeting={meeting_id} voices={voices_after} merged={merged} count={}",
+            count.map(|n| n.to_string()).unwrap_or_else(|| "auto".into())
+        );
+        Ok(meetings::RecapOutcome::Applied {
+            voices: voices_after,
+            merged,
+        })
     }
 
     /// Every stored cluster voice of a meeting.

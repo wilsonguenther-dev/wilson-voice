@@ -252,6 +252,7 @@ export default function WhoTalkingCard({
         <button
           type="button"
           className="who-card-secondary"
+          data-pill-control="who-card-secondary"
           onClick={() =>
             card.kind === "same"
               ? dispatch({ type: "same", yes: false, nowMs: Date.now() })
@@ -263,6 +264,7 @@ export default function WhoTalkingCard({
         <button
           type="button"
           className="who-card-primary"
+          data-pill-control="who-card-primary"
           disabled={card.kind === "ask" && name.trim().length === 0}
           onClick={() => (card.kind === "same" ? dispatch({ type: "same", yes: true, nowMs: Date.now() }) : save())}
         >
