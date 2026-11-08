@@ -42,7 +42,9 @@ use wilson_voice_lib::summarize::{map_grammar, parse_map_output, summarize_segme
 #[test]
 fn every_grammar_rule_fits_on_one_line() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let labels: Vec<String> = (1..=4).map(|i| format!("seg_{i:04}")).collect();
     let grammar = map_grammar(&labels).expect("labels make a grammar");
     for line in grammar.lines().filter(|l| !l.trim().is_empty()) {
@@ -69,7 +71,9 @@ fn every_grammar_rule_fits_on_one_line() {
 #[test]
 fn a_constrained_request_carries_a_grammar_and_plans_grammar_then_greedy() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let labels: Vec<String> = (1..=3).map(|i| format!("seg_{i:04}")).collect();
     let grammar = map_grammar(&labels).expect("labels make a grammar");
 
@@ -111,7 +115,9 @@ fn a_constrained_request_carries_a_grammar_and_plans_grammar_then_greedy() {
 #[test]
 fn a_constrained_pass_produces_well_formed_schema_json() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     // The stub answers with exactly what the grammar admits, citing ids from the
     // chunk it was handed.
     let model = StubModel::new(|req| {
@@ -142,7 +148,9 @@ fn a_constrained_pass_produces_well_formed_schema_json() {
 #[test]
 fn malformed_and_truncated_output_is_parsed_defensively() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let labels: Vec<String> = (1..=3).map(|i| format!("seg_{i:04}")).collect();
     let source = SEGMENT_TEXTS
         .iter()

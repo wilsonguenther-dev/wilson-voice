@@ -48,7 +48,9 @@ fn silent() -> StubModel {
 #[test]
 fn a_grammar_legal_empty_map_answer_is_an_error_not_a_stored_summary() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments();
 
     let err = summarize_segments(&segments, &silent())
@@ -81,7 +83,9 @@ fn a_grammar_legal_empty_map_answer_is_an_error_not_a_stored_summary() {
 #[test]
 fn a_summary_whose_only_content_is_a_truncation_note_is_still_empty() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let truncating = StubModel::truncating(|req| {
         if req.mode == "reduce" {
             Ok(Generated {
@@ -111,7 +115,9 @@ fn a_summary_whose_only_content_is_a_truncation_note_is_still_empty() {
 #[test]
 fn a_summary_with_one_item_and_no_narrative_is_still_stored() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let sparse = StubModel::new(|req| {
         if req.mode == "reduce" {
             return Ok(String::new());
@@ -150,7 +156,9 @@ fn a_summary_with_one_item_and_no_narrative_is_still_stored() {
 #[test]
 fn the_only_write_of_meetings_summary_refuses_an_empty_result_first() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     const LIB: &str = include_str!("../src/lib.rs");
 
     let writes: Vec<&str> = LIB

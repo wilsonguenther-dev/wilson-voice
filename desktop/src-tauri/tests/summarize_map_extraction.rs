@@ -37,7 +37,9 @@ fn long_meeting() -> Vec<wilson_voice_lib::meetings::MeetingSegment> {
 #[test]
 fn map_items_cite_only_their_own_chunk() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = long_meeting();
 
     // Every MAP pass answers with one honest item citing a line it was given,
@@ -138,7 +140,9 @@ fn map_items_cite_only_their_own_chunk() {
 #[test]
 fn extraction_happens_in_map_and_reduce_only_narrates() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = long_meeting();
     let model = StubModel::new(|req| {
         let labels = labels_in(&req.text);
@@ -194,7 +198,9 @@ fn extraction_happens_in_map_and_reduce_only_narrates() {
 #[test]
 fn a_failed_map_pass_does_not_take_the_meeting_with_it() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = long_meeting();
     let model = StubModel::new(|req| {
         let labels = labels_in(&req.text);

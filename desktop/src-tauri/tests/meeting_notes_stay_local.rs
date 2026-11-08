@@ -122,7 +122,9 @@ impl NotesBackend for LocalNotes {
 #[test]
 fn local_model_notes_path_makes_zero_network_calls() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let _g = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     setup();
     let before = net::egress_requests();
@@ -157,7 +159,9 @@ fn local_model_notes_path_makes_zero_network_calls() {
 #[test]
 fn positive_control_a_needed_download_hits_the_deny_all_seam() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let _g = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     setup();
     let before = net::egress_requests();

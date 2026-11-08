@@ -23,7 +23,8 @@ tokens reliably.
   grounded against their CITED segment +-1 (`ground_items_in_window`). The Summary is ONE pass whose
   input is only the surviving items plus the topic labels (`items_first_summary_input`), gated by
   hard digit / name / contact checks and a 4-gram verbatim ceiling of 0.5
-  (`SUMMARY_VERBATIM_CEILING`), with no groundedness floor.
+  (`SUMMARY_VERBATIM_CEILING`), judged after forgiving ONE lifted 4-gram
+  (`SUMMARY_VERBATIM_SLACK_NGRAMS`, `items_first_verbatim_ratio`), with no groundedness floor.
 - **C**: arm E with a Qwen2.5-3B q4 model file, measured only (`YAP_EVAL_ARM_C_MODEL`), never
   shipped; must stay at or under 2.2 GB peak RSS.
 
@@ -33,6 +34,21 @@ Honest fallback copy shipped with E: no Summary passes, so no paragraph and a "T
 the timestamped labels; an action that fails the item gates is quoted under "Lines that sounded like
 commitments" with its time and track, never filed under "Action items"; every notes card ends with
 "Written on this Mac by a small model. Check owners against the transcript."
+
+## Bounce fix (2026-11-08T21:41:12Z, loop three coder B1)
+
+Batch 1 bounced the item: under arm E the guards' clean planted fixture
+(`tests/summary_audit_guards.rs`, `a_clean_planted_fixture_still_yields_its_planted_actions`) lost
+its Summary. The paragraph, "The Liberty University pilot starts with two hundred students and Jeisil
+will send the signed contract.", is a real paraphrase that joins two items, but 7 of its 13 distinct
+4-grams occur in the transcript (raw 0.54): it has to name the meeting ("the Liberty University
+pilot") and the items it is written from are the transcript's own lines. On a one-sentence Summary a
+single 4-gram moves the ratio 7.7 points, so a flat 0.5 refused it as a re-transcript. The gate now
+forgives one lifted 4-gram before it applies the ceiling: that paragraph judges 6 of 13 (0.46) and is
+kept; two transcript lines pasted together (13 of 16) still judge 12 of 16 and are refused; over a
+real 40-word paragraph the allowance is worth at most 0.04, over 100 words 0.01. The eval keeps
+reporting the RAW ratio (`support::eval_metrics::summary_verbatim_ratio`), so the table below is not
+softened by the allowance. Test: `summary_items_first::the_summary_gate_forgives_one_lifted_phrase_and_no_more`.
 
 ## The numbers (planted 15-minute fixture of yap24-NT4)
 

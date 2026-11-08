@@ -45,7 +45,9 @@ use support::notes_planted::{self, PlantedNote, MEETING_SECONDS, SCRIPT};
 use wilson_voice_lib::asr_engine::TimedTranscript;
 use wilson_voice_lib::meeting_asr::{plan_windows_fixed, ChunkConfig, ChunkOutcome, ResumePoint};
 use wilson_voice_lib::meeting_pipeline::chunk_segments;
-use wilson_voice_lib::meetings::{MeetingKind, MeetingSegment, NewMeetingSegment, MIC_TRACK, SYSTEM_TRACK};
+use wilson_voice_lib::meetings::{
+    MeetingKind, MeetingSegment, NewMeetingSegment, MIC_TRACK, SYSTEM_TRACK,
+};
 use wilson_voice_lib::summarize::{
     summarize_segments_with_strategy, MeetingSummary, NotesStrategy, SidecarSession,
     SidecarSummaryClient, SummaryItem, TrackSpeakers, DEFAULT_SUMMARY_MODEL, NOTES_STRATEGY,
@@ -195,10 +197,16 @@ fn score_against(s: &MeetingSummary, truth: &Truth) -> Scores {
     let all: Vec<&Plant> = commitments.iter().collect();
     let explicit: Vec<&Plant> = commitments.iter().filter(|p| p.explicit).collect();
     let implicit: Vec<&Plant> = commitments.iter().filter(|p| !p.explicit).collect();
-    let late: Vec<&Plant> = commitments.iter().filter(|p| p.start_seconds >= late_from).collect();
+    let late: Vec<&Plant> = commitments
+        .iter()
+        .filter(|p| p.start_seconds >= late_from)
+        .collect();
 
-    let true_actions =
-        s.actions.iter().filter(|a| commitments.iter().any(|p| is_item_for(a, p, by_start))).count();
+    let true_actions = s
+        .actions
+        .iter()
+        .filter(|a| commitments.iter().any(|p| is_item_for(a, p, by_start)))
+        .count();
     let distractor_starts = &truth.distractor_starts;
     let distractors_filed = s
         .actions
@@ -209,7 +217,10 @@ fn score_against(s: &MeetingSummary, truth: &Truth) -> Scores {
     let decision_recall = if decisions.is_empty() {
         0.0
     } else {
-        decisions.iter().filter(|p| s.decisions.iter().any(|d| is_item_for(d, p, by_start))).count() as f64
+        decisions
+            .iter()
+            .filter(|p| s.decisions.iter().any(|d| is_item_for(d, p, by_start)))
+            .count() as f64
             / decisions.len() as f64
     };
 
@@ -489,8 +500,8 @@ struct ArmRun {
 /// engine is never resident here (the call-bleed leg decodes in a child
 /// process that has exited), so the peak is the notes pass alone.
 fn run_arm(
-    binary: &PathBuf,
-    model: &PathBuf,
+    binary: &Path,
+    model: &Path,
     strategy: NotesStrategy,
     job: &str,
     segments: Vec<MeetingSegment>,
@@ -513,8 +524,8 @@ fn run_arm(
         })
     };
     let backend = Arc::new(RealNotes {
-        binary: binary.clone(),
-        model: model.clone(),
+        binary: binary.to_path_buf(),
+        model: model.to_path_buf(),
         segments,
         strategy,
         out: Mutex::new(None),
@@ -522,15 +533,35 @@ fn run_arm(
     let jobs = SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).expect("notes worker");
     let started = Instant::now();
     assert!(jobs.submit(job));
-    let end = jobs.wait_for(job, Duration::from_secs(30 * 60)).expect("a notes status");
+    let end = jobs
+        .wait_for(job, Duration::from_secs(30 * 60))
+        .expect("a notes status");
     let wall = started.elapsed();
     stop.store(true, Ordering::SeqCst);
     sampler.join().unwrap();
-    assert_eq!(end.phase, NotesPhase::Ready, "notes job {job} ended {:?}: {:?}", end.phase, end.reason);
-    let summary = backend.out.lock().unwrap().clone().expect("a stored summary");
+    assert_eq!(
+        end.phase,
+        NotesPhase::Ready,
+        "notes job {job} ended {:?}: {:?}",
+        end.phase,
+        end.reason
+    );
+    let summary = backend
+        .out
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a stored summary");
     let scores = score_against(&summary, truth);
     let (peak_total_kb, peak_sidecar_kb, peak_host_kb) = *peaks.lock().unwrap();
-    ArmRun { summary, scores, wall_s: wall.as_secs_f64(), peak_total_kb, peak_sidecar_kb, peak_host_kb }
+    ArmRun {
+        summary,
+        scores,
+        wall_s: wall.as_secs_f64(),
+        peak_total_kb,
+        peak_sidecar_kb,
+        peak_host_kb,
+    }
 }
 
 /// The table header docs/decisions/notes-strategy-2026-10.md and
@@ -565,23 +596,29 @@ fn every_arm_row_has_the_table_shape() {
     };
     let row = arm_row("E", &r);
     assert!(row.starts_with("| E | "), "{row}");
-    assert_eq!(row.matches('|').count(), ARM_TABLE_HEADER.matches('|').count(), "{row}");
+    assert_eq!(
+        row.matches('|').count(),
+        ARM_TABLE_HEADER.matches('|').count(),
+        "{row}"
+    );
     assert!(row.contains("| 900.0 |"), "{row}");
 }
 
 /// The arms every leg runs: A, B and E on the shipped 1.5B file; arm C is
 /// arm E with a 3B model file, measured only, and only when the eval is
 /// handed one (YAP_EVAL_ARM_C_MODEL); it must stay <= 2.2 GB peak.
-fn arms_under_test(model: &PathBuf) -> Vec<(&'static str, NotesStrategy, PathBuf)> {
+fn arms_under_test(model: &Path) -> Vec<(&'static str, NotesStrategy, PathBuf)> {
     let mut arms: Vec<(&'static str, NotesStrategy, PathBuf)> = vec![
-        ("A", NotesStrategy::A, model.clone()),
-        ("B", NotesStrategy::B, model.clone()),
-        ("E", NotesStrategy::E, model.clone()),
+        ("A", NotesStrategy::A, model.to_path_buf()),
+        ("B", NotesStrategy::B, model.to_path_buf()),
+        ("E", NotesStrategy::E, model.to_path_buf()),
     ];
     match std::env::var_os("YAP_EVAL_ARM_C_MODEL").map(PathBuf::from) {
         Some(c) if c.is_file() => arms.push(("C", NotesStrategy::E, c)),
         Some(c) => eprintln!("ARM C SKIPPED: YAP_EVAL_ARM_C_MODEL={c:?} is not a file"),
-        None => eprintln!("ARM C SKIPPED: set YAP_EVAL_ARM_C_MODEL to a Qwen2.5-3B q4 GGUF to measure it"),
+        None => eprintln!(
+            "ARM C SKIPPED: set YAP_EVAL_ARM_C_MODEL to a Qwen2.5-3B q4 GGUF to measure it"
+        ),
     }
     arms
 }
@@ -614,7 +651,10 @@ fn print_arm_line(fixture: &str, label: &str, r: &ArmRun) {
         r.peak_host_kb as f64 / 1024.0,
     );
     if label == "C" && r.peak_total_kb as f64 / 1024.0 / 1024.0 > 2.2 {
-        eprintln!("ARM C over the 2.2 GB ceiling on {fixture}: {:.2} GB", r.peak_total_kb as f64 / 1024.0 / 1024.0);
+        eprintln!(
+            "ARM C over the 2.2 GB ceiling on {fixture}: {:.2} GB",
+            r.peak_total_kb as f64 / 1024.0 / 1024.0
+        );
     }
 }
 
@@ -643,7 +683,9 @@ fn eval_required() -> bool {
 #[test]
 #[ignore = "runs the real 1.5B notes sidecar; provision with scripts/provision-notetaker-eval.sh"]
 fn real_notes_model_meets_the_summary_recall_gates() {
-    let Some((model, binary)) = notes_inputs() else { return };
+    let Some((model, binary)) = notes_inputs() else {
+        return;
+    };
 
     // yap-audit-notes-strategy: every arm on the same planted fixture.
     let arms = arms_under_test(&model);
@@ -677,7 +719,11 @@ fn real_notes_model_meets_the_summary_recall_gates() {
     // The gates bind the SHIPPED arm; the others are measured, not gated.
     let shipped = shipped.expect("the shipped arm ran");
     let failures = gate_failures(&shipped.scores);
-    assert!(failures.is_empty(), "summary recall gates failed for arm {}: {failures:?}", NOTES_STRATEGY.tag());
+    assert!(
+        failures.is_empty(),
+        "summary recall gates failed for arm {}: {failures:?}",
+        NOTES_STRATEGY.tag()
+    );
 }
 
 // ── the ASR + AEC leg: every arm on call-bleed-2voice ────────────────────────
@@ -700,7 +746,11 @@ const RATE: usize = 16_000;
 fn corpus_root() -> PathBuf {
     std::env::var("YAP_EVAL_CORPUS")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().expect("home").join("yap-eval-corpus/meetings"))
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .expect("home")
+                .join("yap-eval-corpus/meetings")
+        })
 }
 
 /// `YAP_MODEL_DIR` -> link the pinned ASR model into `<YAP_DATA_DIR>/models`
@@ -714,7 +764,9 @@ fn provision_pinned_asr_model() -> bool {
             .filter(|d| !d.trim().is_empty())
             .unwrap_or_else(|| panic!("YAP_MODEL_DIR is set but YAP_DATA_DIR is not"));
         let pinned = wilson_voice_lib::models::recommended_model();
-        let file = pinned.default_file().expect("the pinned model lists a file");
+        let file = pinned
+            .default_file()
+            .expect("the pinned model lists a file");
         let src = PathBuf::from(&model_dir).join(&file.filename);
         if src.is_file() {
             let models_dir = PathBuf::from(&data_dir).join("models");
@@ -725,8 +777,11 @@ fn provision_pinned_asr_model() -> bool {
             }
             let settings = PathBuf::from(&data_dir).join("settings.json");
             if !settings.exists() {
-                fs::write(&settings, serde_json::json!({ "nativeModel": pinned.id }).to_string())
-                    .expect("settings");
+                fs::write(
+                    &settings,
+                    serde_json::json!({ "nativeModel": pinned.id }).to_string(),
+                )
+                .expect("settings");
             }
         }
     }
@@ -790,7 +845,8 @@ fn decode_windows(samples: &[i16], scratch: &Path, label: &str) -> Vec<ChunkOutc
             String::from_utf8_lossy(&run.stderr).trim()
         );
         let transcript: TimedTranscript =
-            serde_json::from_str(String::from_utf8_lossy(&run.stdout).trim()).expect("a timed transcript");
+            serde_json::from_str(String::from_utf8_lossy(&run.stdout).trim())
+                .expect("a timed transcript");
         out.push(ChunkOutcome::from_transcript(window, transcript));
     }
     out
@@ -801,14 +857,28 @@ fn decode_windows(samples: &[i16], scratch: &Path, label: &str) -> Vec<ChunkOutc
 fn call_bleed_segments(root: &Path, scratch: &Path) -> Vec<MeetingSegment> {
     let dir = root.join(CALL_BLEED);
     let cleaned = scratch.join("track0.aec.wav");
-    let report = wilson_voice_lib::meeting_aec::aec_prepass(&dir.join("track0.wav"), &dir.join("track1.wav"), &cleaned)
-        .expect("the AEC pre-pass (yap24-NT11)");
-    println!("NT4-CALL-BLEED aec call_atten_p50_db={:.1}", report.call_atten_p50_db);
+    let report = wilson_voice_lib::meeting_aec::aec_prepass(
+        &dir.join("track0.wav"),
+        &dir.join("track1.wav"),
+        &cleaned,
+    )
+    .expect("the AEC pre-pass (yap24-NT11)");
+    println!(
+        "NT4-CALL-BLEED aec call_atten_p50_db={:.1}",
+        report.call_atten_p50_db
+    );
     let mut rows: Vec<(i64, NewMeetingSegment)> = Vec::new();
-    for (track, wav, label) in [(MIC_TRACK, cleaned.clone(), "mic-aec"), (SYSTEM_TRACK, dir.join("track1.wav"), "system")] {
+    for (track, wav, label) in [
+        (MIC_TRACK, cleaned.clone(), "mic-aec"),
+        (SYSTEM_TRACK, dir.join("track1.wav"), "system"),
+    ] {
         let samples = read_wav_16k(&wav);
         for chunk in decode_windows(&samples, scratch, label) {
-            rows.extend(chunk_segments(&chunk, track).into_iter().map(|r| (track, r)));
+            rows.extend(
+                chunk_segments(&chunk, track)
+                    .into_iter()
+                    .map(|r| (track, r)),
+            );
         }
     }
     rows.sort_by(|a, b| a.1.start_seconds.total_cmp(&b.1.start_seconds));
@@ -833,12 +903,17 @@ fn call_bleed_truth(root: &Path, segments: &[MeetingSegment]) -> Truth {
     let path = root.join(CALL_BLEED).join("meta.json");
     let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let value: serde_json::Value = serde_json::from_str(&raw).expect("meta.json parses");
-    let meta: CallBleedMeta =
-        serde_json::from_value(value.get("call_bleed").cloned().expect("meta.json has a call_bleed block"))
-            .expect("the call_bleed block parses");
-    let duration = value.get("duration_seconds").and_then(|d| d.as_f64()).unwrap_or_else(|| {
-        segments.iter().map(|s| s.end_seconds).fold(0.0, f64::max)
-    });
+    let meta: CallBleedMeta = serde_json::from_value(
+        value
+            .get("call_bleed")
+            .cloned()
+            .expect("meta.json has a call_bleed block"),
+    )
+    .expect("the call_bleed block parses");
+    let duration = value
+        .get("duration_seconds")
+        .and_then(|d| d.as_f64())
+        .unwrap_or_else(|| segments.iter().map(|s| s.end_seconds).fold(0.0, f64::max));
     Truth {
         commitments: meta
             .commitments
@@ -861,7 +936,11 @@ fn call_bleed_truth(root: &Path, segments: &[MeetingSegment]) -> Truth {
             })
             .collect(),
         distractor_starts: Vec::new(),
-        transcript: segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n"),
+        transcript: segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
         meeting_seconds: duration,
         match_by_start: false,
     }
@@ -872,21 +951,44 @@ fn call_bleed_scoring_matches_by_keywords_and_never_by_start() {
     let truth = Truth {
         commitments: vec![Plant {
             owner: "Them".into(),
-            keywords: vec!["ask".into(), "printer".into(), "quote".into(), "banners".into(), "email".into()],
+            keywords: vec![
+                "ask".into(),
+                "printer".into(),
+                "quote".into(),
+                "banners".into(),
+                "email".into(),
+            ],
             start_seconds: 54.65,
             explicit: true,
         }],
         decisions: Vec::new(),
         distractor_starts: Vec::new(),
-        transcript: "I will ask the printer for a quote on the banners and email it over tomorrow.".into(),
+        transcript: "I will ask the printer for a quote on the banners and email it over tomorrow."
+            .into(),
         meeting_seconds: 275.0,
         match_by_start: false,
     };
     // Same start, wrong words: not the commitment on the ASR leg.
-    let s = summary("", vec![item("Book the hall for the second weekend.", 54.65, Some("Them"))], vec![]);
+    let s = summary(
+        "",
+        vec![item(
+            "Book the hall for the second weekend.",
+            54.65,
+            Some("Them"),
+        )],
+        vec![],
+    );
     assert_eq!(score_against(&s, &truth).action_recall, 0.0);
     // The planted words, at an ASR row's start: the commitment, owner right.
-    let s = summary("", vec![item("Ask the printer for a banners quote and email it.", 53.9, Some("Them"))], vec![]);
+    let s = summary(
+        "",
+        vec![item(
+            "Ask the printer for a banners quote and email it.",
+            53.9,
+            Some("Them"),
+        )],
+        vec![],
+    );
     let sc = score_against(&s, &truth);
     assert_eq!(sc.action_recall, 1.0);
     assert_eq!(sc.action_precision, 1.0);
@@ -896,27 +998,43 @@ fn call_bleed_scoring_matches_by_keywords_and_never_by_start() {
 #[test]
 #[ignore = "decodes call-bleed-2voice through the AEC pre-pass and the shipped ASR, then runs the real notes sidecar"]
 fn call_bleed_arms_over_the_aec_cleaned_transcript() {
-    let Some((model, binary)) = notes_inputs() else { return };
+    let Some((model, binary)) = notes_inputs() else {
+        return;
+    };
     let require = eval_required();
     let root = corpus_root();
     if !root.join(CALL_BLEED).join("track0.wav").is_file() {
-        assert!(!require, "YAP_EVAL_REQUIRE=1 but {CALL_BLEED} is not under {}", root.display());
-        eprintln!("SKIP {CALL_BLEED} not under {} (YAP_EVAL_CORPUS)", root.display());
+        assert!(
+            !require,
+            "YAP_EVAL_REQUIRE=1 but {CALL_BLEED} is not under {}",
+            root.display()
+        );
+        eprintln!(
+            "SKIP {CALL_BLEED} not under {} (YAP_EVAL_CORPUS)",
+            root.display()
+        );
         return;
     }
     if !provision_pinned_asr_model() {
-        assert!(!require, "YAP_EVAL_REQUIRE=1 but the pinned ASR model is not installed (YAP_MODEL_DIR)");
+        assert!(
+            !require,
+            "YAP_EVAL_REQUIRE=1 but the pinned ASR model is not installed (YAP_MODEL_DIR)"
+        );
         eprintln!("SKIP the pinned ASR model is not installed (YAP_MODEL_DIR)");
         return;
     }
-    let scratch = Scratch(std::env::temp_dir().join(format!("yap-notes-call-bleed-{}", std::process::id())));
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("yap-notes-call-bleed-{}", std::process::id())));
     let _ = fs::remove_dir_all(&scratch.0);
     fs::create_dir_all(&scratch.0).expect("scratch");
     let asr_started = Instant::now();
     let segments = call_bleed_segments(&root, &scratch.0);
     let asr_wall = asr_started.elapsed().as_secs_f64();
     drop(scratch);
-    assert!(!segments.is_empty(), "the AEC-cleaned decode stored no rows");
+    assert!(
+        !segments.is_empty(),
+        "the AEC-cleaned decode stored no rows"
+    );
     let truth = call_bleed_truth(&root, &segments);
     println!(
         "NT4-CALL-BLEED asr_aec_wall_s={asr_wall:.1} rows={} mic_rows={} system_rows={} commitments={} decisions={}",
@@ -930,7 +1048,14 @@ fn call_bleed_arms_over_the_aec_cleaned_transcript() {
     let mut rows = Vec::new();
     let mut shipped: Option<ArmRun> = None;
     for (label, strategy, arm_model) in arms_under_test(&model) {
-        let r = run_arm(&binary, &arm_model, strategy, &format!("call-bleed-{label}"), segments.clone(), &truth);
+        let r = run_arm(
+            &binary,
+            &arm_model,
+            strategy,
+            &format!("call-bleed-{label}"),
+            segments.clone(),
+            &truth,
+        );
         println!("{}", r.summary.markdown);
         print_arm_line(CALL_BLEED, label, &r);
         rows.push(arm_row(&format!("{label} (call-bleed)"), &r));
@@ -991,7 +1116,10 @@ fn owner_buckets_name_the_four_labels_and_other() {
 #[test]
 #[ignore = "human half: the shipped arm on a COPY of a real meeting DB; prints numbers only"]
 fn human_half_real_meeting_copy_numbers_only() {
-    let (Ok(db), Ok(meeting_id)) = (std::env::var("YAP_EVAL_MEETING_DB"), std::env::var("YAP_EVAL_MEETING_ID")) else {
+    let (Ok(db), Ok(meeting_id)) = (
+        std::env::var("YAP_EVAL_MEETING_DB"),
+        std::env::var("YAP_EVAL_MEETING_ID"),
+    ) else {
         eprintln!("SKIP human half: set YAP_EVAL_MEETING_DB (a COPY of wilson_voice.db) and YAP_EVAL_MEETING_ID");
         return;
     };
@@ -999,10 +1127,16 @@ fn human_half_real_meeting_copy_numbers_only() {
         !db.contains("Application Support"),
         "YAP_EVAL_MEETING_DB must be a COPY outside Application Support, never the live data dir"
     );
-    let Some((model, binary)) = notes_inputs() else { return };
+    let Some((model, binary)) = notes_inputs() else {
+        return;
+    };
     let conn = rusqlite::Connection::open(&db).expect("open the DB copy");
     let duration: f64 = conn
-        .query_row("SELECT duration_seconds FROM meetings WHERE id = ?1", [&meeting_id], |r| r.get(0))
+        .query_row(
+            "SELECT duration_seconds FROM meetings WHERE id = ?1",
+            [&meeting_id],
+            |r| r.get(0),
+        )
         .expect("the meeting row in the copy");
     let segments: Vec<MeetingSegment> = {
         let mut stmt = conn
@@ -1026,19 +1160,34 @@ fn human_half_real_meeting_copy_numbers_only() {
                 })
             })
             .expect("segment rows");
-        rows.collect::<Result<Vec<_>, _>>().expect("segment rows decode")
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("segment rows decode")
     };
-    assert!(!segments.is_empty(), "the meeting has no stored rows in the copy");
+    assert!(
+        !segments.is_empty(),
+        "the meeting has no stored rows in the copy"
+    );
     let truth = Truth {
         commitments: Vec::new(),
         decisions: Vec::new(),
         distractor_starts: Vec::new(),
-        transcript: segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n"),
+        transcript: segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
         meeting_seconds: duration,
         match_by_start: false,
     };
     let n_segments = segments.len();
-    let r = run_arm(&binary, &model, NOTES_STRATEGY, "human-half", segments, &truth);
+    let r = run_arm(
+        &binary,
+        &model,
+        NOTES_STRATEGY,
+        "human-half",
+        segments,
+        &truth,
+    );
     let mut owners: BTreeMap<&'static str, usize> = BTreeMap::new();
     for a in &r.summary.actions {
         *owners.entry(owner_bucket(a)).or_default() += 1;

@@ -61,7 +61,9 @@ fn assert_distinct(points: &[String]) {
 #[test]
 fn round3_shape_keeps_three_or_more_distinct_points_and_the_summary_comes_from_them() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(match req.mode.as_str() {
             "map" => map_answer(req),
@@ -95,7 +97,9 @@ fn round3_shape_keeps_three_or_more_distinct_points_and_the_summary_comes_from_t
 #[test]
 fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(match req.mode.as_str() {
             "map" => map_answer(req),
@@ -121,7 +125,9 @@ fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
 #[test]
 fn a_failed_headline_call_never_pads_key_points() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| match req.mode.as_str() {
         "map" => Ok(map_answer(req)),
         "headline" => Err(SummaryError::Protocol),
@@ -147,7 +153,9 @@ const NOT_OWNERS: &[&str] = &[
 #[test]
 fn small_talk_with_will_or_should_never_becomes_an_owned_action() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(NOT_OWNERS);
     let lines = transcript_lines(&segments);
     let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
@@ -169,7 +177,9 @@ fn small_talk_with_will_or_should_never_becomes_an_owned_action() {
 #[test]
 fn a_real_owner_is_a_name_the_meeting_uses() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(&[
         "Jeisil will send the pricing doc by Friday.",
         "Coffee will help.",
@@ -192,7 +202,9 @@ fn a_real_owner_is_a_name_the_meeting_uses() {
 #[test]
 fn a_status_the_meeting_stated_is_kept_and_prices_stay_whole() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let source = "seg_0001: We finished the migration yesterday.\nseg_0002: We're done with the import too.\nseg_0003: Jeisil will send the pricing doc by Friday at $49.99 a seat.";
     let narrative = "The migration is finished. The import is done. Jeisil will send the pricing doc by Friday at $49.99 a seat.";
     assert_eq!(validate_narrative(source, narrative).as_deref(), Some(narrative));
@@ -217,7 +229,9 @@ fn a_status_the_meeting_stated_is_kept_and_prices_stay_whole() {
 #[test]
 fn sentences_split_only_at_real_ends() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     assert_eq!(
         split_sentences("It costs $49.99 a seat. Dr. Britt agreed, e.g. for Liberty. We meet at 3.30pm. Then 9 a.m. tomorrow works. Done! Really?"),
         vec![
@@ -237,7 +251,9 @@ fn sentences_split_only_at_real_ends() {
 #[test]
 fn review_opus2_n1_words_are_never_owners() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let lines_in = [
         "Everything will be ready",
         "Friday will be tight",
@@ -264,7 +280,9 @@ fn review_opus2_n1_words_are_never_owners() {
 #[test]
 fn key_points_hide_when_fewer_than_two() {
     // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
-    wilson_voice_lib::summarize::set_notes_strategy_override(Some(wilson_voice_lib::summarize::NotesStrategy::A));
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use wilson_voice_lib::summarize::{render_notes, Headline};
     let one = Headline { title: "T".into(), key_points: vec!["Only one point here.".into()], summary: String::new() };
     let md = render_notes(&one, &[], "A summary.", &[], &[], &[], 0, 1, false);

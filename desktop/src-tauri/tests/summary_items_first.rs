@@ -10,11 +10,13 @@ mod support;
 
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::summarize::{
-    cited_window, commitment_lines, ground_items_in_window, invented_name, lemma_grounded,
-    map_grammar, map_grammar_items_first, notes_strategy, recover_topic, render_notes_items_first,
+    cited_window, commitment_lines, ground_items_in_window, invented_name,
+    items_first_verbatim_ratio, lemma_grounded, map_grammar, map_grammar_items_first,
+    narrative_containment, notes_strategy, recover_topic, render_notes_items_first,
     summarize_segments, transcript_lines, validate_items_first_summary, validate_topic,
     CommitmentLine, Headline, NotesStrategy, SummaryItem, TopicLabel, COMMITMENT_LINES_HEADING,
-    NOTES_FOOTER, NOTES_STRATEGY, NO_SUMMARY_VERBATIM, SUMMARY_VERBATIM_CEILING, TOPICS_HEADING,
+    NOTES_FOOTER, NOTES_STRATEGY, NO_SUMMARY_VERBATIM, SUMMARY_VERBATIM_CEILING,
+    SUMMARY_VERBATIM_SLACK_NGRAMS, TOPICS_HEADING,
 };
 
 const FIXTURE: &[&str] = &[
@@ -201,6 +203,46 @@ fn the_summary_gate_refuses_invented_facts_and_re_transcripts() {
     assert!(
         validate_items_first_summary(&src, "Jeisil will send the signed contract to Liberty by Friday. We decided the pilot starts with two hundred students.").is_none(),
         "a re-transcript"
+    );
+}
+
+/// Bounce fix (loop three, batch 1): the guards' clean planted Summary, a
+/// one-sentence paraphrase that joins two items, lifts 7 of its 13 distinct
+/// 4-grams (raw 0.54) because it must name the meeting ("the Liberty
+/// University pilot") and the items it is written from are transcript lines.
+/// One lifted 4-gram is forgiven, so it judges 6 of 13 and is kept; two lines
+/// pasted together (13 of 16) still judge 12 of 16 and are refused.
+#[test]
+fn the_summary_gate_forgives_one_lifted_phrase_and_no_more() {
+    let src = plain();
+    assert_eq!(SUMMARY_VERBATIM_SLACK_NGRAMS, 1);
+    let clean = "The Liberty University pilot starts with two hundred students and Jeisil will send the signed contract.";
+    let raw = narrative_containment(&src, clean);
+    let judged = items_first_verbatim_ratio(&src, clean);
+    println!("MEASURED clean raw={raw:.3} judged={judged:.3} max={SUMMARY_VERBATIM_CEILING}");
+    assert!((raw - 7.0 / 13.0).abs() < 1e-9, "{raw}");
+    assert!(raw > SUMMARY_VERBATIM_CEILING, "{raw}");
+    assert!((judged - 6.0 / 13.0).abs() < 1e-9, "{judged}");
+    assert_eq!(
+        validate_items_first_summary(&src, clean).as_deref(),
+        Some(clean)
+    );
+
+    let pasted = "Jeisil will send the signed contract to Liberty by Friday. We decided the pilot starts with two hundred students.";
+    let judged = items_first_verbatim_ratio(&src, pasted);
+    println!("MEASURED pasted judged={judged:.3} max={SUMMARY_VERBATIM_CEILING}");
+    assert!((judged - 12.0 / 16.0).abs() < 1e-9, "{judged}");
+    assert!(validate_items_first_summary(&src, pasted).is_none());
+
+    // Under four words there is no 4-gram to judge.
+    assert_eq!(
+        items_first_verbatim_ratio(&src, "Liberty pilot review."),
+        0.0
+    );
+    // The allowance never goes negative: one lifted 4-gram of four judges 0.
+    assert_eq!(
+        items_first_verbatim_ratio(&src, "The Liberty University pilot starts next term."),
+        0.0
     );
 }
 

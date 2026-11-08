@@ -76,7 +76,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::meeting_echo::{
-    word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD,
+    echo_words, word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD,
 };
 use crate::meetings::{
     diarization_target, format_offset, is_two_track, speaker_label, DiarizationTarget, MeetingKind,
@@ -265,6 +265,19 @@ pub const LEMMA_GROUNDEDNESS_FLOOR: f64 = 0.6;
 /// Arm E — the most of the Summary's distinct word 4-grams that may be lifted
 /// from the transcript (the NT4 eval gate, `GATE_VERBATIM_MAX`).
 pub const SUMMARY_VERBATIM_CEILING: f64 = 0.5;
+
+/// Arm E — lifted 4-grams the Summary gate forgives before it applies
+/// [`SUMMARY_VERBATIM_CEILING`]. The Summary is written from the items, which
+/// are the transcript's own lines, and it has to name what the meeting was
+/// about: the one phrase that does ("the Liberty University pilot") is lifted
+/// by necessity. Over a one-sentence Summary (13 distinct 4-grams) a single
+/// lifted 4-gram is 7.7 points of ratio, so without the allowance a real
+/// paraphrase at 7 of 13 (0.54) read as a re-transcript and the clean planted
+/// fixture of tests/summary_audit_guards.rs lost its Summary. Over a paragraph
+/// the allowance vanishes (40 words: 0.54 max; 100 words: 0.51 max), and a
+/// pasted line pair (13 of 16) is still refused. The NT4 eval keeps reporting
+/// the RAW ratio ([`narrative_containment`]); this only judges.
+pub const SUMMARY_VERBATIM_SLACK_NGRAMS: usize = 1;
 
 /// Arm E — a topic label is 3-8 words.
 pub const MIN_TOPIC_WORDS: usize = 3;
@@ -4107,14 +4120,32 @@ pub fn validate_items_first_summary(transcript: &str, summary: &str) -> Option<S
         return reject("v10_invented_name");
     }
     content_gates(transcript, &summary)?;
-    let containment = narrative_containment(transcript, &summary);
-    if containment > SUMMARY_VERBATIM_CEILING {
+    let judged = items_first_verbatim_ratio(transcript, &summary);
+    if judged > SUMMARY_VERBATIM_CEILING {
         log::info!(
-            "summarize narrative_refused reason=v8_verbatim stage=items_first containment={containment:.2} max={SUMMARY_VERBATIM_CEILING}"
+            "summarize narrative_refused reason=v8_verbatim stage=items_first containment={:.2} judged={judged:.2} max={SUMMARY_VERBATIM_CEILING} slack={SUMMARY_VERBATIM_SLACK_NGRAMS}",
+            narrative_containment(transcript, &summary)
         );
         return reject("v8_verbatim");
     }
     Some(summary)
+}
+
+/// Arm E — the ratio the Summary gate judges: the Summary's distinct word
+/// 4-grams lifted from `transcript` (the [`narrative_containment`] tokens),
+/// less [`SUMMARY_VERBATIM_SLACK_NGRAMS`], over all of its distinct 4-grams.
+/// `0.0` for a Summary under four words.
+pub fn items_first_verbatim_ratio(transcript: &str, summary: &str) -> f64 {
+    fn grams(text: &str) -> std::collections::HashSet<String> {
+        echo_words(text).windows(4).map(|w| w.join(" ")).collect()
+    }
+    let own = grams(summary);
+    if own.is_empty() {
+        return 0.0;
+    }
+    let reference = grams(transcript);
+    let lifted = own.iter().filter(|g| reference.contains(*g)).count();
+    lifted.saturating_sub(SUMMARY_VERBATIM_SLACK_NGRAMS) as f64 / own.len() as f64
 }
 
 /// Arm E — write the Summary in ONE pass from the surviving items and topic
