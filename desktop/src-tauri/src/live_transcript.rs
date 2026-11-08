@@ -470,6 +470,7 @@ pub struct LiveCluster {
     /// "Yes, John" folded this voice into another live voice.
     pub merged_into: Option<usize>,
     /// The best known/just-named person under [`LIVE_SAME_PERSON_BELOW`].
+    /// Frozen once `asked` is set: it is the person the card named.
     pub candidate: Option<(SameTarget, String, f32)>,
 }
 
@@ -652,7 +653,12 @@ impl LiveRoster {
                 self.clusters.len() - 1
             }
         };
-        self.note_candidate(idx, embedding, m);
+        // fix-l3b1-2: once a voice is asked about, its candidate is frozen:
+        // "Yes, John" must merge into the person the card showed, never a
+        // closer person a later window found after the question went out.
+        if !self.clusters[idx].asked {
+            self.note_candidate(idx, embedding, m);
+        }
         let c = &mut self.clusters[idx];
         if !self.ask_enabled
             || c.asked
@@ -1933,6 +1939,67 @@ mod tests {
         assert_eq!(r.profiles[0].n_samples, 4);
         assert_eq!(r.speakers(), 1);
         assert_eq!(r.display_name(c).as_deref(), Some("John"));
+    }
+
+    /// fix-l3b1-2 fixture: a named John cluster, an enrolled Maya profile and
+    /// a new voice asked "Same person as John? 62% sure", then a later window
+    /// of that voice that is 66% like Maya. Returns (roster, john, phone).
+    fn asked_about_john_then_closer_to_maya() -> (LiveRoster, usize, usize) {
+        let maya = profile(9, "Maya", vec![0.0, 0.0, 1.0]);
+        let mut r = LiveRoster::new(vec![maya], MatchBands::provisional(), true);
+        let none = VoiceMatch::Unknown { best: None };
+        let (john, _) = r.observe(&[1.0, 0.0, 0.0], 6.0, &none);
+        r.name(john, "John").unwrap();
+        let (phone, ask) = r.observe(&johns_phone(), 6.0, &none);
+        let Some(LiveAsk::SamePerson {
+            name, similarity, ..
+        }) = ask
+        else {
+            panic!("62% like John asks about John: {ask:?}");
+        };
+        assert_eq!(name, "John");
+        assert_eq!((similarity * 100.0).round() as i32, 62);
+        let maya_66 = VoiceMatch::Ask {
+            profile_id: 9,
+            display_name: "Maya".into(),
+            similarity: crate::diarize_metrics::cosine_similarity(
+                &[0.66, (1.0f32 - 0.66 * 0.66).sqrt()],
+                &[1.0, 0.0],
+            ),
+        };
+        let (again, ask) = r.observe(&johns_phone(), 6.0, &maya_66);
+        assert_eq!(again, phone, "the later window is the same live voice");
+        assert_eq!(ask, None, "asked once: no second question");
+        (r, john, phone)
+    }
+
+    #[test]
+    fn a_closer_window_after_asking_never_changes_who_the_card_named() {
+        let (r, john, phone) = asked_about_john_then_closer_to_maya();
+        let Some((target, name, similarity)) = r.clusters[phone].candidate.clone() else {
+            panic!("the asked voice keeps the person the card named");
+        };
+        assert_eq!(target, SameTarget::Cluster(john));
+        assert_eq!(name, "John");
+        assert_eq!((similarity * 100.0).round() as i32, 62);
+    }
+
+    #[test]
+    fn yes_john_merges_into_john_and_leaves_mayas_voiceprint_untouched() {
+        let (mut r, john, phone) = asked_about_john_then_closer_to_maya();
+        assert_eq!(
+            r.confirm_same(phone, true).unwrap(),
+            SameOutcome::MergedInto { cluster: john }
+        );
+        assert_eq!(r.profiles[0].display_name, "Maya");
+        assert_eq!(
+            r.profiles[0].n_samples, 3,
+            "Maya's voiceprint never gets John's sample"
+        );
+        assert_eq!(r.clusters[phone].profile_id, None);
+        assert_eq!(r.clusters[phone].merged_into, Some(john));
+        assert_eq!(r.display_name(phone).as_deref(), Some("John"));
+        assert_eq!(r.speakers(), 1);
     }
 
     #[test]
