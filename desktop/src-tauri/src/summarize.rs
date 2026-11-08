@@ -64,12 +64,12 @@
 //! YV128–130 build the profile table; nothing here needs to change when they
 //! do, which is the point of the seam.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -178,6 +178,205 @@ pub const ECHO_OWNER_UNCLEAR_MIN: f64 = 0.15;
 /// yap-audit-notes-guards (DO 10) — what a mic-track action reads when the
 /// mic may carry more than one local voice. Never "Me" on a guess.
 pub const MIC_SHARED_OWNER: &str = "Someone here";
+
+// ── yap-audit-notes-strategy: which notes strategy runs ─────────────────────
+
+/// yap-audit-notes-strategy — the notes strategies the NT4 eval measures.
+///
+/// * `A` — the baseline: MAP (narrative + items) → REDUCE, every item and
+///   narrative held to the 0.80 content-word [`GROUNDEDNESS_FLOOR`].
+/// * `B` — `A` with a paraphrase-tolerant grounding check: digits, names and
+///   contacts stay hard-gated, the rest matches at lemma level
+///   ([`LEMMA_GROUNDEDNESS_FLOOR`]). Necessary, not sufficient.
+/// * `E` — ITEMS FIRST, SUMMARY LAST (shipped): MAP keeps the grammar items and
+///   a 3-8 word topic label per chunk instead of a narrative; there is no
+///   REDUCE fold; the Summary is ONE pass over the surviving items and the
+///   topic labels; items are grounded against their CITED segment +-1; the
+///   Summary has hard digit/name/contact gates and a 4-gram verbatim ceiling
+///   ([`SUMMARY_VERBATIM_CEILING`]).
+///
+/// Arm C of the decision (a 3B model) is not a strategy: it is `E` run by the
+/// eval with a different model file (`YAP_EVAL_ARM_C_MODEL`), measured only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesStrategy {
+    A,
+    B,
+    E,
+}
+
+impl NotesStrategy {
+    pub fn tag(self) -> &'static str {
+        match self {
+            NotesStrategy::A => "A",
+            NotesStrategy::B => "B",
+            NotesStrategy::E => "E",
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            NotesStrategy::A => 1,
+            NotesStrategy::B => 2,
+            NotesStrategy::E => 3,
+        }
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(NotesStrategy::A),
+            2 => Some(NotesStrategy::B),
+            3 => Some(NotesStrategy::E),
+            _ => None,
+        }
+    }
+}
+
+/// The strategy the shipped app runs (docs/decisions/notes-strategy-2026-10.md).
+pub const NOTES_STRATEGY: NotesStrategy = NotesStrategy::E;
+
+/// 0 = no override. Set only by the eval (to run each arm) and by the tests
+/// that pin arm A's MAP → REDUCE contract; the app never sets it.
+static NOTES_STRATEGY_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+
+/// Run `strategy` instead of [`NOTES_STRATEGY`] in this process (`None` clears).
+/// For the eval and the arm-A contract tests only.
+pub fn set_notes_strategy_override(strategy: Option<NotesStrategy>) {
+    NOTES_STRATEGY_OVERRIDE.store(strategy.map_or(0, NotesStrategy::code), Ordering::SeqCst);
+}
+
+/// The strategy the next summary run uses.
+pub fn notes_strategy() -> NotesStrategy {
+    NotesStrategy::from_code(NOTES_STRATEGY_OVERRIDE.load(Ordering::SeqCst))
+        .unwrap_or(NOTES_STRATEGY)
+}
+
+thread_local! {
+    /// The strategy of the run in progress on this thread — read by
+    /// [`common_gates`]. Outside a run it is `A`, so a validator called on its
+    /// own keeps the floor it always had.
+    static RUN_STRATEGY: Cell<NotesStrategy> = const { Cell::new(NotesStrategy::A) };
+}
+
+/// Arms B and E — the share of an output's distinct content-word LEMMAS that
+/// must occur in the source. "discussed" grounds against "discuss", which the
+/// raw 0.80 floor rejected 38 times on one real meeting.
+pub const LEMMA_GROUNDEDNESS_FLOOR: f64 = 0.6;
+
+/// Arm E — the most of the Summary's distinct word 4-grams that may be lifted
+/// from the transcript (the NT4 eval gate, `GATE_VERBATIM_MAX`).
+pub const SUMMARY_VERBATIM_CEILING: f64 = 0.5;
+
+/// Arm E — a topic label is 3-8 words.
+pub const MIN_TOPIC_WORDS: usize = 3;
+pub const MAX_TOPIC_WORDS: usize = 8;
+
+/// Arm E — the honest fallback copy (docs/decisions/notes-strategy-2026-10.md).
+/// Every notes card ends with this line.
+pub const NOTES_FOOTER: &str =
+    "Written on this Mac by a small model. Check owners against the transcript.";
+/// The section that stands in for the Summary when no Summary passed.
+pub const TOPICS_HEADING: &str = "Topics";
+/// The section for action-shaped lines that failed the item gates — never
+/// filed under "Action items".
+pub const COMMITMENT_LINES_HEADING: &str = "Lines that sounded like commitments";
+
+/// Arm E — one chunk's topic label and when that chunk starts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopicLabel {
+    pub label: String,
+    pub start_seconds: f64,
+}
+
+/// Arm E — an action that failed the item gates, kept as the transcript's own
+/// words with its time and track, under [`COMMITMENT_LINES_HEADING`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitmentLine {
+    pub quote: String,
+    pub start_seconds: f64,
+    pub track: Option<String>,
+}
+
+/// A word reduced to a crude lemma: lowercase, common English inflections
+/// off ("discussed" → "discuss", "planning" → "plann", "plans" → "plan" —
+/// both sides get the same treatment, so the stems only need to agree).
+pub fn lemma(word: &str) -> String {
+    let w = word.to_lowercase();
+    if let Some(stem) = w.strip_suffix("ies") {
+        if stem.len() >= 3 {
+            return format!("{stem}y");
+        }
+    }
+    for suffix in ["ing", "ed", "es", "ly", "s"] {
+        // "discuss", "process": a double s is the word, not a plural.
+        if suffix == "s" && w.ends_with("ss") {
+            break;
+        }
+        if let Some(stem) = w.strip_suffix(suffix) {
+            if stem.len() >= 3 {
+                return stem.trim_end_matches('e').to_string();
+            }
+        }
+    }
+    w.trim_end_matches('e').to_string()
+}
+
+/// Share of the output's distinct content-word lemmas found in the source.
+pub fn lemma_grounded(source: &str, output: &str) -> f64 {
+    let mut claimed: Vec<String> = crate::polish::content_words(output)
+        .iter()
+        .map(|w| lemma(w))
+        .collect();
+    claimed.sort();
+    claimed.dedup();
+    if claimed.is_empty() {
+        return 1.0;
+    }
+    let have: std::collections::HashSet<String> = crate::polish::content_words(source)
+        .iter()
+        .map(|w| lemma(w))
+        .collect();
+    let found = claimed.iter().filter(|w| have.contains(*w)).count();
+    found as f64 / claimed.len() as f64
+}
+
+/// Hard name gate: a capitalised word that does not open a sentence must be a
+/// word the source contains (any case). "Priya will send it" over a meeting
+/// that never said "Priya" is an invented owner.
+pub fn invented_name(source: &str, output: &str) -> Option<String> {
+    let have: std::collections::HashSet<String> = source
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+    let mut sentence_start = true;
+    for raw in output.split_whitespace() {
+        let word = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+        let opens = sentence_start;
+        sentence_start = raw.ends_with(['.', '!', '?', ':']);
+        if opens || word.chars().count() < 2 {
+            continue;
+        }
+        let word = word.trim_end_matches("'s");
+        if word.chars().next().is_some_and(char::is_uppercase)
+            && !have.contains(&word.to_lowercase())
+        {
+            return Some(word.to_string());
+        }
+    }
+    None
+}
+
+/// The arm B / E gate in place of the 0.80 floor: names hard-gated, the rest
+/// matched at lemma level.
+fn lemma_gates(source: &str, output: &str) -> Option<()> {
+    if invented_name(source, output).is_some() {
+        return reject("v10_invented_name").map(|_| ());
+    }
+    if lemma_grounded(source, output) < LEMMA_GROUNDEDNESS_FLOOR {
+        return reject("v3_ungrounded_lemma").map(|_| ());
+    }
+    Some(())
+}
 
 /// The verbatim measure: the share of `narrative`'s distinct word 4-grams that
 /// occur in `source` (`meeting_echo::word_ngram_containment` at n = 4).
@@ -1880,8 +2079,15 @@ fn common_gates(source: &str, output: &str) -> Option<()> {
     // INPUT survived; a summary is allowed to drop almost all of it, so the
     // honest question is the other one: how much of what the summary SAYS is
     // actually in the source.
-    if grounded(source, output) < GROUNDEDNESS_FLOOR {
-        return reject("v3_ungrounded").map(|_| ());
+    // yap-audit-notes-strategy: arms B and E replace the floor with hard name
+    // gates and a lemma-level match; A (and any call outside a run) keeps it.
+    match RUN_STRATEGY.with(Cell::get) {
+        NotesStrategy::A => {
+            if grounded(source, output) < GROUNDEDNESS_FLOOR {
+                return reject("v3_ungrounded").map(|_| ());
+            }
+        }
+        NotesStrategy::B | NotesStrategy::E => lemma_gates(source, output)?,
     }
     content_gates(source, output)
 }
@@ -2173,12 +2379,25 @@ pub fn summarize_segments_with(
     client: &dyn SummaryClient,
     speakers: &dyn SpeakerSource,
 ) -> Result<MeetingSummary, SummaryError> {
+    summarize_segments_with_strategy(segments, client, speakers, notes_strategy())
+}
+
+/// yap-audit-notes-strategy — the same, with the notes strategy named
+/// explicitly (the eval runs every arm through this).
+pub fn summarize_segments_with_strategy(
+    segments: &[MeetingSegment],
+    client: &dyn SummaryClient,
+    speakers: &dyn SpeakerSource,
+    strategy: NotesStrategy,
+) -> Result<MeetingSummary, SummaryError> {
     let mut timings = SummaryRunTimings {
         model_load_ms: client.model_load_ms(),
         ..SummaryRunTimings::default()
     };
     let outer = RUN_REJECTIONS.with(|tally| tally.borrow_mut().replace(BTreeMap::new()));
-    let result = summarize_run(segments, client, speakers, &mut timings);
+    let outer_strategy = RUN_STRATEGY.with(|s| s.replace(strategy));
+    let result = summarize_run(segments, client, speakers, &mut timings, strategy);
+    RUN_STRATEGY.with(|s| s.set(outer_strategy));
     timings.rejections = RUN_REJECTIONS
         .with(|tally| std::mem::replace(&mut *tally.borrow_mut(), outer))
         .unwrap_or_default();
@@ -2186,6 +2405,7 @@ pub fn summarize_segments_with(
         Ok(_) => "ok",
         Err(e) => e.tag(),
     };
+    log::info!("summarize strategy arm={}", strategy.tag());
     log::info!("{}", summary_run_line(&timings));
     result
 }
@@ -2195,7 +2415,9 @@ fn summarize_run(
     client: &dyn SummaryClient,
     speakers: &dyn SpeakerSource,
     timings: &mut SummaryRunTimings,
+    strategy: NotesStrategy,
 ) -> Result<MeetingSummary, SummaryError> {
+    let items_first = strategy == NotesStrategy::E;
     let lines = transcript_lines_with(segments, speakers);
     if lines.is_empty() {
         return Err(SummaryError::NoSegments);
@@ -2209,6 +2431,8 @@ fn summarize_run(
         .join("\n");
 
     let mut extracts = Vec::with_capacity(chunks.len());
+    // Arm E: one timestamped topic label per chunk that produced a valid one.
+    let mut topics: Vec<TopicLabel> = Vec::new();
     let mut truncated_chunks = 0usize;
     let mut truncated = false;
     for chunk in &chunks {
@@ -2217,7 +2441,12 @@ fn summarize_run(
         }
         let labels = chunk.labels();
         let source = chunk.text();
-        let Some(grammar) = map_grammar(&labels) else {
+        let grammar = if items_first {
+            map_grammar_items_first(&labels)
+        } else {
+            map_grammar(&labels)
+        };
+        let Some(grammar) = grammar else {
             continue;
         };
         // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
@@ -2253,8 +2482,22 @@ fn summarize_run(
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
                 // for the caller, not for the recovery scan.
-                extract.narrative =
-                    validate_narrative(&source, &extract.narrative).unwrap_or_default();
+                if items_first {
+                    // Arm E: no MAP narrative at all; the chunk's topic label
+                    // (grammar-shaped, 3-8 words) is what the Summary sees.
+                    extract.narrative = String::new();
+                    if let Some(label) =
+                        recover_topic(&answer.text).and_then(|t| validate_topic(&source, &t))
+                    {
+                        topics.push(TopicLabel {
+                            label,
+                            start_seconds: chunk.lines.first().map_or(0.0, |l| l.start_seconds),
+                        });
+                    }
+                } else {
+                    extract.narrative =
+                        validate_narrative(&source, &extract.narrative).unwrap_or_default();
+                }
                 extracts.push(extract);
             }
             // B2: a cancel is not a failed chunk to skip past — the run stops
@@ -2285,11 +2528,15 @@ fn summarize_run(
     // #250 round 4 (R2-B1): KEY POINTS FIRST, from the transcript, then the
     // Summary paragraph written from them (same call). Only when that
     // paragraph does not hold up does the MAP → REDUCE narrative stand in.
+    // Arm E keeps the headline pass for the title and key points only; its
+    // paragraph is never the Summary (that is written last, from the items).
     let mut headline = headline_pass(client, &lines, &names, &merged.narratives);
     if client.cancelled() {
         return Err(SummaryError::Cancelled);
     }
-    let narrative = if headline.summary.trim().is_empty() {
+    let narrative = if items_first {
+        String::new()
+    } else if headline.summary.trim().is_empty() {
         let (narrative, reduce_truncated) =
             reduce_narrative(&merged.narratives, &full_text, client, timings);
         truncated |= reduce_truncated;
@@ -2320,7 +2567,6 @@ fn summarize_run(
         } else {
             narrative
         };
-    let verbatim_refused = narrative.trim().is_empty() && run_rejected("v8_verbatim");
     if headline.title.trim().is_empty() {
         headline.title =
             fallback_title(meeting_started_at(segments).map(|t| t.with_timezone(&chrono::Local)));
@@ -2367,18 +2613,64 @@ fn summarize_run(
         segments,
         &lines,
     );
-    let markdown = render_notes_with(
-        &headline,
-        &names,
-        &narrative,
-        &actions,
-        &decisions,
-        &questions,
-        truncated_chunks,
-        chunks.len(),
-        truncated,
-        verbatim_refused,
-    );
+    // Arm E: every item is grounded against the segment it CITES (+-1), and
+    // the Summary is written last, in one pass, from what survived.
+    let mut commitments: Vec<CommitmentLine> = Vec::new();
+    let narrative = if items_first {
+        let failed_actions = ground_items_in_window(&mut actions, &lines);
+        commitments = commitment_lines(&failed_actions, &lines);
+        let failed_decisions = ground_items_in_window(&mut decisions, &lines).len();
+        let failed_questions = ground_items_in_window(&mut questions, &lines).len();
+        log::info!(
+            "summarize items_first_grounding actions_failed={} decisions_failed={failed_decisions} questions_failed={failed_questions} topics={}",
+            failed_actions.len(),
+            topics.len()
+        );
+        items_first_summary(
+            client,
+            &plain_text,
+            &actions,
+            &decisions,
+            &questions,
+            &topics,
+            timings,
+        )?
+    } else {
+        narrative
+    };
+    if client.cancelled() {
+        return Err(SummaryError::Cancelled);
+    }
+    let verbatim_refused = narrative.trim().is_empty() && run_rejected("v8_verbatim");
+    let markdown = if items_first {
+        render_notes_items_first(
+            &headline,
+            &names,
+            &narrative,
+            &actions,
+            &decisions,
+            &questions,
+            &topics,
+            &commitments,
+            truncated_chunks,
+            chunks.len(),
+            truncated,
+            verbatim_refused,
+        )
+    } else {
+        render_notes_with(
+            &headline,
+            &names,
+            &narrative,
+            &actions,
+            &decisions,
+            &questions,
+            truncated_chunks,
+            chunks.len(),
+            truncated,
+            verbatim_refused,
+        )
+    };
     let summary = MeetingSummary {
         markdown,
         narrative,
@@ -2399,7 +2691,9 @@ fn summarize_run(
     // by a bad model run. A meeting that was genuinely quiet lands here too, and
     // that is the right answer for it as well: there is nothing to store, so the
     // row keeps whatever it had and the user is told nothing came back.
-    if summary.is_empty() {
+    // Arm E: topic labels and quoted commitment lines are content a reader
+    // can use (the honest fallback copy), so they keep the notes too.
+    if summary.is_empty() && topics.is_empty() && commitments.is_empty() {
         log::warn!(
             "summary: {} MAP pass(es) answered with no content — refusing to store an empty summary",
             chunks.len()
@@ -3572,6 +3866,334 @@ pub fn render_notes_with(
         return "_No summary could be produced for this meeting._".to_string();
     }
     out.trim_end().to_string()
+}
+
+// ── yap-audit-notes-strategy: arm E, items first and the Summary last ───────
+
+/// Arm E's MAP grammar: [`map_grammar`] with the free-text narrative replaced
+/// by a `topic` of 3-8 words. The item rules (and the id allowlist) are the
+/// same rules, byte for byte.
+pub fn map_grammar_items_first(labels: &[String]) -> Option<String> {
+    let base = map_grammar(labels)?;
+    let narrative = "\"{\" ws \"\\\"narrative\\\"\" ws \":\" ws string ws \",\"";
+    let topic = "\"{\" ws \"\\\"topic\\\"\" ws \":\" ws topic ws \",\"";
+    if !base.contains(narrative) {
+        return None;
+    }
+    let mut out = base.replacen(narrative, topic, 1);
+    out.push_str(concat!(
+        "topic ::= \"\\\"\" tw \" \" tw \" \" tw (\" \" tw)? (\" \" tw)? (\" \" tw)? (\" \" tw)? (\" \" tw)? \"\\\"\"\n",
+        "tw ::= [^\"\\\\ \\t\\n]+\n",
+    ));
+    Some(out)
+}
+
+/// The `topic` value of an arm-E MAP answer, when it closed.
+pub fn recover_topic(raw: &str) -> Option<String> {
+    let raw = strip_fences(raw);
+    let key = "\"topic\"";
+    let at = raw.find(key)? + key.len();
+    let rest = raw[at..].trim_start().strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let mut value = String::new();
+    let mut escaped = false;
+    for c in rest.chars() {
+        if escaped {
+            value.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '"' => return Some(value),
+            other => value.push(other),
+        }
+    }
+    None
+}
+
+/// A topic label that may be shown: 3-8 words, nothing invented (digits,
+/// contacts, names), grounded at lemma level against its chunk.
+pub fn validate_topic(source: &str, topic: &str) -> Option<String> {
+    let topic = strip_speaker_tag(topic.trim())
+        .trim()
+        .trim_end_matches(['.', ',', ';', ':'])
+        .trim();
+    let words = topic.split_whitespace().count();
+    if !(MIN_TOPIC_WORDS..=MAX_TOPIC_WORDS).contains(&words) {
+        return reject("v11_topic_shape");
+    }
+    if invented_name(source, topic).is_some() {
+        return reject("v10_invented_name");
+    }
+    if lemma_grounded(source, topic) < TITLE_GROUNDEDNESS_FLOOR {
+        return reject("v3_ungrounded_lemma");
+    }
+    content_gates(source, topic)?;
+    Some(topic.to_string())
+}
+
+/// The cited line and its neighbours (+-1), the only text an arm-E item may
+/// be grounded against.
+pub fn cited_window(lines: &[TranscriptLine], segment: &str) -> Option<String> {
+    let at = lines.iter().position(|l| l.label == segment)?;
+    let from = at.saturating_sub(1);
+    let to = (at + 1).min(lines.len() - 1);
+    Some(
+        lines[from..=to]
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// Arm E item gate: keep the items whose text holds up against the CITED
+/// segment +-1 (hard digit/name/contact gates, lemma-level match); return the
+/// ones that did not, in order.
+pub fn ground_items_in_window(
+    items: &mut Vec<SummaryItem>,
+    lines: &[TranscriptLine],
+) -> Vec<SummaryItem> {
+    let mut failed = Vec::new();
+    items.retain(|item| {
+        let ok = cited_window(lines, &item.segment).is_some_and(|window| {
+            lemma_gates(&window, &item.text).is_some()
+                && content_gates(&window, &item.text).is_some()
+        });
+        if !ok {
+            failed.push(item.clone());
+        }
+        ok
+    });
+    failed
+}
+
+/// Failed actions as the transcript's own words: the cited line, its time and
+/// its track (speaker). One line per cited segment.
+pub fn commitment_lines(failed: &[SummaryItem], lines: &[TranscriptLine]) -> Vec<CommitmentLine> {
+    let mut out: Vec<CommitmentLine> = Vec::new();
+    for item in failed {
+        let Some(line) = lines.iter().find(|l| l.label == item.segment) else {
+            continue;
+        };
+        let quote = strip_speaker_tag(line.text.trim()).trim().to_string();
+        if quote.is_empty() || out.iter().any(|c| c.quote == quote) {
+            continue;
+        }
+        out.push(CommitmentLine {
+            quote,
+            start_seconds: line.start_seconds,
+            track: item
+                .speaker
+                .clone()
+                .or_else(|| line.speaker.as_ref().map(|s| s.label().to_string())),
+        });
+    }
+    out
+}
+
+/// Arm E — the ONE Summary pass's input: the topic labels (timestamped, every
+/// chunk) and the surviving items. Never transcript lines.
+pub fn items_first_summary_input(
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    topics: &[TopicLabel],
+) -> String {
+    let mut out = String::new();
+    let mut section = |heading: &str, rows: Vec<String>| {
+        if rows.is_empty() {
+            return;
+        }
+        out.push_str(heading);
+        out.push_str(":\n");
+        for row in rows {
+            out.push_str("- ");
+            out.push_str(&row);
+            out.push('\n');
+        }
+        out.push('\n');
+    };
+    section(
+        "Topics",
+        topics
+            .iter()
+            .map(|t| format!("[{}] {}", format_offset(t.start_seconds), t.label))
+            .collect(),
+    );
+    let texts =
+        |items: &[SummaryItem]| -> Vec<String> { items.iter().map(|i| i.text.clone()).collect() };
+    section("Action items", texts(actions));
+    section("Decisions", texts(decisions));
+    section("Open questions", texts(questions));
+    out.trim_end().to_string()
+}
+
+/// Arm E — the Summary gate: no invented digits, contacts or names, not a
+/// runaway, and at most [`SUMMARY_VERBATIM_CEILING`] of its 4-grams lifted
+/// from the transcript. No groundedness floor: paraphrase is the point.
+pub fn validate_items_first_summary(transcript: &str, summary: &str) -> Option<String> {
+    let summary = strip_speaker_tag(strip_fences(summary).trim())
+        .trim()
+        .to_string();
+    if summary.is_empty() {
+        return reject("v1_empty");
+    }
+    if summary.split_whitespace().count() > NARRATIVE_RUNAWAY_WORDS {
+        return reject("v2_runaway");
+    }
+    if invented_name(transcript, &summary).is_some() {
+        return reject("v10_invented_name");
+    }
+    content_gates(transcript, &summary)?;
+    let containment = narrative_containment(transcript, &summary);
+    if containment > SUMMARY_VERBATIM_CEILING {
+        log::info!(
+            "summarize narrative_refused reason=v8_verbatim stage=items_first containment={containment:.2} max={SUMMARY_VERBATIM_CEILING}"
+        );
+        return reject("v8_verbatim");
+    }
+    Some(summary)
+}
+
+/// Arm E — write the Summary in ONE pass from the surviving items and topic
+/// labels. Empty when there is nothing to write from, the pass fails, or the
+/// paragraph fails its gate (the notes then show Topics instead).
+fn items_first_summary(
+    client: &dyn SummaryClient,
+    transcript: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    topics: &[TopicLabel],
+    timings: &mut SummaryRunTimings,
+) -> Result<String, SummaryError> {
+    let input = items_first_summary_input(actions, decisions, questions, topics);
+    if input.trim().is_empty() {
+        log::info!("summarize items_first_summary outcome=nothing_to_write");
+        return Ok(String::new());
+    }
+    let req = PolishRequest::summarize(
+        next_id(),
+        SUMMARIZE_REDUCE,
+        SUMMARY_REDUCE_MAX_OUT,
+        REDUCE_DEADLINE_MS,
+        input,
+        None,
+    );
+    let started = Instant::now();
+    let answer = client.generate(&req);
+    let ms = elapsed_ms(started);
+    timings.reduce_passes += 1;
+    timings.reduce_ms = timings.reduce_ms.saturating_add(ms);
+    match answer {
+        Ok(answer) => {
+            let kept = validate_items_first_summary(transcript, &answer.text);
+            log::info!(
+                "summarize items_first_summary outcome={} ms={ms}",
+                if kept.is_some() { "kept" } else { "refused" }
+            );
+            Ok(kept.unwrap_or_default())
+        }
+        Err(SummaryError::Cancelled) => Err(SummaryError::Cancelled),
+        Err(e) => {
+            timings.reduce_failed += 1;
+            log::warn!(
+                "summarize items_first_summary outcome=failed reason={} ms={ms}",
+                e.tag()
+            );
+            Ok(String::new())
+        }
+    }
+}
+
+/// Arm E's notes card: [`render_notes_with`], plus the honest fallback copy —
+/// "Topics" (timestamped labels) when no Summary passed, failed actions as
+/// quoted "Lines that sounded like commitments" (never under "Action items"),
+/// and [`NOTES_FOOTER`] as the last line of every card.
+#[allow(clippy::too_many_arguments)]
+pub fn render_notes_items_first(
+    headline: &Headline,
+    names: &[String],
+    narrative: &str,
+    actions: &[SummaryItem],
+    decisions: &[SummaryItem],
+    questions: &[SummaryItem],
+    topics: &[TopicLabel],
+    commitments: &[CommitmentLine],
+    truncated_chunks: usize,
+    chunks: usize,
+    truncated: bool,
+    verbatim_refused: bool,
+) -> String {
+    let mut body = render_notes_with(
+        headline,
+        names,
+        narrative,
+        actions,
+        decisions,
+        questions,
+        truncated_chunks,
+        chunks,
+        truncated,
+        verbatim_refused,
+    );
+    if body.starts_with("_No summary could be produced") {
+        body.clear();
+    }
+    if narrative.trim().is_empty() && !topics.is_empty() {
+        let mut block = format!("### {TOPICS_HEADING}\n\n");
+        for t in topics {
+            block.push_str(&format!(
+                "- {} ({})\n",
+                t.label,
+                format_offset(t.start_seconds)
+            ));
+        }
+        block.push('\n');
+        // Where the Summary would sit: after the title (and the refusal
+        // sentence, when there is one), before the first list.
+        let at = [
+            "### Key points",
+            "### Action items",
+            "### Decisions",
+            "### Open questions",
+        ]
+        .iter()
+        .filter_map(|h| body.find(h))
+        .min();
+        match at {
+            Some(at) => body.insert_str(at, &block),
+            None => {
+                if !body.is_empty() {
+                    body.push_str("\n\n");
+                }
+                body.push_str(block.trim_end());
+            }
+        }
+    }
+    let mut out = body.trim_end().to_string();
+    if !commitments.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!("### {COMMITMENT_LINES_HEADING}\n\n"));
+        for c in commitments {
+            let at = format_offset(c.start_seconds);
+            match &c.track {
+                Some(track) => out.push_str(&format!("- \"{}\" ({track}, {at})\n", c.quote)),
+                None => out.push_str(&format!("- \"{}\" ({at})\n", c.quote)),
+            }
+        }
+        out = out.trim_end().to_string();
+    }
+    if out.is_empty() {
+        out.push_str("_No summary could be produced for this meeting._");
+    }
+    out.push_str("\n\n");
+    out.push_str(NOTES_FOOTER);
+    out
 }
 
 // ── the sidecar session ─────────────────────────────────────────────────────
