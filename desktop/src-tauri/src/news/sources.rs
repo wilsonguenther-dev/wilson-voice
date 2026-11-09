@@ -787,7 +787,6 @@ pub const TOPIC_WORDS: &[(Category, &[&str])] = &[
             "agi",
             "ai model",
             "ai models",
-            "new model",
         ],
     ),
     (
@@ -824,14 +823,12 @@ pub const TOPIC_WORDS: &[(Category, &[&str])] = &[
             "founder",
             "founders",
             "venture capital",
-            "venture",
             "seed round",
             "pre seed",
             "series a",
             "series b",
             "series c",
             "funding round",
-            "raises",
             "unicorn",
             "y combinator",
             "accelerator",
@@ -1014,6 +1011,11 @@ pub struct Match {
 /// ([`Category::parent`]: an AI story shows as Tech for a Tech-only user).
 /// The sports/entertainment veto stands: a vetoed story only ever matches
 /// its own chip or an own word.
+///
+/// fix-l3b6-1-news-narrow-words-no-relabel: the narrow words only keep a
+/// story whose own label is that chip's broad parent or `Other`
+/// ([`narrow_words_may_keep`]); a World, Culture, Science or Business story
+/// is never relabelled as AI, Startups or Local because of one word.
 pub fn match_prefs(story: &Story, prefs: &NewsPrefs, cloud: Option<Category>) -> Option<Match> {
     let c = classify(story, cloud);
     let picked = |cat: Category| prefs.topics.iter().any(|p| p == cat.tag());
@@ -1035,12 +1037,23 @@ pub fn match_prefs(story: &Story, prefs: &NewsPrefs, cloud: Option<Category>) ->
     }
     let padded = padded_words(&story.title);
     if !c.category.is_denied_kind() {
+        let worded = |n: Category| topic_words(n).iter().any(|w| has_phrase(&padded, w));
         if let Some(narrow) = Category::NARROW
             .into_iter()
-            .filter(|n| picked(*n))
-            .find(|n| topic_words(*n).iter().any(|w| has_phrase(&padded, w)))
+            .filter(|n| picked(*n) && narrow_words_may_keep(*n, c.category))
+            .find(|n| worded(*n))
         {
             return Some(chip(narrow));
+        }
+        if let Some(refused) = Category::NARROW
+            .into_iter()
+            .find(|n| picked(*n) && worded(*n))
+        {
+            log::debug!(
+                "news narrow_word_refused chip={} label={}",
+                refused.tag(),
+                c.category.tag()
+            );
         }
         if let Some(parent) = c.category.parent().filter(|p| picked(*p)) {
             return Some(chip(parent));
@@ -1057,6 +1070,14 @@ pub fn match_prefs(story: &Story, prefs: &NewsPrefs, cloud: Option<Category>) ->
         topic: named.clone(),
         own_word: true,
     })
+}
+
+/// May a narrow chip's own words keep a story labelled `label`? Only when
+/// the label is the chip's broad parent (AI/Design under Tech, Startups
+/// under Business, Crypto under Stocks) or `Other`; Local has no parent, so
+/// only `Other`. Anything else is the story's own topic: off topic, dropped.
+fn narrow_words_may_keep(narrow: Category, label: Category) -> bool {
+    label == Category::Other || narrow.parent() == Some(label)
 }
 
 /// The curated words of one topic (empty for a category with none).
@@ -1530,7 +1551,8 @@ mod tests {
             legacy.iter().map(|p| p.topic).collect::<Vec<_>>(),
             vec!["tech", "world", "culture", "ai"]
         );
-        // A non-chip id plans nothing (and is logged as topic_unplanned).
+        // Neither plans anything: entertainment has no chip and is dropped
+        // silently; the unknown id is logged as topic_unplanned.
         assert!(fetch_plan(&["entertainment".to_string(), "banana".to_string()]).is_empty());
     }
 
@@ -1586,10 +1608,11 @@ mod tests {
 
     #[test]
     fn a_narrow_label_reaches_the_broad_chip_and_the_veto_stands() {
-        // Labelled AI, the user picked only Tech: shown as Tech.
+        // Labelled AI, the user picked only Tech: shown as Tech. ("new
+        // model" is no longer an AI word, so the headline says "AI model".)
         let s = story(
             "tech",
-            "OpenAI ships a new model",
+            "OpenAI ships a new AI model",
             "https://example.com/n1",
             None,
             Some(1),
@@ -1610,6 +1633,61 @@ mod tests {
         );
         assert_eq!(classify(&golf, None).category, Category::Sports);
         assert!(match_prefs(&golf, &prefs(&["ai", "tech"], &[], &[]), None).is_none());
+    }
+
+    #[test]
+    fn narrow_words_never_relabel_an_off_topic_story() {
+        // fix-l3b6-1-news-narrow-words-no-relabel: one narrow-chip word in a
+        // headline whose own label is another topic never keeps it.
+        let cases = [
+            ("startups", "Fed raises interest rates again"),
+            ("startups", "Russia and China sign joint venture deal"),
+            ("ai", "Claude Monet painting sells at auction"),
+            ("ai", "Gemini spacecraft anniversary at NASA"),
+            ("local", "Local elections in Ukraine postponed"),
+        ];
+        for (i, (chip, title)) in cases.into_iter().enumerate() {
+            let s = story(
+                chip,
+                title,
+                &format!("https://example.com/off/{i}"),
+                None,
+                Some(1),
+            );
+            let narrow = Category::from_topic(chip).expect("chip category");
+            let label = classify(&s, None).category;
+            assert_ne!(label, narrow, "{title} labelled as its chip");
+            assert_ne!(label, Category::Other, "{title} unlabelled");
+            assert_ne!(Some(label), narrow.parent(), "{title} labelled as parent");
+            assert!(!narrow_words_may_keep(narrow, label), "{title}");
+            assert!(
+                match_prefs(&s, &prefs(&[chip], &[], &[]), None).is_none(),
+                "{title} kept for {chip} (label {label:?})"
+            );
+        }
+        // A Tech-labelled AI headline still reaches the AI chip by its words.
+        let s = story(
+            "ai",
+            "OpenAI ships GPT update",
+            "https://example.com/off/tech",
+            Some("Ars Technica"),
+            Some(1),
+        );
+        assert_eq!(classify(&s, None).category, Category::Tech);
+        let m = match_prefs(&s, &prefs(&["ai"], &[], &[]), None).expect("tech-labelled ai");
+        assert_eq!(
+            (m.topic.as_str(), m.category, m.own_word),
+            ("ai", Category::Ai, false)
+        );
+        // Unlabelled stories may still be kept by the words; Local only then.
+        assert!(narrow_words_may_keep(Category::Local, Category::Other));
+        assert!(!narrow_words_may_keep(Category::Local, Category::World));
+        assert!(narrow_words_may_keep(Category::Crypto, Category::Stocks));
+        // "new model" alone is no longer an AI headline.
+        assert_ne!(
+            keyword_category("Toyota unveils new model of the Camry"),
+            Category::Ai
+        );
     }
 
     #[test]
