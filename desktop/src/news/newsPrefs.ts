@@ -77,17 +77,33 @@ export function nextTapAllowedAt(lastRefreshMs: number | null, now: number = Dat
   return at > now ? at : null;
 }
 
-/** The chips, in the order they show. Ids match `news_prefs::TOPIC_CHIPS`. */
+/** The chips, in the order they show. Ids match `news_prefs::TOPIC_CHIPS`.
+ *  yap-1107-parity-news — the ten the approved News page draws, in its order. */
 export const TOPIC_CHIPS: readonly { id: string; label: string }[] = [
   { id: "developer", label: "Developer" },
   { id: "stocks", label: "Stocks" },
   { id: "business", label: "Business" },
-  { id: "tech", label: "Tech" },
-  { id: "science", label: "Science" },
-  { id: "world", label: "World" },
+  { id: "ai", label: "AI" },
+  { id: "design", label: "Design" },
+  { id: "startups", label: "Startups" },
+  { id: "crypto", label: "Crypto" },
   { id: "sports", label: "Sports" },
+  { id: "science", label: "Science" },
+  { id: "local", label: "Local" },
+];
+
+/** Chips an earlier build offered (`news_prefs::LEGACY_TOPIC_CHIPS`): a saved
+ *  pick still shows by name; the picker no longer offers them. */
+export const LEGACY_TOPIC_CHIPS: readonly { id: string; label: string }[] = [
+  { id: "tech", label: "Tech" },
+  { id: "world", label: "World" },
   { id: "culture", label: "Culture" },
 ];
+
+/** The label for any chip id, current or legacy; unknown ids show as-is. */
+export function topicLabel(id: string): string {
+  return (TOPIC_CHIPS.find((c) => c.id === id) ?? LEGACY_TOPIC_CHIPS.find((c) => c.id === id))?.label ?? id;
+}
 
 /** Bounds, the same as the backend's (it re-checks every save). */
 export const MAX_TICKERS = 12;
@@ -168,7 +184,7 @@ export function removeCustom(p: NewsPrefs, t: string): NewsPrefs {
 
 /** Human labels for the saved topics, chips first, then tickers, then custom. */
 export function topicLabels(p: NewsPrefs): string[] {
-  const chips = TOPIC_CHIPS.filter((c) => p.topics.includes(c.id)).map((c) => c.label);
+  const chips = [...TOPIC_CHIPS, ...LEGACY_TOPIC_CHIPS].filter((c) => p.topics.includes(c.id)).map((c) => c.label);
   return [...chips, ...p.tickers, ...p.custom];
 }
 

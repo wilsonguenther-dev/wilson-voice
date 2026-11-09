@@ -391,6 +391,30 @@
   --home-panel-h-lh: 1.3; /* .panel h4 font shorthand = line-height normal (1.3) */
   --home-room-label-w: 134.3px; /* .room .label "Yappy · at his desk" */
   --home-room-label-lh: 15px; /* .room .label: 5 + 15 + 5 = 25 px tall */
+
+  /* yap-1107-parity-news — Yappy News, measured from the approved News page
+     (design-2026-11-06/news.html; its review.css palette). §01 is the
+     onboarding step (.ob), §02 the Home briefing card (.bcard). */
+  --news-ink: #1d1c1a;
+  --news-ink-2: #56534d;
+  --news-ink-3: #8b877f;
+  --news-line: rgba(29, 28, 26, 0.11);
+  --news-red: #b93a26;
+  --news-onb-bg: #f7f6f2;
+  --news-onb-foot-bg: #f3f2ee;
+  --news-field-bg: #ffffff;
+  --news-token-bg: #efeee9;
+  --news-chip-bg: #ffffff;
+  --news-chip-on-bg: #1d1c1a;
+  --news-chip-on-ink: #ffffff;
+  --news-card-bg: #ffffff;
+  --news-story-bg: #fdfbf6;
+  --news-say-bg: #fffdf7;
+  --news-quote-ink: #a06a00;
+  --news-quote-bg: #fff4d6;
+  --news-onb-w: 760px;
+  --news-onb-radius: 14px;
+  --news-onb-yappy: 72px;
 }
 
 @media (prefers-color-scheme: dark) {

@@ -1,0 +1,26 @@
+stress-tests: target=lib filter='cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency' runs=20 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /Users/wilsonguenther/code/wilson-voice-loop/loop3/INT/docs/loop/evidence/stress-harness
+stress-tests: started 8 busy loops: 59816 59817 59818 59819 59820 59821 59822 59823
+run 1/20: pass (1 passed)
+run 2/20: pass (1 passed)
+run 3/20: pass (1 passed)
+run 4/20: pass (1 passed)
+run 5/20: pass (1 passed)
+run 6/20: pass (1 passed)
+run 7/20: pass (1 passed)
+run 8/20: pass (1 passed)
+run 9/20: pass (1 passed)
+run 10/20: pass (1 passed)
+run 11/20: pass (1 passed)
+run 12/20: pass (1 passed)
+run 13/20: pass (1 passed)
+run 14/20: pass (1 passed)
+run 15/20: pass (1 passed)
+run 16/20: pass (1 passed)
+run 17/20: pass (1 passed)
+run 18/20: pass (1 passed)
+run 19/20: pass (1 passed)
+run 20/20: pass (1 passed)
+20/20
