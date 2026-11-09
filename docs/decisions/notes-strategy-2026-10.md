@@ -50,6 +50,37 @@ real 40-word paragraph the allowance is worth 0.03 (37 distinct 4-grams), over 1
 reporting the RAW ratio (`support::eval_metrics::summary_verbatim_ratio`), so the table below is not
 softened by the allowance. Test: `summary_items_first::the_summary_gate_forgives_one_lifted_phrase_and_no_more`.
 
+## Bounce fix 2 (2026-11-09T02:21:33Z, loop three coder B1)
+
+Batch 1 bounced the item again on the real model: arm E found 1 of the 10 planted commitments
+(action recall 0.10; the 1.5B MAP pass returned 2 of them) and on call-bleed-2voice recall 0.67,
+precision 0.60, owner accuracy 0.75. The last measured pipeline before this item was already at
+0.20, so this is the model's extraction ceiling, not the topic label: a 1.5B model under a grammar
+misses most commitments, whatever the arm. Two changes, both arm E only (A and B are untouched, so
+their rows still measure the old pipeline):
+
+- A recall floor that does not depend on the model. `first_person_commitment_text` finds the part
+  of a transcript line in which its SPEAKER commits to a task ("I will send the revised deck by
+  Friday", "I can get you the specs", "Let me take care of the invoice", "Leave the vendor
+  comparison with me"), from the committing clause to the end of its sentence, and
+  `backfill_first_person_actions` files it as an action item cited to its own line when no MAP
+  action that holds up already covers that line. It is grounded by construction and owned by the
+  line's track, and it runs before the item guards and the owner rule, which treat it like any MAP
+  item. Small talk that borrows the shape stays out ("We'll see how the traffic is", "It's going to
+  rain", "You'll love the new cafe", "we will need more tables", questions, "let me share my
+  screen"). Over both fixtures' scripts it marks exactly the 16 planted commitments and none of the
+  other 60 lines (test `summary_items_first::a_speaker_committing_is_an_action_and_small_talk_is_not`).
+  Log line: `summarize items_first_backfill model_actions=N added=M`.
+- The cited window now carries each line's speaker label (`cited_window`), so "Call will send the
+  deck" cited to a line the Call track spoke is not refused as an invented name.
+
+A model action that fails its window is no longer quoted under "Lines that sounded like
+commitments" when its line is already an action item. Tests:
+`summary_items_first::the_shipped_arm_files_every_planted_commitment_when_the_model_returns_two`
+(stub model returning 2 of 10: all 10 filed, no distractor filed) and
+`summary_items_first::the_backfill_never_doubles_a_held_model_action`. The real-model rows below
+are still the integrator's to fill in; nothing here is a measured number.
+
 ## The numbers (planted 15-minute fixture of yap24-NT4)
 
 Gates: action recall >= 0.8, action precision >= 0.8, decision recall >= 0.5, owner accuracy

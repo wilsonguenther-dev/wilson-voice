@@ -10,7 +10,8 @@ mod support;
 
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::summarize::{
-    cited_window, commitment_lines, ground_items_in_window, invented_name,
+    backfill_first_person_actions, cited_window, commitment_lines, first_person_commitment,
+    first_person_commitment_text, ground_items_in_window, invented_name,
     items_first_verbatim_ratio, lemma_grounded, map_grammar, map_grammar_items_first,
     narrative_containment, notes_strategy, recover_topic, render_notes_items_first,
     summarize_segments, transcript_lines, validate_items_first_summary, validate_topic,
@@ -445,4 +446,157 @@ fn a_refused_summary_leaves_topics_not_a_paragraph() {
         "{md}"
     );
     assert!(md.ends_with(NOTES_FOOTER), "{md}");
+}
+
+// ── bounce fix (loop three, batch 1): the shipped arm's recall floor ────────
+//
+// The real 1.5B model under arm E returned 2 of the 10 planted commitments of
+// the NT4 fixture (action recall 0.10) and 0.67 on call-bleed-2voice. A line
+// in which its SPEAKER commits to a task is an action item even when the
+// model passed over it; small talk that borrows the shape never is.
+
+#[test]
+fn a_speaker_committing_is_an_action_and_small_talk_is_not() {
+    use support::notes_planted::{Plant, SCRIPT};
+    for line in SCRIPT {
+        let want = matches!(line.plant, Plant::Explicit(_) | Plant::Implicit(_));
+        assert_eq!(first_person_commitment(line.text), want, "{}", line.text);
+    }
+    for turn in support::call_bleed::SCRIPT.iter() {
+        let want = matches!(turn.plant, support::call_bleed::Plant::Commitment(_));
+        assert_eq!(first_person_commitment(turn.text), want, "{}", turn.text);
+    }
+    assert_eq!(
+        first_person_commitment_text(
+            "Perfect, and I will send the revised budget outline to the whole group by Friday."
+        )
+        .as_deref(),
+        Some("I will send the revised budget outline to the whole group by Friday"),
+        "the committing clause to the end of its sentence"
+    );
+    assert_eq!(
+        first_person_commitment_text("Leave the vendor comparison with me.").as_deref(),
+        Some("Leave the vendor comparison with me")
+    );
+    for not_one in [
+        "Let me share my screen.",
+        "I can share my screen with everyone.",
+        "Let me pull up the dashboard and walk through the numbers.",
+        "We will need at least a dozen more tables.",
+        "I will say the numbers looked fine this quarter.",
+        "Can I send the deck later?",
+        "Hi everyone, good morning.",
+        "We'll see how the traffic is on the way home.",
+    ] {
+        assert!(!first_person_commitment(not_one), "{not_one}");
+    }
+}
+
+#[test]
+fn the_backfill_never_doubles_a_held_model_action() {
+    let lines = transcript_lines(&segments_from(&[
+        "I will send the revised deck to your team by Friday.",
+        "I can get you the specs for the new sensor.",
+        "It's going to rain all weekend.",
+    ]));
+    let mut actions = vec![
+        // Holds up against its line: the line is not filed twice.
+        item(
+            "Send the revised deck to the team by Friday",
+            &lines[0].label,
+            lines[0].start_seconds,
+        ),
+        // Names an owner nobody said: it cannot stand in for the line.
+        item(
+            "Priya will get the specs for the new sensor",
+            &lines[1].label,
+            lines[1].start_seconds,
+        ),
+    ];
+    let added = backfill_first_person_actions(&mut actions, &lines);
+    assert_eq!(added, 1, "{actions:?}");
+    assert_eq!(actions.len(), 3, "{actions:?}");
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.text == "I can get you the specs for the new sensor"
+                && a.segment == lines[1].label),
+        "{actions:?}"
+    );
+    assert!(
+        !actions.iter().any(|a| a.segment == lines[2].label),
+        "small talk is never an action: {actions:?}"
+    );
+    // The invented-owner item still fails its window and is not quoted under
+    // the commitment lines, because its line is already an action item.
+    let failed = ground_items_in_window(&mut actions, &lines);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(actions.len(), 2, "{actions:?}");
+}
+
+/// The 1.5B model's real shape on the planted fixture: two of the ten
+/// commitments, paraphrased, cited to their own lines.
+fn planted_map_answer(req: &wilson_voice_lib::polish_protocol::PolishRequest) -> String {
+    let ids = labels_in(&req.text);
+    let cite = |needle: &str| {
+        req.text
+            .lines()
+            .find(|l| l.contains(needle))
+            .and_then(|l| l.split([':', ' ']).next())
+            .map(str::to_string)
+            .unwrap_or_else(|| ids[0].clone())
+    };
+    format!(
+        r#"{{"topic":"Pilot launch and the offsite venue","actions":[{{"text":"Send the revised deck to the team by Friday","segment":"{}"}},{{"text":"Get the specs for the new sensor","segment":"{}"}}],"decisions":[],"questions":[]}}"#,
+        cite("revised deck"),
+        cite("specs for the new sensor")
+    )
+}
+
+#[test]
+fn the_shipped_arm_files_every_planted_commitment_when_the_model_returns_two() {
+    use support::notes_planted;
+    let m = StubModel::with_headline(|req| {
+        Ok(match req.mode.as_str() {
+            "map" => planted_map_answer(req),
+            "reduce" => "The call covered the pilot launch, the revised deck and the offsite venue.".to_string(),
+            "headline" => r#"{"title":"Pilot launch and offsite planning","key_points":["The pilot launches in the northern region first."],"summary":"Ignored under items first."}"#.to_string(),
+            other => panic!("unexpected stage {other}"),
+        })
+    });
+    let s = summarize_segments(&notes_planted::segments(), &m).expect("notes");
+    println!("{}", s.markdown);
+    for p in notes_planted::commitments() {
+        let filed = s
+            .actions
+            .iter()
+            .filter(|a| (a.start_seconds - p.start_seconds).abs() < 0.01)
+            .count();
+        assert_eq!(
+            filed, 1,
+            "planted commitment {:?} at {}s: {:#?}",
+            p.keywords, p.start_seconds, s.actions
+        );
+    }
+    for d in notes_planted::distractor_starts() {
+        assert!(
+            !s.actions.iter().any(|a| (a.start_seconds - d).abs() < 0.01),
+            "small talk at {d}s filed as an action: {:#?}",
+            s.actions
+        );
+    }
+    assert_eq!(s.actions.len(), 10, "{:#?}", s.actions);
+    assert!(
+        s.actions
+            .iter()
+            .any(|a| a.text == "Send the revised deck to the team by Friday"),
+        "the model's own wording is kept: {:#?}",
+        s.actions
+    );
+    assert!(
+        !s.markdown.contains(COMMITMENT_LINES_HEADING),
+        "{}",
+        s.markdown
+    );
+    assert!(s.markdown.ends_with(NOTES_FOOTER), "{}", s.markdown);
 }

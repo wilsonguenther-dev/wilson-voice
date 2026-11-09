@@ -4866,7 +4866,12 @@ pub fn backfill_first_person_actions(
         if held {
             continue;
         }
-        if actions.iter().any(|a| same_item(&a.text, &text)) {
+        // Only a model action that holds up can stand in for the line; one
+        // that fails its window is quoted below Action items, never kept.
+        if actions
+            .iter()
+            .any(|a| same_item(&a.text, &text) && holds_in_window(lines, a))
+        {
             continue;
         }
         actions.push(SummaryItem {
@@ -4877,11 +4882,13 @@ pub fn backfill_first_person_actions(
         });
         added += 1;
     }
-    actions.sort_by(|a, b| {
-        a.start_seconds
-            .partial_cmp(&b.start_seconds)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    if added > 0 {
+        actions.sort_by(|a, b| {
+            a.start_seconds
+                .partial_cmp(&b.start_seconds)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
     added
 }
 
