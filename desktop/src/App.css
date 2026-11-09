@@ -4874,7 +4874,7 @@ button.primary.big {
   min-width: 8ch;
   text-align: right;
 }
-/* §02 .q — the amber tag after the time: 500 11px mono, #a06a00 on #fff4d6,
+/* §02 .q — the amber tag after the time: 500 11px mono, --news-quote-ink on --news-quote-bg,
    radius 6, padding 2/6 (batch-1 bounce: these two colours and the 11 px
    were missing from the header). */
 .news-briefing .news-briefing-paper {
