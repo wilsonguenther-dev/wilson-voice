@@ -107,3 +107,18 @@ describe("yap-1106-news-duo-delivery clock", () => {
     expect(duoAt(skippedArrival(T0, 2, true), T0, true, 2).stage).toBe("done");
   });
 });
+
+describe("fix-l3b3-4-news-new-chips-fetch-and-match", () => {
+  it("news_duo_cinder_names_each_new_chip", () => {
+    const want: Record<string, string> = {
+      ai: "AI news!",
+      design: "Design news!",
+      startups: "Startup news!",
+      crypto: "Crypto news!",
+      local: "Local news!",
+    };
+    for (const [topic, line] of Object.entries(want)) {
+      expect(cinderTopicLine({ topic, source: "google_news" }, [])).toBe(line);
+    }
+  });
+});

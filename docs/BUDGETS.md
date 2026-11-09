@@ -320,6 +320,14 @@ mic. It runs only while audio is wanted (test `the_worker_ticks_fast_only_while_
 the idle stream keeps `IDLE_TICK`, and a failed device is retried no more often than `FAILED_RETRY`
 (1 s), so an unplugged mic with nothing to fall back to does not spin the HAL.
 
+Row change (2026-11-09, loop3, yap-1108-timing-idle-watcher-clock): transcription.rs gains `1:2`
+and `79:1`, `20:2 -> 20:1`, `200:1 -> 200:2`. All of it is in `#[cfg(test)] mod tests`: the two
+idle-watcher tests now run on an injected idle clock (`TranscriptionManager::set_idle_clock`, the
+app never calls it and keeps the wall clock). The 20 ms wall-clock poll for the unload is gone; the
+1 ms rows are the step of `wait_for_a_fresh_idle_tick` (waiting on the watcher's tick counter) and a
+1 ms fake-clock advance; 79 ms and 200 ms are fake-clock advances, never slept on. No production
+wakeup was added.
+
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
 census against an allowlist and not a proof of absence — it makes the cheap regression (a
