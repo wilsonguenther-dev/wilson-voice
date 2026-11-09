@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use wilson_voice_lib::asr_engine::TimedTranscript;
@@ -53,6 +53,55 @@ const DICTATION_DECODE: Duration = Duration::from_millis(50);
 /// The plan's own acceptance number for a dictation issued mid-meeting.
 const DICTATION_BUDGET: Duration = Duration::from_secs(2);
 
+/// yap-1108-timing-open-m-budgets — the budget, stated in chunk boundaries
+/// instead of wall time. A dictation may wait out the chunk in flight when it
+/// arrives (the "at the next boundary, never mid-chunk" contract) plus at most
+/// ONE chunk that began while its claim was already up: the meeting checks the
+/// claim at the boundary and only then leases, so a claim raised in that gap
+/// lands on a chunk that has already started. Anything more is the meeting
+/// ignoring the claim at a boundary.
+const CHUNKS_STARTED_UNDER_A_CLAIM_ALLOWED: usize = 1;
+/// Why the count is the same property as the plan's number, not a weaker one:
+/// the worst case it admits — the chunk in flight, one raced chunk, then the
+/// dictation's own decode — fits inside the 2 s budget with room to spare, and
+/// it is decided by counting, so a starved runner cannot fail it.
+const _: () = assert!(
+    CHUNK_DECODE.as_millis() * (1 + CHUNKS_STARTED_UNDER_A_CLAIM_ALLOWED as u128)
+        + DICTATION_DECODE.as_millis()
+        < DICTATION_BUDGET.as_millis()
+);
+
+/// A HANG guard, never a measurement: how long the tests wait for a meeting to
+/// reach the point they need before calling it stuck.
+const PROGRESS_DEADLINE: Duration = Duration::from_secs(60);
+
+fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !cond() {
+        assert!(
+            started.elapsed() < PROGRESS_DEADLINE,
+            "timed out after {PROGRESS_DEADLINE:?} waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// yap-1108-timing-open-m-budgets — what the stub engine saw, for the
+/// count-based preemption assertions.
+#[derive(Default)]
+struct Probe {
+    /// Meeting chunk decodes that have BEGUN (a decode in flight is
+    /// `started > chunks`).
+    started: AtomicUsize,
+    /// Chunk decodes that began while a dictation's interactive claim was
+    /// already up — chunk boundaries the meeting passed without yielding.
+    started_under_claim: AtomicUsize,
+    /// The manager, so a decode can read the claim when it begins.
+    /// `interactive_pending` is one atomic load: it takes no lock the
+    /// manager could be holding around the decode.
+    manager: OnceLock<TranscriptionManager>,
+}
+
 const MEETING_SECONDS: f64 = 600.0;
 
 /// The stub engine. It tells the two callers apart the way the app does: a
@@ -61,6 +110,7 @@ const MEETING_SECONDS: f64 = 600.0;
 struct StubEngine {
     chunks: Arc<AtomicUsize>,
     dictations: Arc<AtomicUsize>,
+    probe: Arc<Probe>,
     /// The meeting half: one timestamped word per second of the window it was
     /// handed, read back off the ramp fixture.
     decoder: RampDecoder,
@@ -84,6 +134,17 @@ impl Transcriber for StubEngine {
         _language: Option<&str>,
         _bias: Option<&str>,
     ) -> Result<TimedTranscript, String> {
+        let claimed = self
+            .probe
+            .manager
+            .get()
+            .is_some_and(|m| m.interactive_pending());
+        if claimed {
+            self.probe
+                .started_under_claim
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.probe.started.fetch_add(1, Ordering::AcqRel);
         std::thread::sleep(CHUNK_DECODE);
         self.chunks.fetch_add(1, Ordering::AcqRel);
         let (start, end) = window_bounds(samples);
@@ -99,6 +160,15 @@ fn manager(
     chunks: Arc<AtomicUsize>,
     dictations: Arc<AtomicUsize>,
 ) -> (TranscriptionManager, PathBuf) {
+    manager_probed(chunks, dictations, Arc::new(Probe::default()))
+}
+
+fn manager_probed(
+    chunks: Arc<AtomicUsize>,
+    dictations: Arc<AtomicUsize>,
+    probe: Arc<Probe>,
+) -> (TranscriptionManager, PathBuf) {
+    let engine_probe = Arc::clone(&probe);
     // `load` insists the model file exists; any file will do, since the loader
     // below never opens it.
     let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
@@ -107,6 +177,7 @@ fn manager(
             Ok(Box::new(StubEngine {
                 chunks: chunks.clone(),
                 dictations: dictations.clone(),
+                probe: Arc::clone(&engine_probe),
                 decoder: RampDecoder::new(true),
             }) as Box<dyn Transcriber>)
         }),
@@ -114,6 +185,9 @@ fn manager(
         Duration::from_secs(3600),
         Duration::from_secs(30),
     );
+    // A test-only reference cycle (engine -> probe -> manager); the process
+    // ends with the test binary.
+    let _ = probe.manager.set(m.clone());
     (m, model_path)
 }
 
@@ -121,7 +195,9 @@ fn manager(
 fn a_dictation_issued_mid_meeting_completes_in_under_two_seconds() {
     let chunks = Arc::new(AtomicUsize::new(0));
     let dictations = Arc::new(AtomicUsize::new(0));
-    let (manager, model_path) = manager(chunks.clone(), dictations.clone());
+    let probe = Arc::new(Probe::default());
+    let (manager, model_path) =
+        manager_probed(chunks.clone(), dictations.clone(), Arc::clone(&probe));
     manager.load("stub", &model_path).expect("stub loads");
 
     let dir = std::env::temp_dir().join(format!("yap-yv93-preempt-{}", std::process::id()));
@@ -159,10 +235,11 @@ fn a_dictation_issued_mid_meeting_completes_in_under_two_seconds() {
     });
 
     // Let the meeting get properly under way — several chunks in, engine busy.
-    while chunks.load(Ordering::Acquire) < 2 {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    std::thread::sleep(Duration::from_millis(50));
+    // yap-1108-timing-open-m-budgets: waited on the chunk counters, not a
+    // 50 ms sleep: two chunks done and a third decode already begun.
+    wait_until("the meeting's third chunk decode to be in flight", || {
+        chunks.load(Ordering::Acquire) >= 2 && probe.started.load(Ordering::Acquire) >= 3
+    });
 
     let started = Instant::now();
     let dictated = manager
@@ -171,9 +248,15 @@ fn a_dictation_issued_mid_meeting_completes_in_under_two_seconds() {
     let elapsed = started.elapsed();
 
     assert_eq!(dictated, "the dictation went through");
+    // The budget, counted (replaces `elapsed < DICTATION_BUDGET`; see
+    // CHUNKS_STARTED_UNDER_A_CLAIM_ALLOWED for why it is the same property).
+    let under_claim = probe.started_under_claim.load(Ordering::Acquire);
     assert!(
-        elapsed < DICTATION_BUDGET,
-        "a dictation issued mid-meeting took {elapsed:?}, budget {DICTATION_BUDGET:?}"
+        under_claim <= CHUNKS_STARTED_UNDER_A_CLAIM_ALLOWED,
+        "the meeting began {under_claim} chunk decodes while the dictation's claim was up \
+         (at most {CHUNKS_STARTED_UNDER_A_CLAIM_ALLOWED}) — it did not yield at the next \
+         boundary, so the dictation queued behind the meeting (took {elapsed:?}, plan \
+         budget {DICTATION_BUDGET:?})"
     );
     // It cannot have been instant either — it waited out the chunk that was in
     // flight, which is the "at the next boundary, not mid-chunk" half of the
@@ -260,7 +343,29 @@ struct CancellableStubEngine {
     dictations: Arc<AtomicUsize>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     decoder: RampDecoder,
+    /// yap-1108-timing-open-m-budgets — counters for the count-based checks.
+    slow: Arc<SlowProbe>,
 }
+
+/// yap-1108-timing-open-m-budgets — what the cancellable stub saw.
+#[derive(Default)]
+struct SlowProbe {
+    /// Chunk decode attempts begun (a cancelled attempt and its re-run both
+    /// count). Attempt [`WEDGED_ATTEMPT`] is the one the dictation lands on.
+    attempts: AtomicUsize,
+    /// Chunk decodes ended by the cancel token.
+    aborts: AtomicUsize,
+    /// `chunks` / `aborts` as they stood when the dictation's own decode ran.
+    chunks_at_dictation: AtomicUsize,
+    aborts_at_dictation: AtomicUsize,
+}
+
+/// The attempt (0-based) the dictation is issued into: the meeting's SECOND
+/// chunk. It ends ONLY when cancelled — or, as a hang guard, after the longest
+/// decode the geometry sanctions, which the assertions then reject — so "the
+/// dictation took the engine off it" is decided by the cancel, never by how
+/// fast the runner ran a timed decode.
+const WEDGED_ATTEMPT: usize = 1;
 
 impl Transcriber for CancellableStubEngine {
     fn transcribe(
@@ -269,6 +374,12 @@ impl Transcriber for CancellableStubEngine {
         _language: Option<&str>,
         _bias: Option<&str>,
     ) -> Result<String, String> {
+        self.slow
+            .chunks_at_dictation
+            .store(self.chunks.load(Ordering::Acquire), Ordering::Release);
+        self.slow
+            .aborts_at_dictation
+            .store(self.slow.aborts.load(Ordering::Acquire), Ordering::Release);
         std::thread::sleep(DICTATION_DECODE);
         self.dictations.fetch_add(1, Ordering::AcqRel);
         Ok("the dictation went through".to_string())
@@ -280,9 +391,16 @@ impl Transcriber for CancellableStubEngine {
         _language: Option<&str>,
         _bias: Option<&str>,
     ) -> Result<TimedTranscript, String> {
-        let deadline = Instant::now() + SLOW_CHUNK_DECODE;
+        let attempt = self.slow.attempts.fetch_add(1, Ordering::AcqRel);
+        let decode = if attempt == WEDGED_ATTEMPT {
+            Duration::from_secs_f64(MAX_SANCTIONED_CHUNK_DECODE_SECONDS)
+        } else {
+            SLOW_CHUNK_DECODE
+        };
+        let deadline = Instant::now() + decode;
         while Instant::now() < deadline {
             if self.cancel.load(Ordering::Acquire) {
+                self.slow.aborts.fetch_add(1, Ordering::AcqRel);
                 return Err("aborted".to_string());
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -326,10 +444,12 @@ fn a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait() {
 
     let chunks = Arc::new(AtomicUsize::new(0));
     let dictations = Arc::new(AtomicUsize::new(0));
+    let slow = Arc::new(SlowProbe::default());
     let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manager = {
         let chunks = chunks.clone();
         let dictations = dictations.clone();
+        let slow = Arc::clone(&slow);
         TranscriptionManager::with_loader(
             Arc::new(move |_p: &std::path::Path| {
                 Ok(Box::new(CancellableStubEngine {
@@ -337,6 +457,7 @@ fn a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait() {
                     dictations: dictations.clone(),
                     cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     decoder: RampDecoder::new(true),
+                    slow: Arc::clone(&slow),
                 }) as Box<dyn Transcriber>)
             }),
             Duration::from_secs(3600),
@@ -380,12 +501,14 @@ fn a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait() {
         job.run("m-preempt-slow").expect("the meeting transcribes")
     });
 
-    // Into the SECOND chunk's decode — the engine is busy, and will be for
-    // seconds.
-    while chunks.load(Ordering::Acquire) < 1 {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    std::thread::sleep(Duration::from_millis(200));
+    // Into the SECOND chunk's decode — the engine is busy, and will stay busy
+    // until something cancels it. yap-1108-timing-open-m-budgets: waited on
+    // the attempt counter, not on a 200 ms sleep.
+    wait_until("the meeting's second chunk decode to be in flight", || {
+        chunks.load(Ordering::Acquire) >= 1
+            && slow.attempts.load(Ordering::Acquire) > WEDGED_ATTEMPT
+    });
+    let chunks_when_issued = chunks.load(Ordering::Acquire);
 
     let started = Instant::now();
     let dictated = manager
@@ -394,10 +517,22 @@ fn a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait() {
     let elapsed = started.elapsed();
 
     assert_eq!(dictated, "the dictation went through");
+    // The budget, counted (replaces `elapsed < DICTATION_BUDGET`, and is
+    // stronger): when the dictation's decode ran, NO chunk had completed since
+    // it was issued and the in-flight one had been cancelled. A dictation that
+    // queued behind the chunk instead finds it completed (after up to
+    // MAX_SANCTIONED_CHUNK_DECODE_SECONDS) and no abort — on any runner.
+    let chunks_at_dictation = slow.chunks_at_dictation.load(Ordering::Acquire);
+    let aborts_at_dictation = slow.aborts_at_dictation.load(Ordering::Acquire);
+    assert_eq!(
+        chunks_at_dictation, chunks_when_issued,
+        "a chunk decode completed while the dictation waited (took {elapsed:?}, plan \
+         budget {DICTATION_BUDGET:?}; chunk decode {SLOW_CHUNK_DECODE:?}, handback wait \
+         {ENGINE_HANDBACK_WAIT:?}) — it queued behind the chunk"
+    );
     assert!(
-        elapsed < DICTATION_BUDGET,
-        "a dictation issued mid-chunk took {elapsed:?}, budget {DICTATION_BUDGET:?} \
-         (chunk decode {SLOW_CHUNK_DECODE:?}, handback wait {ENGINE_HANDBACK_WAIT:?})"
+        aborts_at_dictation >= 1,
+        "the dictation ran without the in-flight chunk ever being cancelled"
     );
 
     let out = meeting.join().expect("the meeting thread finishes");
