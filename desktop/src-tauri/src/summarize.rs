@@ -3280,6 +3280,14 @@ fn summarize_run(
     let mut actions = resolve(&merged.actions);
     let mut decisions = resolve(&merged.decisions);
     let mut questions = resolve(&merged.questions);
+    if items_first {
+        // Arm E's recall floor (bounce fix): the 1.5B MAP pass returned 2 of
+        // 10 planted commitments; a line whose speaker commits to a task is
+        // an action item even when the model passed over it.
+        let model_actions = actions.len();
+        let added = backfill_first_person_actions(&mut actions, &lines);
+        log::info!("summarize items_first_backfill model_actions={model_actions} added={added}");
+    }
     apply_item_guards(&mut actions, &mut decisions, &mut questions, &lines);
     attribute_owners(
         &mut actions,
@@ -3295,7 +3303,9 @@ fn summarize_run(
     // an earlier headline paragraph nobody was going to show.
     let v8_before = run_rejected_count("v8_verbatim");
     let narrative = if items_first {
-        let failed_actions = ground_items_in_window(&mut actions, &lines);
+        let mut failed_actions = ground_items_in_window(&mut actions, &lines);
+        // A line already filed as an action is never also quoted below it.
+        failed_actions.retain(|f| !actions.iter().any(|a| a.segment == f.segment));
         commitments = commitment_lines(&failed_actions, &lines);
         let failed_decisions = ground_items_in_window(&mut decisions, &lines).len();
         let failed_questions = ground_items_in_window(&mut questions, &lines).len();
@@ -4663,13 +4673,28 @@ pub fn cited_window(lines: &[TranscriptLine], segment: &str) -> Option<String> {
     let at = lines.iter().position(|l| l.label == segment)?;
     let from = at.saturating_sub(1);
     let to = (at + 1).min(lines.len() - 1);
+    // Bounce fix (loop three, batch 1 red): the speaker label is part of
+    // what the meeting says about a line. "Call will send the deck" cites a
+    // line the Call track spoke; without its label the name gate called the
+    // track's own name invented and the action fell out of Action items.
     Some(
         lines[from..=to]
             .iter()
-            .map(|l| l.text.as_str())
+            .map(|l| match &l.speaker {
+                Some(s) => format!("{}: {}", s.label(), l.text),
+                None => l.text.clone(),
+            })
             .collect::<Vec<_>>()
             .join("\n"),
     )
+}
+
+/// Whether one arm-E item holds up against its cited segment +-1: hard
+/// digit / name / contact gates and the lemma-level match.
+fn holds_in_window(lines: &[TranscriptLine], item: &SummaryItem) -> bool {
+    cited_window(lines, &item.segment).is_some_and(|window| {
+        lemma_gates(&window, &item.text).is_some() && content_gates(&window, &item.text).is_some()
+    })
 }
 
 /// Arm E item gate: keep the items whose text holds up against the CITED
@@ -4681,16 +4706,183 @@ pub fn ground_items_in_window(
 ) -> Vec<SummaryItem> {
     let mut failed = Vec::new();
     items.retain(|item| {
-        let ok = cited_window(lines, &item.segment).is_some_and(|window| {
-            lemma_gates(&window, &item.text).is_some()
-                && content_gates(&window, &item.text).is_some()
-        });
+        let ok = holds_in_window(lines, item);
         if !ok {
             failed.push(item.clone());
         }
         ok
     });
     failed
+}
+
+/// Leading words a speaker says before the commitment itself ("Okay, I will
+/// send it", "and I will draft the schedule").
+const COMMIT_LEAD_INS: &[&str] = &[
+    "", "okay", "ok", "so", "and", "but", "yeah", "yes", "alright", "right", "sure", "well",
+    "also", "then", "now", "oh",
+];
+
+/// Verbs that follow "I will" / "we will" without committing anyone to a
+/// task ("we will need more tables", "I will say it looked fine").
+const NOT_TASK_VERBS: &[&str] = &[
+    "see", "be", "love", "like", "enjoy", "miss", "know", "think", "feel", "guess", "bet", "never",
+    "probably", "maybe", "have", "need", "want", "wait", "remember", "hope", "say", "tell",
+    "admit", "agree", "keep", "let", "survive", "manage", "hear", "try",
+];
+
+/// Task verbs for "I'll" and "I can" ("I can get you the specs", "I'll send
+/// the deck tonight") and for "I'm going to".
+const TASK_VERBS: &[&str] = &[
+    "send", "get", "put", "take", "draft", "share", "book", "schedule", "update", "email", "call",
+    "set", "follow", "write", "prepare", "review", "check", "handle", "look", "pull", "finish",
+    "fix", "ship", "file", "order", "sort", "reach", "ping", "circle", "run", "organize",
+    "arrange", "confirm", "build", "create", "cover", "own", "draw", "forward", "loop", "invite",
+    "post", "upload", "test", "fill", "submit", "pay", "deal", "chase", "grab", "pick", "ask",
+    "bring", "print", "text", "message", "contact", "give", "find", "talk",
+];
+
+/// "Let me ..." commits only with these: "let me share my screen" and "let me
+/// pull up the dashboard" happen in the meeting, they are not tasks.
+const LET_ME_VERBS: &[&str] = &[
+    "take", "handle", "send", "check", "follow", "draft", "book", "schedule", "email", "call",
+    "sort", "reach", "chase", "confirm", "find", "look", "get", "talk", "ask",
+];
+
+/// Whether one clause (lower-cased words, lead-ins already stripped) is its
+/// speaker committing to a task.
+fn clause_commits(words: &[&str], clause: &str) -> bool {
+    // "Leave the vendor comparison with me".
+    if words.first() == Some(&"leave") {
+        return words.len() >= 4 && clause.ends_with("with me");
+    }
+    let verb_in = |at: usize, verbs: &[&str]| {
+        words.get(at).is_some_and(|v| verbs.contains(v)) && words.len() >= at + 2
+    };
+    match words {
+        ["i", "will", "just" | "also", ..] => {
+            words.get(3).is_some_and(|v| !NOT_TASK_VERBS.contains(v)) && words.len() >= 5
+        }
+        ["i", "will", v, ..] => !NOT_TASK_VERBS.contains(v) && words.len() >= 4,
+        ["i'll", "just" | "also", ..] => verb_in(2, TASK_VERBS),
+        ["i'll", ..] => verb_in(1, TASK_VERBS),
+        ["i", "can", ..] => verb_in(2, TASK_VERBS),
+        ["let", "me", ..] => verb_in(2, LET_ME_VERBS),
+        ["i'm", "going", "to", ..] => verb_in(3, TASK_VERBS),
+        ["i", "am", "going", "to", ..] => verb_in(4, TASK_VERBS),
+        _ => false,
+    }
+}
+
+/// yap-audit-notes-strategy, bounce fix (loop three, batch 1 red: the shipped
+/// arm found 1 of 10 planted commitments; the 1.5B MAP pass returned 2) — the
+/// part of a transcript line in which its SPEAKER commits to a task, from the
+/// committing clause to the end of its sentence: "I will send the revised
+/// deck by Friday", "Perfect, and I will send the outline" -> "I will send
+/// the outline", "I can get you the specs", "Let me take care of the
+/// invoice", "Leave the vendor comparison with me". Small talk that borrows
+/// the shape stays out: "We'll see how the traffic is", "It's going to rain",
+/// "You'll love the new cafe", "we will need more tables", a question, a
+/// screen share, and any line [`is_pleasantry`] calls a pleasantry.
+pub fn first_person_commitment_text(text: &str) -> Option<String> {
+    let t = strip_speaker_tag(text).trim();
+    if t.is_empty() || is_pleasantry(t) {
+        return None;
+    }
+    let mut sentences: Vec<(&str, char)> = Vec::new();
+    let mut from = 0usize;
+    for (i, c) in t.char_indices() {
+        if matches!(c, '.' | '!' | '?') {
+            sentences.push((&t[from..i], c));
+            from = i + c.len_utf8();
+        }
+    }
+    if from < t.len() {
+        sentences.push((&t[from..], '.'));
+    }
+    for (sentence, end) in sentences {
+        if end == '?' || sentence.to_lowercase().contains("screen") {
+            continue;
+        }
+        let starts = std::iter::once(0).chain(
+            sentence
+                .char_indices()
+                .filter(|(_, c)| matches!(c, ',' | ';'))
+                .map(|(i, c)| i + c.len_utf8()),
+        );
+        for start in starts {
+            let rest = sentence[start..].trim();
+            let lower = rest.to_lowercase().replace('\u{2019}', "'");
+            let all: Vec<&str> = lower
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\''))
+                .collect();
+            let lead = all
+                .iter()
+                .take_while(|w| COMMIT_LEAD_INS.contains(*w))
+                .count();
+            let clause = lower.trim_end_matches([',', ';', '.', '!', ' ']);
+            if !clause_commits(&all[lead..], clause) {
+                continue;
+            }
+            let kept: Vec<&str> = rest.split_whitespace().skip(lead).collect();
+            let mut item = kept
+                .join(" ")
+                .trim_end_matches([',', ';', '.', '!'])
+                .to_string();
+            if let Some(first) = item.chars().next() {
+                let upper: String = first.to_uppercase().collect();
+                item.replace_range(..first.len_utf8(), &upper);
+            }
+            return (!item.is_empty()).then_some(item);
+        }
+    }
+    None
+}
+
+/// Whether a transcript line holds a first-person commitment
+/// ([`first_person_commitment_text`]).
+pub fn first_person_commitment(text: &str) -> bool {
+    first_person_commitment_text(text).is_some()
+}
+
+/// Arm E recall floor: every transcript line in which its speaker commits to
+/// a task ([`first_person_commitment`]) and that no MAP action already holds
+/// up for becomes an action item in the speaker's own words, cited to its own
+/// line (so it is grounded by construction and owned by the line's track).
+/// Runs before the item guards and the owner rule, which treat it like any
+/// MAP item. Returns how many were added.
+pub fn backfill_first_person_actions(
+    actions: &mut Vec<SummaryItem>,
+    lines: &[TranscriptLine],
+) -> usize {
+    let mut added = 0usize;
+    for line in lines {
+        let Some(text) = first_person_commitment_text(&line.text) else {
+            continue;
+        };
+        let held = actions
+            .iter()
+            .any(|a| a.segment == line.label && holds_in_window(lines, a));
+        if held {
+            continue;
+        }
+        if actions.iter().any(|a| same_item(&a.text, &text)) {
+            continue;
+        }
+        actions.push(SummaryItem {
+            text,
+            segment: line.label.clone(),
+            start_seconds: line.start_seconds,
+            speaker: line.speaker.as_ref().map(|s| s.label().to_string()),
+        });
+        added += 1;
+    }
+    actions.sort_by(|a, b| {
+        a.start_seconds
+            .partial_cmp(&b.start_seconds)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    added
 }
 
 /// Failed actions as the transcript's own words: the cited line, its time and
