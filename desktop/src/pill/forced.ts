@@ -81,17 +81,6 @@ export interface ForcedPill {
    * dock. Null when absent or unknown.
    */
   engine: EngineHealth | null;
-  /**
-   * yap-1107-parity-pill — `&battery=low` forces pill.html row 20 "Saving
-   * battery" (Low Power Mode) so the matrix photographs it without a battery.
-   */
-  battery: boolean;
-  /**
-   * yap-1107-parity-pill — `&take=long` forces pill.html row 5 "Long take":
-   * the listening pill at the essay tier (the desk prop, window 208 x 44),
-   * which a real take only reaches after minutes of speech.
-   */
-  longTake: boolean;
 }
 
 /**
@@ -157,8 +146,6 @@ export function forcedPill(search: string): ForcedPill | null {
     license: sceneLicense(q.get("license")),
     rail: q.get("rail") === "open",
     engine: forcedEngine(q.get("engine")),
-    battery: q.get("battery") === "low",
-    longTake: q.get("take") === "long",
   };
 }
 
@@ -395,24 +382,6 @@ export function matrixSilentMicScene(): MatrixOfferRow {
  * exactly the rail's two sets (Scratchpad · Dictate · Meeting, and
  * Scratchpad · Dictate · Note · Stop meeting) rotated at every dock.
  */
-/** yap-1107-parity-pill — pill.html row 20 "Saving battery": a resting pill in Low Power Mode. */
-export function matrixBatteryScene(): MatrixOfferRow {
-  const v = phaseVisual("idle");
-  return { phase: "idle", id: "battery", phaseId: PHASE_ID.idle, query: "battery=low", offer: "", tone: v.tone, label: v.label };
-}
-
-/** yap-1107-parity-pill — pill.html row 5 "Long take": a hands-free take at the desk tier. */
-export function matrixLongTakeScene(): MatrixOfferRow {
-  const v = phaseVisual("listening-locked");
-  return { phase: "listening-locked", id: "longtake", phaseId: PHASE_ID["listening-locked"], query: "take=long", offer: "", tone: v.tone, label: v.label };
-}
-
-/** yap-1107-parity-pill — pill.html #wispr W7 "Fix-up notices": a done pill saying "Fixed 2 words" + Show. */
-export function matrixFixupScene(): MatrixOfferRow {
-  const v = phaseVisual("done");
-  return { phase: "done", id: "fixup", phaseId: PHASE_ID.done, query: "fixed=2", offer: "", tone: v.tone, label: v.label };
-}
-
 export function matrixRailScene(): MatrixOfferRow {
   const v = phaseVisual("idle");
   return {
@@ -464,7 +433,8 @@ export interface MatrixNarrowRow extends MatrixOfferRow {
 /**
  * yap-1107-parity-companions — the page's own visit (companions.html s09 line
  * 297, "Yappy visits for your 100th take"): Hoot sits in the pill, Yappy stands
- * beside him INSIDE the open window, the done segment reads "✓ 100th take".
+ * beside him INSIDE the open window (the "✓ 100th take" segment rides on the
+ * reverted yap-1107-parity-pill shell segment; this base has no segment).
  * `float.html?phase=done&pill=hoot&friend=yappy`; the pinned Yappy visitor is
  * the milestone (FriendVisit.tsx). Bottom dock; meetings none (the visitor in
  * the window, capture friend-visit-window__hoot__bottom__none.png, the app

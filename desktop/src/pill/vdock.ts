@@ -10,7 +10,7 @@
  * horizontal pill — and every pose is chosen so his whole bounding box
  * (characterFit CHICK_EXTENT) sits inside the scene's rounded clip.
  *
- *   open   a 64 x 216 dark shell flush to the screen edge (rounded on the inner
+ *   open   a 64 x 188 dark shell flush to the screen edge (rounded on the inner
  *          side only), 4 px padding, holding the 56 x 180 scene: a window with
  *          the real sky at the top, a shelf with the notepad and word jar, a
  *          shelf with the typewriter, the floor, and a ladder on the INNER side
@@ -43,15 +43,8 @@ export const VDOCK_MAX_W = 64;
 export const VDOCK_PAD = 4;
 /** The scene, in CSS px AND art px (one CSS px per art px). */
 export const VDOCK_SCENE = { w: 56, h: 180 } as const;
-/** yap-1107-parity-pill — pill.html #vstage .vshell: a grid (gap 4) of the
- * 56 x 180 room canvas, then the 24 px stop button (.sbtn.red), centred. */
-export const VDOCK_GAP = 4;
-export const VDOCK_STOP = 24;
-/** The stop row under the room: the grid gap plus the button. */
-export const VDOCK_STOP_ROW = VDOCK_GAP + VDOCK_STOP;
-/** The open shell: the scene, the stop row and the padding — 64 x 216, the
- * measured .vshell.l / .vshell.r (was 64 x 188 with no stop, 13 percent short). */
-export const VDOCK_OPEN = { w: VDOCK_SCENE.w + 2 * VDOCK_PAD, h: VDOCK_SCENE.h + VDOCK_STOP_ROW + 2 * VDOCK_PAD } as const;
+/** The open shell: the scene plus its padding. */
+export const VDOCK_OPEN = { w: VDOCK_SCENE.w + 2 * VDOCK_PAD, h: VDOCK_SCENE.h + 2 * VDOCK_PAD } as const;
 /** The resting tab and its sky window. */
 export const VDOCK_TAB = { w: 30, h: 40 } as const;
 export const VDOCK_TAB_WINDOW = { w: VDOCK_TAB.w - 2 * VDOCK_PAD, h: VDOCK_TAB.h - 2 * VDOCK_PAD } as const;
@@ -165,16 +158,7 @@ export function vShellRect(dock: SideDock, openV: number, char: FitBox): FitBox 
 
 /** The scene / tab window inside a shell: the shell inset by its padding. */
 export function vInnerRect(shell: FitBox): FitBox {
-  // The stop row grows in with the shell: none on the 30 x 40 tab, all 28 px
-  // on the open 64 x 216 shell, so the room is exactly 56 x 180 when open.
-  // VDOCK_OPEN.h - VDOCK_TAB.h is a positive constant (216 - 40), so no zero guard.
-  const stopRow = clamp01((shell.h - VDOCK_TAB.h) / (VDOCK_OPEN.h - VDOCK_TAB.h)) * VDOCK_STOP_ROW;
-  return { x: shell.x + VDOCK_PAD, y: shell.y + VDOCK_PAD, w: shell.w - 2 * VDOCK_PAD, h: shell.h - 2 * VDOCK_PAD - stopRow };
-}
-
-/** The open shell's stop button (CSS px, panel coords): centred, on the bottom padding. */
-export function vStopRect(shell: FitBox): FitBox {
-  return { x: shell.x + (shell.w - VDOCK_STOP) / 2, y: shell.y + shell.h - VDOCK_PAD - VDOCK_STOP, w: VDOCK_STOP, h: VDOCK_STOP };
+  return { x: shell.x + VDOCK_PAD, y: shell.y + VDOCK_PAD, w: shell.w - 2 * VDOCK_PAD, h: shell.h - 2 * VDOCK_PAD };
 }
 
 /** Device px per art px for the tab's chick: the largest whole number that fits, else 1/n. */

@@ -135,8 +135,6 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   "pill/vdock.ts": { lines: 100, branches: 98, functions: 100, statements: 100 },
   "pill/pixelGrid.ts": { lines: 100, branches: 73, functions: 100, statements: 91 },
   "pill/state.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
-  // yap-1107-parity-pill: the pill.html shell segment model (tray / meeting / fix-up widths, no imports); shellSegment.test.ts.
-  "pill/shellSegment.ts": { lines: 80, branches: 65, functions: 80, statements: 80 },
   // yap-1106-voice-modes — floor set by the batch-6 integrator from the measured run.
   "pill/voices.ts": { lines: 96, branches: 85, functions: 94, statements: 96 },
   // yap-1106-reaction-words — the 48-row table, the matcher and the once-per-take reducer (reactionWords.test.ts

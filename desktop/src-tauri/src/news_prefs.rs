@@ -853,13 +853,13 @@ mod tests {
             n.topics,
             vec!["ai".to_string(), "tech".to_string(), "local".to_string()]
         );
+        // fix-l3b3-4-news-new-chips-fetch-and-match: search words alone were
+        // not enough (the refresh plans from Category); every chip, current
+        // or legacy, must get exactly one planned fetch for itself.
         for id in TOPIC_CHIPS.iter().chain(LEGACY_TOPIC_CHIPS.iter()) {
-            if *id != "developer" {
-                assert!(
-                    crate::news::feeds::google_query(id).is_some(),
-                    "chip {id} has no search words"
-                );
-            }
+            let plan = crate::news::sources::fetch_plan(&[id.to_string()]);
+            assert_eq!(plan.len(), 1, "chip {id} is not fetched");
+            assert_eq!(plan[0].topic, *id, "chip {id} fetches another topic");
         }
     }
 }

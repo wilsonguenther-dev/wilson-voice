@@ -149,3 +149,16 @@ describe("yap-1106-news-home-briefing", () => {
     expect(hiddenToday(st, NOW + 24 * 3600_000)).toBe(false);
   });
 });
+
+describe("fix-l3b3-4-news-new-chips-fetch-and-match", () => {
+  it("news_new_chips_each_have_their_own_tag", () => {
+    const want: Record<string, string> = { ai: "AI", design: "DESIGN", startups: "STARTUP", crypto: "CRYPTO", local: "LOCAL" };
+    for (const [topic, tag] of Object.entries(want)) {
+      expect(topicTag({ topic, source: "google_news" }, [])).toBe(tag);
+    }
+    // Legacy picks keep their tags.
+    expect(topicTag({ topic: "tech", source: "google_news" }, [])).toBe("TECH");
+    expect(topicTag({ topic: "world", source: "google_news" }, [])).toBe("WORLD");
+    expect(topicTag({ topic: "culture", source: "google_news" }, [])).toBe("CULTURE");
+  });
+});

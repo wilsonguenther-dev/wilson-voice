@@ -5,7 +5,6 @@ import { Raster } from "../sprites/raster";
 import { friendManifest } from "../sprites/friends";
 import { milestoneLine } from "./friendVisits";
 import { forcedPill, matrixFriendVisitWindowScene } from "./forced";
-import { segmentFor } from "./shellSegment";
 import {
   VISITOR_DX,
   cameraView,
@@ -123,15 +122,6 @@ describe("visitorInWindow: the milestone the page shows with the visit (line 297
     expect(visitorSegment("backtrack-caught", 100)).toBeNull();
     expect(visitorSegment(null, 100)).toBeNull();
     expect(milestoneLine("milestone", 100)).toBe("that's a hundred! — Yappy");
-    // the done segment carries it: check + "100th take", instead of the word count
-    expect(segmentFor({ phase: "done", words: 212, milestone: "100th take" })).toEqual([
-      { kind: "icon", icon: "check" },
-      { kind: "text", text: "100th take" },
-    ]);
-    // no milestone: the done segment is unchanged
-    expect(segmentFor({ phase: "done", words: 212, milestone: null })).toEqual(segmentFor({ phase: "done", words: 212 }));
-    // only the done state carries it
-    expect(segmentFor({ phase: "polishing", milestone: "100th take" })).toEqual(segmentFor({ phase: "polishing" }));
   });
 });
 

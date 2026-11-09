@@ -39,7 +39,7 @@ import WhoTalkingCard from "./pill/WhoTalkingCard";
 import { forcedWhoCard } from "./pill/whoTalking";
 import { forcedMeetingNotice } from "./pill/meetingDictation";
 import BacktrackCaughtCard from "./pill/BacktrackCaughtCard";
-import { BACKTRACK_CAUGHT_EVENT, backtrackFixedWords, forcedBacktrackCaught, forcedFixedWords, isBacktrackCaught } from "./pill/backtrackCaught";
+import { forcedBacktrackCaught } from "./pill/backtrackCaught";
 import PolishRevealCard from "./pill/PolishRevealCard";
 import { forcedPolishReveal } from "./pill/polishReveal";
 import StyleChipButton from "./pill/StyleChipButton";
@@ -130,9 +130,6 @@ import {
   matrixLaunchWalkScene,
   matrixFriendVisitWindowScene,
   matrixStuckEngineScenes,
-  matrixBatteryScene,
-  matrixLongTakeScene,
-  matrixFixupScene,
   type ForcedPill,
 } from "./pill/forced";
 import { FriendVisit } from "./pill/FriendVisit";
@@ -320,12 +317,6 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixFriendVisitWindowScene(),
     // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
     ...matrixStuckEngineScenes(),
-    // yap-1107-parity-pill — pill.html row 20 "Saving battery".
-    matrixBatteryScene(),
-    // yap-1107-parity-pill — pill.html row 5 "Long take" (the desk tier).
-    matrixLongTakeScene(),
-    // yap-1107-parity-pill — pill.html #wispr W7 "Fixed 2 words" in the done pill.
-    matrixFixupScene(),
   ];
   if (FORCED?.dock) document.documentElement.dataset.dock = FORCED.dock;
   if (forcedDragScene(window.location.search)) {
@@ -394,34 +385,6 @@ function Float() {
   // capsule is drawn. `gate` outranks it (see PHASE_PRECEDENCE); the two are
   // combined ONCE, below, with `winningPhase`.
   const [take, setTake] = useState<LivePhase>("idle");
-  // yap-1107-parity-pill — pill.html W7 "Fix-up notices": the words the last
-  // take's caught self-correction fixed, shown in the done pill ("Fixed N
-  // words" + Show). Fed by the same `backtrack_caught` event as the card;
-  // cleared when the next take starts listening.
-  const [fixedWords, setFixedWords] = useState(0);
-  useEffect(() => {
-    if (FORCED) return undefined;
-    let off: (() => void) | null = null;
-    let dead = false;
-    listen<unknown>(BACKTRACK_CAUGHT_EVENT, (e) => {
-      if (!isBacktrackCaught(e.payload)) return;
-      const n = backtrackFixedWords(e.payload);
-      console.info(`pill fixup_notice words=${n}`);
-      setFixedWords(n);
-    })
-      .then((u) => {
-        if (dead) u();
-        else off = u;
-      })
-      .catch((err: unknown) => console.warn(`pill fixup_listen_failed err=${String(err)}`));
-    return () => {
-      dead = true;
-      off?.();
-    };
-  }, []);
-  useEffect(() => {
-    if (gate === "listening" || gate === "listening-locked") setFixedWords(0);
-  }, [gate]);
   // Y5-F — the CODE behind the take's `last_error`. The `error` phase shows the
   // catalogue's line for it (errors.ts), the same line the main window's toast
   // shows — never the raw backend string.
@@ -853,7 +816,7 @@ function Float() {
   }, [partialUp]);
   const pill = Stage ? (
     <Suspense fallback={null}>
-      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} lowPower={FORCED?.battery === true} longTake={FORCED?.longTake === true} fixedWords={FORCED ? (forcedFixedWords(window.location.search) ?? 0) : fixedWords} occupant={character.id} />
+      <Stage {...pillProps} tone={chatTone} voice={voiceFor(tone)} chatter={chatter} curse={curseOn} engineHealth={engineHealth} occupant={character.id} />
     </Suspense>
   ) : (
     <PillShell {...pillProps} slots={slots} character={character} tone={chatTone} />
