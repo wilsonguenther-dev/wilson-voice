@@ -127,6 +127,8 @@ import {
   matrixPhases,
   matrixDragBlobScene,
   matrixFriendVisitScene,
+  matrixLaunchWalkScene,
+  matrixFriendVisitWindowScene,
   matrixStuckEngineScenes,
   matrixBatteryScene,
   matrixLongTakeScene,
@@ -312,6 +314,10 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixDragBlobScene(),
     // yap-1106-friend-visits — Tidy visiting a resting pill.
     matrixFriendVisitScene(),
+    // yap-1107-parity-companions — the launch walk's first frame (s06), Yappy at the bottom dock.
+    matrixLaunchWalkScene(),
+    // yap-1107-parity-companions — Yappy visiting Hoot inside the open window (s09).
+    matrixFriendVisitWindowScene(),
     // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
     ...matrixStuckEngineScenes(),
     // yap-1107-parity-pill — pill.html row 20 "Saving battery".

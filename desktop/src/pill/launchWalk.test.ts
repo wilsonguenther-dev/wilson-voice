@@ -11,6 +11,7 @@ import {
   STALL_MS,
   WALK_DIST,
   WARM_HOP_MS,
+  YAPPY_X,
   houseX,
   launchWalkModel,
   parseLoadProgress,
@@ -171,7 +172,7 @@ describe("launch walk — bound to engine load, never a timer", () => {
     for (const h of FRIEND_HOUSES) {
       const pct = (h.at / 100) * HOLD_PCT * (WALK_DIST / DOOR_SCROLL);
       const m = launchWalkModel(base({ progress: prog(Math.round(pct)) }));
-      expect(Math.abs(houseX(h, m.scroll) - 88)).toBeLessThan(30);
+      expect(Math.abs(houseX(h, m.scroll) - YAPPY_X)).toBeLessThan(30);
       expect(m.waving).toContain(h.id);
     }
   });
