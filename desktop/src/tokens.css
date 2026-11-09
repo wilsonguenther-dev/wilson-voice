@@ -170,16 +170,50 @@
      over the user's screen, not over our page, so it does not follow the
      app's light/dark at all. That is why none of these are overridden below.
      ══════════════════════════════════════════════════════════════════ */
-  --pill-shell-top: #17181c;
-  --pill-shell-bottom: #0c0c0f;
+  /* yap-1107-parity-pill — flat, as the approved page paints it (pill.html
+     .ypill background: --shell #1e2025). Was a #17181c -> #0c0c0f gradient. */
+  --pill-shell-top: #1e2025;
+  --pill-shell-bottom: #1e2025;
   --pill-shell-highlight: #3a3b40; /* the lit edge of a round pill button */
-  --pill-text: #f5f5f7;
+  --pill-text: #eceae4; /* yap-1107-parity-pill: pill.html --on-shell (was #f5f5f7) */
   /* yap-1106-pill-warmup-engine — the 72 x 24 warm-up window's room wall
      (design-2026-11-06 pill.html section 10, the room behind Yappy). */
   --pill-warmup-window: #eccf92;
-  --pill-warmup-fill: hsl(38 92% 55%);
-  --pill-bubble-surface: #20222e;
-  --pill-bubble-text: #f7f1e6;
+  --pill-warmup-fill: #f2c14e; /* yap-1107-parity-pill: pill.html .bar i (was hsl(38 92% 55%)) */
+  /* yap-1107-parity-pill — the speech bubble, measured from the approved
+     design-2026-11-06/pill.html .ybub: a light card with dark ink, 500 12px/1.2,
+     6px 10px padding, radius 9, shadow 0 2px 8px rgba(0,0,0,.2). Was a dark
+     card (#20222e / #f7f1e6) the page never showed. */
+  --pill-bubble-surface: #fffdf7;
+  --pill-bubble-text: #1d1c1a;
+  --pill-bubble-radius: 9px;
+  --pill-bubble-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  /* yap-1107-parity-pill — the approved pill shell (pill.html .ypill, review.css
+     --shell / --shell-2 / --shell-line / --on-shell / --on-shell-2), exact
+     hex. The side-dock shell and every DOM segment beside Yappy paint these. */
+  --pill-shell: #1e2025;
+  --pill-shell-2: #2b2e35; /* stop / tray buttons, the kbd chip */
+  --pill-shell-line: rgba(255, 255, 255, 0.09); /* the 1 px inner rim */
+  --pill-blob-shadow: 0 10px 22px rgba(0, 0, 0, 0.38); /* pill.html .blob, mid-drag */
+  --pill-shell-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+  /* yap-1107-parity-pill — pill.html .ypill padding:4px / gap:4px: the shell
+     around the sky window (characterFit SHELL_PAD, the same number). */
+  --pill-shell-pad: 4px;
+  --pill-shell-gap: 4px;
+  /* yap-1107-parity-pill — pill.html mtgPill: the 44-tall meeting pill keeps
+     PK.pill's radius h / 2, its 140 x 36 sky window r 14. */
+  --meeting-pill-radius: 22px;
+  --meeting-window-radius: 14px;
+  --pill-on-shell: #eceae4;
+  --pill-on-shell-2: #a9a59c; /* the quiet ".sub" word ("words", "Click to dictate") */
+  --pill-bar-fill: #f2c14e; /* warming up / writing it up fill bar */
+  /* yap-1107-parity-pill — the shell's right segment (pill.html .cbtn, .sbtn.red,
+     .bar track). The CTA keeps the gate chip's exact hex. */
+  --pill-cta: #efece4;
+  --pill-cta-text: #1d1c1a;
+  --pill-stop: #ff8a8d;
+  --pill-rec: #e5484d; /* pill.html --rec: the recording dot / Yappy's ear-cup light */
+  --pill-bar-track: rgba(255, 255, 255, 0.14);
   /* WF-20 — the per-app style chip under a listening pill (StyleChipButton.tsx). */
   --pill-chip-surface: rgba(255, 255, 255, 0.12);
   --pill-chip-surface-hover: rgba(255, 255, 255, 0.2);

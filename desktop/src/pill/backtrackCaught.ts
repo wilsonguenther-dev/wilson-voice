@@ -78,3 +78,22 @@ export const SAMPLE_BACKTRACK_CAUGHT: BacktrackCaught = {
 export function forcedBacktrackCaught(search: string): BacktrackCaught | null {
   return new URLSearchParams(search).get("backtrack") === "1" ? SAMPLE_BACKTRACK_CAUGHT : null;
 }
+
+/**
+ * yap-1107-parity-pill — pill.html #wispr W7 "Fix-up notices": the done pill
+ * says "Fixed N words" + Show inside the shell (shellSegment fixedWordsLine).
+ * N is the words the caught self-correction put in: the kept words, at least 1.
+ */
+export function backtrackFixedWords(c: BacktrackCaught): number {
+  return Math.max(1, c.kept.trim().split(/\s+/).filter(Boolean).length);
+}
+
+/**
+ * The forced matrix scene's fix-up count (`float.html?phase=done&fixed=2`, the
+ * W7 row), or `null`. DEV-ONLY like `forcedBacktrackCaught`.
+ */
+export function forcedFixedWords(search: string): number | null {
+  const raw = new URLSearchParams(search).get("fixed");
+  const n = raw && /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : 0;
+  return n > 0 ? n : null;
+}

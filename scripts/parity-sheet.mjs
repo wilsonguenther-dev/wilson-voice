@@ -351,6 +351,29 @@ async function pillTones(cdp, base) {
   }
 }
 
+/*
+ * yap-1107-parity-pill (bounce fix: open states measured the 72 x 28 nub) —
+ * YappyPill sizes the shell from its draw loop, which a background headless
+ * target may not be running. The pill-matrix capture forces frames with its
+ * screenshot; the measure did not. Bring the target forward and force frames
+ * (a throwaway 1 px screenshot) until the measured box holds still across two
+ * reads, so the box measured is the box the capture paints. Bounded: 12 passes.
+ */
+export async function pumpUntilSettled(cdp, s, selector) {
+  await cdp.send("Page.bringToFront", {}, s).catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, s).catch(() => {});
+  const read = () => evaluate(cdp, s, `(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return ""; const r = e.getBoundingClientRect(); return r.left.toFixed(2) + "|" + r.top.toFixed(2) + "|" + r.width.toFixed(2) + "|" + r.height.toFixed(2); })()`).catch(() => "");
+  let last = null;
+  for (let pass = 0; pass < 12; pass++) {
+    await cdp.send("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }, s).catch(() => {});
+    await sleep(120);
+    const now = await read();
+    if (now && now === last) return now;
+    last = now;
+  }
+  return last;
+}
+
 export async function measureApp(cdp, base, st, tones) {
   const a = st.app || {};
   const page = a.page || "float.html";
@@ -363,6 +386,7 @@ export async function measureApp(cdp, base, st, tones) {
       await cdp.send("Page.navigate", { url: base + "/float.html" + (a.query ? "?" + a.query.replace(/^\?/, "") : "") }, s);
       await settlePhase(cdp, s, new URLSearchParams(a.query || "").get("phase"), SETTLE_MS);
       await fitPillPanel(cdp, s, { w: a.width || PILL_W, h: a.height || PILL_H }, CROP_SCALE, SETTLE_MS);
+      await pumpUntilSettled(cdp, s, a.selector);
       const m = await measureSelector(cdp, s, a.selector, opts);
       m.phaseApplied = await evaluate(cdp, s, "document.documentElement.dataset.phase || null").catch(() => null);
       return m;
