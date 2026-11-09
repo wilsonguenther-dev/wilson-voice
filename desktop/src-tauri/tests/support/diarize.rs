@@ -91,6 +91,13 @@ pub fn launcher() -> DiarizeLauncher {
 /// Named for what the caller wants rather than for the sidecar's internals: a
 /// test needs an EMBEDDER, and exactly one of these two states is the honest
 /// way a machine can fail to have one.
+///
+/// `Ready` holds the pool by value and is far larger than `ModelsMissing`
+/// (yap-1108-timing-sticky-pool-no-wait added a wait counter to
+/// [`DiarizePool`]). The allow is scoped to this test-only enum: exactly one
+/// `Embedder` is built per test, so the size gap costs nothing, and boxing
+/// the pool would only add an indirection to every caller.
+#[allow(clippy::large_enum_variant)]
 pub enum Embedder {
     /// A real inference backend, with the embedding width the CHILD reported —
     /// never a constant on this side of the wire (`models.rs` explains why that
