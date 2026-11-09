@@ -39,6 +39,13 @@ use crate::news_prefs::NewsPrefs;
 
 /// The closed label set. `Entertainment` has no topic chip today, so an
 /// entertainment story only shows when the user names it as an own word.
+///
+/// fix-l3b3-4-news-new-chips-fetch-and-match: every topic chip has a
+/// category whose [`Category::tag`] is exactly the chip id, so the fetch
+/// plan searches for it and [`match_prefs`] can keep its stories. The five
+/// chips the approved page added (AI, Design, Startups, Crypto, Local) are
+/// narrower than the old ones; [`Category::parent`] lets a story labelled
+/// with one still reach a user who picked only the broader legacy chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Category {
@@ -49,13 +56,19 @@ pub enum Category {
     Science,
     World,
     Culture,
+    Ai,
+    Design,
+    Startups,
+    Crypto,
+    Local,
     Sports,
     Entertainment,
     Other,
 }
 
 impl Category {
-    pub const ALL: [Category; 10] = [
+    /// Every label, `Other` last (the cloud prompt lists them in this order).
+    pub const ALL: [Category; 15] = [
         Category::Developer,
         Category::Stocks,
         Category::Business,
@@ -63,6 +76,11 @@ impl Category {
         Category::Science,
         Category::World,
         Category::Culture,
+        Category::Ai,
+        Category::Design,
+        Category::Startups,
+        Category::Crypto,
+        Category::Local,
         Category::Sports,
         Category::Entertainment,
         Category::Other,
@@ -77,6 +95,11 @@ impl Category {
             Category::Science => "science",
             Category::World => "world",
             Category::Culture => "culture",
+            Category::Ai => "ai",
+            Category::Design => "design",
+            Category::Startups => "startups",
+            Category::Crypto => "crypto",
+            Category::Local => "local",
             Category::Sports => "sports",
             Category::Entertainment => "entertainment",
             Category::Other => "other",
@@ -93,6 +116,11 @@ impl Category {
             Category::Science => "Science",
             Category::World => "World",
             Category::Culture => "Culture",
+            Category::Ai => "AI",
+            Category::Design => "Design",
+            Category::Startups => "Startups",
+            Category::Crypto => "Crypto",
+            Category::Local => "Local",
             Category::Sports => "Sports",
             Category::Entertainment => "Entertainment",
             Category::Other => "Other",
@@ -119,6 +147,28 @@ impl Category {
     pub fn from_topic(topic: &str) -> Option<Category> {
         Category::parse(topic).filter(|c| *c != Category::Other)
     }
+
+    /// The broader chip a narrower category also belongs to: an AI story is
+    /// Tech news to a user who picked Tech but not AI. `None` for the broad
+    /// chips themselves and for Local (local news is no other chip's).
+    pub fn parent(self) -> Option<Category> {
+        match self {
+            Category::Ai | Category::Design => Some(Category::Tech),
+            Category::Startups => Some(Category::Business),
+            Category::Crypto => Some(Category::Stocks),
+            _ => None,
+        }
+    }
+
+    /// The narrower chips, each matched by its own words ([`TOPIC_WORDS`])
+    /// when a story's label is a broader one ([`match_prefs`]).
+    pub const NARROW: [Category; 5] = [
+        Category::Ai,
+        Category::Design,
+        Category::Startups,
+        Category::Crypto,
+        Category::Local,
+    ];
 
     /// Sports and entertainment are vetoed unless the user picked them.
     pub fn is_denied_kind(self) -> bool {
@@ -708,6 +758,128 @@ pub const TOPIC_WORDS: &[(Category, &[&str])] = &[
             "booker prize",
         ],
     ),
+    // fix-l3b3-4-news-new-chips-fetch-and-match — the approved page's five
+    // chips. Last on purpose: on a tie the earlier (broader) topic keeps the
+    // story, and match_prefs still finds these words for a picked chip.
+    (
+        Category::Ai,
+        &[
+            "ai",
+            "artificial intelligence",
+            "openai",
+            "chatgpt",
+            "chatbot",
+            "chatbots",
+            "machine learning",
+            "deep learning",
+            "neural network",
+            "llm",
+            "llms",
+            "large language model",
+            "language model",
+            "generative ai",
+            "gpt",
+            "anthropic",
+            "claude",
+            "gemini",
+            "deepmind",
+            "copilot",
+            "agi",
+            "ai model",
+            "ai models",
+            "new model",
+        ],
+    ),
+    (
+        Category::Design,
+        &[
+            "design",
+            "designs",
+            "designer",
+            "designers",
+            "redesign",
+            "redesigned",
+            "ux",
+            "user interface",
+            "user experience",
+            "typography",
+            "typeface",
+            "font",
+            "fonts",
+            "logo",
+            "rebrand",
+            "branding",
+            "figma",
+            "graphic design",
+            "product design",
+            "industrial design",
+            "web design",
+        ],
+    ),
+    (
+        Category::Startups,
+        &[
+            "startup",
+            "startups",
+            "founder",
+            "founders",
+            "venture capital",
+            "venture",
+            "seed round",
+            "pre seed",
+            "series a",
+            "series b",
+            "series c",
+            "funding round",
+            "raises",
+            "unicorn",
+            "y combinator",
+            "accelerator",
+            "angel investor",
+            "angel investors",
+        ],
+    ),
+    (
+        Category::Crypto,
+        &[
+            "crypto",
+            "cryptocurrency",
+            "cryptocurrencies",
+            "bitcoin",
+            "btc",
+            "ethereum",
+            "blockchain",
+            "stablecoin",
+            "stablecoins",
+            "coinbase",
+            "binance",
+            "solana",
+            "dogecoin",
+            "nft",
+            "nfts",
+            "defi",
+        ],
+    ),
+    (
+        Category::Local,
+        &[
+            "local",
+            "city council",
+            "mayor",
+            "county",
+            "school board",
+            "school district",
+            "city hall",
+            "sheriff",
+            "neighborhood",
+            "zoning",
+            "downtown",
+            "township",
+            "commissioners",
+            "city budget",
+            "town hall",
+        ],
+    ),
 ];
 
 /// Lowercase words joined by single spaces, padded so `contains(" w ")` is
@@ -833,8 +1005,24 @@ pub struct Match {
 /// matches its category; a ticker or own word matches when the headline
 /// names it (the user typed it, so it is kept whatever its category). `None`
 /// = off topic: the caller drops it.
+///
+/// fix-l3b3-4-news-new-chips-fetch-and-match: after the exact chip, a
+/// picked narrow chip (AI, Design, Startups, Crypto, Local) keeps a story
+/// whose headline has that chip's own words even when its label is a
+/// broader one ("OpenAI ships a new model" labelled Tech still shows for
+/// AI); then a narrow label reaches the broader chip a user picked
+/// ([`Category::parent`]: an AI story shows as Tech for a Tech-only user).
+/// The sports/entertainment veto stands: a vetoed story only ever matches
+/// its own chip or an own word.
 pub fn match_prefs(story: &Story, prefs: &NewsPrefs, cloud: Option<Category>) -> Option<Match> {
     let c = classify(story, cloud);
+    let picked = |cat: Category| prefs.topics.iter().any(|p| p == cat.tag());
+    let chip = |category: Category| Match {
+        category,
+        by: c.by,
+        topic: category.tag().to_string(),
+        own_word: false,
+    };
     if let Some(t) = c.category.topic() {
         if prefs.topics.iter().any(|p| p == t) {
             return Some(Match {
@@ -846,6 +1034,18 @@ pub fn match_prefs(story: &Story, prefs: &NewsPrefs, cloud: Option<Category>) ->
         }
     }
     let padded = padded_words(&story.title);
+    if !c.category.is_denied_kind() {
+        if let Some(narrow) = Category::NARROW
+            .into_iter()
+            .filter(|n| picked(*n))
+            .find(|n| topic_words(*n).iter().any(|w| has_phrase(&padded, w)))
+        {
+            return Some(chip(narrow));
+        }
+        if let Some(parent) = c.category.parent().filter(|p| picked(*p)) {
+            return Some(chip(parent));
+        }
+    }
     let named = prefs.tickers.iter().chain(prefs.custom.iter()).find(|w| {
         let w = padded_words(w);
         let w = w.trim();
@@ -857,6 +1057,15 @@ pub fn match_prefs(story: &Story, prefs: &NewsPrefs, cloud: Option<Category>) ->
         topic: named.clone(),
         own_word: true,
     })
+}
+
+/// The curated words of one topic (empty for a category with none).
+fn topic_words(category: Category) -> &'static [&'static str] {
+    TOPIC_WORDS
+        .iter()
+        .find(|(c, _)| *c == category)
+        .map(|(_, w)| *w)
+        .unwrap_or(&[])
 }
 
 /// The card's "Why this story" line, e.g. "From Ars Technica (Tech) ·
@@ -894,10 +1103,24 @@ pub struct PlannedFetch {
 /// The fetch plan for the user's topic chips, in their order. Only picked
 /// topics appear, so sports outlets are in the plan only when Sports is
 /// picked and entertainment outlets never are (there is no chip).
+///
+/// A picked chip that gets no fetch is logged once as
+/// `news topic_unplanned topic=<id>` (fix-l3b3-4-news-new-chips-fetch-and-match:
+/// the five new chips were silently skipped before), so an empty briefing
+/// is never unexplained.
 pub fn fetch_plan(topics: &[String]) -> Vec<PlannedFetch> {
     let mut plan: Vec<PlannedFetch> = Vec::new();
+    let unplanned = |t: &str| {
+        let id = if crate::news_prefs::is_topic_chip(t) {
+            t
+        } else {
+            "unknown"
+        };
+        log::info!("news topic_unplanned topic={id}");
+    };
     for t in topics {
         let Some(category) = Category::from_topic(t) else {
+            unplanned(t.as_str());
             continue;
         };
         if category == Category::Entertainment || plan.iter().any(|p| p.category == category) {
@@ -908,7 +1131,10 @@ pub fn fetch_plan(topics: &[String]) -> Vec<PlannedFetch> {
         } else {
             match google_query(category.tag()) {
                 Some(w) => (Source::GoogleNews, Some(w)),
-                None => continue,
+                None => {
+                    unplanned(t.as_str());
+                    continue;
+                }
             }
         };
         plan.push(PlannedFetch {
@@ -1266,6 +1492,150 @@ mod tests {
         let sports = plan.iter().find(|p| p.topic == "sports").expect("sports");
         assert!(sports.outlets.contains(&"espn"));
         assert!(!plan.iter().any(|p| p.category == Category::Entertainment));
+    }
+
+    // ---- fix-l3b3-4-news-new-chips-fetch-and-match ----
+
+    #[test]
+    fn every_topic_chip_gets_exactly_one_planned_fetch() {
+        use crate::news_prefs::{LEGACY_TOPIC_CHIPS, TOPIC_CHIPS};
+        for id in TOPIC_CHIPS.iter().chain(LEGACY_TOPIC_CHIPS.iter()) {
+            let plan = fetch_plan(&[id.to_string()]);
+            assert_eq!(plan.len(), 1, "chip {id} planned {plan:?}");
+            assert_eq!(plan[0].topic, *id);
+            assert_eq!(plan[0].category.tag(), *id);
+            if *id == "developer" {
+                assert_eq!(plan[0].source, Source::HackerNews);
+            } else {
+                assert_eq!(plan[0].source, Source::GoogleNews, "chip {id}");
+                assert_eq!(plan[0].words, google_query(id), "chip {id}");
+                assert!(plan[0].words.is_some(), "chip {id} has no search words");
+            }
+        }
+        // All ten current chips together: ten fetches, in the user's order.
+        let all: Vec<String> = TOPIC_CHIPS.iter().map(|s| s.to_string()).collect();
+        let plan = fetch_plan(&all);
+        assert_eq!(
+            plan.iter().map(|p| p.topic).collect::<Vec<_>>(),
+            TOPIC_CHIPS.to_vec()
+        );
+        // The legacy picks still plan alongside the new ones.
+        let legacy = fetch_plan(&[
+            "tech".to_string(),
+            "world".to_string(),
+            "culture".to_string(),
+            "ai".to_string(),
+        ]);
+        assert_eq!(
+            legacy.iter().map(|p| p.topic).collect::<Vec<_>>(),
+            vec!["tech", "world", "culture", "ai"]
+        );
+        // A non-chip id plans nothing (and is logged as topic_unplanned).
+        assert!(fetch_plan(&["entertainment".to_string(), "banana".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn each_new_chip_keeps_a_plainly_matching_headline() {
+        let cases = [
+            ("ai", "OpenAI ships a new model"),
+            ("design", "Figma unveils a redesign of its design tools"),
+            (
+                "startups",
+                "Fintech startup raises seed round led by Y Combinator",
+            ),
+            ("crypto", "Bitcoin passes 100k"),
+            ("local", "Austin city council approves budget"),
+        ];
+        for (i, (chip, title)) in cases.into_iter().enumerate() {
+            let s = story(
+                chip,
+                title,
+                &format!("https://example.com/new-chip/{i}"),
+                Some("Reuters"),
+                Some(1),
+            );
+            let p = prefs(&[chip], &[], &[]);
+            let m = match_prefs(&s, &p, None).unwrap_or_else(|| panic!("{chip}: {title} dropped"));
+            assert_eq!(m.topic, chip, "{title}");
+            assert!(!m.own_word, "{title}");
+            assert_eq!(m.category.tag(), chip, "{title}");
+            assert_eq!(
+                why_line(&s, &m),
+                format!(
+                    "From Reuters ({0}) \u{b7} matches {0}",
+                    Category::from_topic(chip).expect("chip category").label()
+                )
+            );
+            // Only the picked chip keeps it: Developer alone drops it.
+            assert!(
+                match_prefs(&s, &prefs(&["developer"], &[], &[]), None).is_none(),
+                "{title} kept for developer"
+            );
+        }
+        // A cloud label of the new chip itself matches directly.
+        let s = story(
+            "ai",
+            "A quiet headline",
+            "https://example.com/c",
+            None,
+            Some(1),
+        );
+        let m = match_prefs(&s, &prefs(&["ai"], &[], &[]), Some(Category::Ai)).expect("cloud ai");
+        assert_eq!((m.topic.as_str(), m.by), ("ai", ClassifiedBy::Cloud));
+    }
+
+    #[test]
+    fn a_narrow_label_reaches_the_broad_chip_and_the_veto_stands() {
+        // Labelled AI, the user picked only Tech: shown as Tech.
+        let s = story(
+            "tech",
+            "OpenAI ships a new model",
+            "https://example.com/n1",
+            None,
+            Some(1),
+        );
+        assert_eq!(classify(&s, None).category, Category::Ai);
+        let m = match_prefs(&s, &prefs(&["tech"], &[], &[]), None).expect("tech parent");
+        assert_eq!((m.topic.as_str(), m.category), ("tech", Category::Tech));
+        assert_eq!(Category::Crypto.parent(), Some(Category::Stocks));
+        assert_eq!(Category::Startups.parent(), Some(Category::Business));
+        assert_eq!(Category::Local.parent(), None);
+        // A sports story naming AI is still sports: AI alone drops it.
+        let golf = story(
+            "ai",
+            "Golf tour adopts AI line judges",
+            "https://example.com/n2",
+            None,
+            Some(1),
+        );
+        assert_eq!(classify(&golf, None).category, Category::Sports);
+        assert!(match_prefs(&golf, &prefs(&["ai", "tech"], &[], &[]), None).is_none());
+    }
+
+    #[test]
+    fn classify_prompt_lists_the_new_chips_and_ends_with_other() {
+        assert_eq!(Category::ALL.last(), Some(&Category::Other));
+        let (system, _) = classify_prompt(&[("x".to_string(), None)]);
+        assert!(
+            system.contains(
+                "culture, ai, design, startups, crypto, local, sports, entertainment, other."
+            ),
+            "{system}"
+        );
+        assert_eq!(
+            parse_labels("1. ai\n2. Design\n3: startups\n4 crypto\n5 - local", 5),
+            vec![
+                Some(Category::Ai),
+                Some(Category::Design),
+                Some(Category::Startups),
+                Some(Category::Crypto),
+                Some(Category::Local)
+            ]
+        );
+        for c in Category::NARROW {
+            assert_eq!(Category::from_topic(c.tag()), Some(c));
+            assert!(crate::news_prefs::is_topic_chip(c.tag()));
+        }
     }
 
     #[test]
