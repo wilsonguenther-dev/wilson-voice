@@ -4,7 +4,22 @@
  * a drag.
  */
 import { describe, expect, it } from "vitest";
-import { beginPress, CLICK_MAX_MS, CLICK_SLOP, classifyPress, endPress, trackPress } from "./press";
+import {
+  beginPress,
+  CLICK_MAX_MS,
+  CLICK_SLOP,
+  classifyPress,
+  endPress,
+  isPressed,
+  markPressed,
+  PRESS_VISUAL_BUDGET_MS,
+  PRESSED_ATTR,
+  PRESSED_DATASET_KEY,
+  PRESSED_SCALE,
+  pressLogLine,
+  pressVisualLatency,
+  trackPress,
+} from "./press";
 
 describe("WF-01 gesture classifier", () => {
   it("pins the thresholds the acceptance names", () => {
@@ -44,5 +59,51 @@ describe("WF-01 gesture classifier", () => {
 
   it("a clock that ran backwards never reads as a click", () => {
     expect(classifyPress(0, -1)).toBe("drag");
+  });
+});
+
+// yap-1107-pill-click-always-registers — acceptance 2: the pressed state is
+// instant (pill.html: the shell scales to 96 percent while pressed) and its
+// latency from pointer-down is measured against a 50 ms budget.
+describe("pressed state is instant and measured", () => {
+  const fakeRoot = () => ({ dataset: {} as Record<string, string | undefined> }) as unknown as HTMLElement;
+
+  it("pins the approved numbers", () => {
+    expect(PRESSED_SCALE).toBe(0.96);
+    expect(PRESS_VISUAL_BUDGET_MS).toBe(50);
+    expect(PRESSED_ATTR).toBe("data-pill-pressed");
+    expect(PRESSED_DATASET_KEY).toBe("pillPressed");
+  });
+
+  it("markPressed is synchronous and idempotent", () => {
+    const r = fakeRoot();
+    expect(isPressed(r)).toBe(false);
+    markPressed(r, true);
+    expect(isPressed(r)).toBe(true); // visible with no await, no IPC
+    markPressed(r, true);
+    expect(isPressed(r)).toBe(true);
+    markPressed(r, false);
+    expect(isPressed(r)).toBe(false);
+    markPressed(r, false);
+    expect(isPressed(r)).toBe(false);
+  });
+
+  it("latency is paint minus pointer-down, rounded to 0.1 ms", () => {
+    expect(pressVisualLatency(1_000, 1_016.66)).toBe(16.7);
+    expect(pressVisualLatency(1_000, 1_000)).toBe(0);
+  });
+
+  it("a missing or backwards clock is unknown, never a fake number", () => {
+    expect(pressVisualLatency(0, 10)).toBeNull();
+    expect(pressVisualLatency(Number.NaN, 10)).toBeNull();
+    expect(pressVisualLatency(10, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(pressVisualLatency(20, 10)).toBeNull();
+  });
+
+  it("the log line names the budget and flags an overrun", () => {
+    expect(pressLogLine(16.7)).toBe("pill press event=pressed_visual latency_ms=16.7 budget_ms=50 over_budget=false");
+    expect(pressLogLine(51)).toContain("over_budget=true");
+    expect(pressLogLine(null)).toContain("latency_ms=unknown");
+    expect(pressLogLine(null)).toContain("over_budget=false");
   });
 });
