@@ -328,6 +328,12 @@ app never calls it and keeps the wall clock). The 20 ms wall-clock poll for the 
 1 ms fake-clock advance; 79 ms and 200 ms are fake-clock advances, never slept on. No production
 wakeup was added.
 
+Row change (2026-11-09, loop3, yap-1108-timing-src-ordering-resume): record.rs `10:3 -> 10:2` and
+`500:4 -> 1`. All of it is in `#[cfg(test)] mod tests` and is a removal: the stop-signal test's
+10 ms park sleep is gone (the waiter announces its park before stop is raised), and the three
+500 ms wall-clock bounds of the stop-signal and journal never-block tests are replaced by ordering
+assertions behind a 60 s hang guard (a supervision bound, not counted). No production wakeup changed.
+
 **Limits, stated rather than implied:** literals only. `Duration::from_millis(interval)` with a
 variable is invisible to it, and so is a sleep built from arithmetic. That hole is why this is a
 census against an allowlist and not a proof of absence — it makes the cheap regression (a

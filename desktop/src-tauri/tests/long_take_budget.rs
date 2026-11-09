@@ -908,7 +908,10 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             (1, 1),
             (2, 1),
             (5, 3),
-            (10, 3),
+            // yap-1108-timing-src-ordering-resume — 10:3->2: the stop-signal
+            // test's 10 ms "let the waiter park" sleep in `#[cfg(test)] mod tests`
+            // is gone (the waiter now announces its park before stop is raised).
+            (10, 2),
             (60, 2),
             // yap-wf-10-mic-fallback-order-and — ARMED_TICK (250 ms): the capture
             // worker's tick only while a take or meeting is in flight, so a mic
@@ -916,7 +919,11 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // next ranked mic. The idle stream keeps IDLE_TICK (YV81).
             (250, 1),
             (300, 2),
-            (500, 4),
+            // yap-1108-timing-src-ordering-resume — 500:4->1: three 500 ms
+            // wall-clock bounds in `#[cfg(test)] mod tests` (stop-signal and the
+            // two journal never-block tests) are replaced by ordering asserts
+            // with a 60 s hang guard. Test-only; no production wakeup changed.
+            (500, 1),
         ]),
     );
     all.insert(
