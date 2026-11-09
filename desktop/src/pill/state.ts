@@ -360,6 +360,11 @@ function sideLayout(key: string, input: PillInput, character: LayoutCharacter, e
   rows.push({ name: "hint", w: HINT_W, h: lines * HINT_LINE_H });
   const colH = rows.reduce((a, r) => a + r.h, 0) + SLOT_GAP * (rows.length - 1);
   let y = colH < env.h ? (env.h - colH) / 2 : 0;
+  // yap-1107-parity-pill — the clock is the 44 px meeting segment (pill.html
+  // mtgPill) and the resting tab is the approved 30 x 40 (#vdock vtab), so at
+  // rest the clock is taller than the tab: centre the tab on it (2 px each
+  // way), so the shell stays ONE band exactly the clock's height.
+  if (rows[0]?.name === "clock" && rows[0].h > env.h) y = (env.h - rows[0].h) / 2;
   const placed: Partial<Record<(typeof rows)[number]["name"], Box>> = {};
   for (const r of rows) {
     const x = r.name === "clock" ? (left ? env.w : -r.w) : inX(r.w);

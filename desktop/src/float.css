@@ -610,7 +610,7 @@ body,
 }
 .meeting-cup-light {
   position: absolute;
-  /* yap-1107-parity-pill — pill.html .recdot: var(--rec) #e5484d, flat (no
+  /* yap-1107-parity-pill — pill.html .recdot: var(--rec) (the page's red), flat (no
      glow), the approved recording red inside the meeting pill. */
   background: var(--pill-rec);
 }
@@ -2730,7 +2730,7 @@ html[data-dock="right"] .friend-visit {
 }
 
 /* yap-1107-parity-pill — the approved shell (pill.html .ypill): a PAINTED DOM
-   box, --pill-shell #1e2025 with --pill-shell-pad / --pill-shell-gap 4 px and
+   box, --pill-shell (the page's shell grey) with --pill-shell-pad / --pill-shell-gap 4 px and
    the --pill-shell-line rim, holding the ONE sky window canvas (.yappy-win, the
    approved .win) YappyPill draws the sky and Yappy into. YappyPill writes
    left/top/width/height and data-shape each time the drawn box changes. Only
