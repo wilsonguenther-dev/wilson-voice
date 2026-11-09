@@ -1006,7 +1006,7 @@ pub struct Match {
 /// fix-l3b3-4-news-new-chips-fetch-and-match: after the exact chip, a
 /// picked narrow chip (AI, Design, Startups, Crypto, Local) keeps a story
 /// whose headline has that chip's own words even when its label is a
-/// broader one ("OpenAI ships a new model" labelled Tech still shows for
+/// broader one ("OpenAI ships GPT update" labelled Tech still shows for
 /// AI); then a narrow label reaches the broader chip a user picked
 /// ([`Category::parent`]: an AI story shows as Tech for a Tech-only user).
 /// The sports/entertainment veto stands: a vetoed story only ever matches
@@ -1658,8 +1658,13 @@ mod tests {
             let label = classify(&s, None).category;
             assert_ne!(label, narrow, "{title} labelled as its chip");
             assert_ne!(label, Category::Other, "{title} unlabelled");
-            assert_ne!(Some(label), narrow.parent(), "{title} labelled as parent");
-            assert!(!narrow_words_may_keep(narrow, label), "{title}");
+            // "Fed raises interest rates again" is Business, the Startups
+            // parent: it drops because "raises" is no longer a Startups
+            // word. Every other case drops because its label is another
+            // topic the narrow words may not reach.
+            if narrow.parent() != Some(label) {
+                assert!(!narrow_words_may_keep(narrow, label), "{title}");
+            }
             assert!(
                 match_prefs(&s, &prefs(&[chip], &[], &[]), None).is_none(),
                 "{title} kept for {chip} (label {label:?})"
