@@ -401,3 +401,205 @@ mod queue_tests {
         assert!(!q.pending());
     }
 }
+
+/// yap-1107-pill-click-always-registers acceptance 4 (the logic half): fifty
+/// seeded clicks through the SAME two pieces `lib.rs::pill_toggle` composes —
+/// the one take machine and [`ClickQueue`] — against a simulated recorder
+/// (warm-up, the stop's refocus wait, decoding). Every click must count as the
+/// next intent in order: start, stop, start, ... none dropped. The on-screen
+/// half (points inside the drawn pill, pressed latency) is `pill-matrix.mjs
+/// --pill-click`; set `YAP_PILL_CLICK_MODEL_CSV=<file>` to save the timings.
+#[cfg(test)]
+mod fifty_click_tests {
+    use super::*;
+    use crate::take_control::{Decision, IgnoreReason, Intent, Surface, TakeMachine, TakePhase};
+
+    /// Recorder warm-up (click -> armed).
+    const ARM_MS: u64 = 180;
+    /// The stop's refocus wait (machine stays `Stopping`).
+    const STOP_MS: u64 = 120;
+    /// Decoding after the stop (`state.busy`).
+    const DECODE_MS: u64 = 600;
+    /// Gaps between clicks, cycled. Each lands in a different window of the
+    /// previous take: idle, warm-up, stopping, decoding (queued then its
+    /// cancelling partner), decoding again (queued, then started by the
+    /// waiter), then a plain stop of the waiter's take.
+    const GAPS: [u64; 6] = [900, 50, 180, 100, 300, 1200];
+
+    struct Sim {
+        machine: TakeMachine,
+        queue: ClickQueue,
+        live: bool,
+        arm_at: Option<u64>,
+        stop_done_at: Option<u64>,
+        busy_until: u64,
+        takes_recorded: u32,
+        takes_stopped: u32,
+        queued_fired: u32,
+    }
+
+    /// One click's honest outcome, as the user meant it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Outcome {
+        Start,
+        Stop,
+        Dropped,
+    }
+
+    impl Sim {
+        fn new() -> Self {
+            Self {
+                machine: TakeMachine::new(),
+                queue: ClickQueue::new(),
+                live: false,
+                arm_at: None,
+                stop_done_at: None,
+                busy_until: 0,
+                takes_recorded: 0,
+                takes_stopped: 0,
+                queued_fired: 0,
+            }
+        }
+
+        fn busy(&self, now: u64) -> bool {
+            now < self.busy_until
+        }
+
+        /// `lib.rs::pill_toggle`, minus the I/O.
+        fn toggle(&mut self, now: u64) -> Outcome {
+            self.machine.observe(self.live);
+            let decision = self.machine.intent(Surface::Pill, Intent::Toggle, now);
+            match decision {
+                Decision::Start => {
+                    if self.busy(now) || self.queue.pending() {
+                        // busy or already queued: the start closure did not open the mic: armed(false)
+                        let _ = self.machine.armed(false);
+                    } else {
+                        self.arm_at = Some(now + ARM_MS);
+                        return Outcome::Start;
+                    }
+                }
+                Decision::Stop => {
+                    self.stop_done_at = Some(now + STOP_MS);
+                    return Outcome::Stop;
+                }
+                Decision::StopWhenArmed => return Outcome::Stop,
+                Decision::Ignore(IgnoreReason::Stopping) => {}
+                Decision::Ignore(_) => return Outcome::Dropped,
+            }
+            match self.queue.click(now) {
+                QueueAction::Queued => Outcome::Start,
+                QueueAction::Cancelled => Outcome::Stop,
+            }
+        }
+
+        /// Advance the recorder and the queued-click waiter to `now`.
+        fn tick(&mut self, now: u64) {
+            if self.arm_at.is_some_and(|t| t <= now) {
+                self.arm_at = None;
+                self.live = true;
+                self.takes_recorded += 1;
+                if self.machine.armed(true) == Decision::Stop {
+                    self.stop_done_at = Some(now + STOP_MS);
+                }
+            }
+            if self.stop_done_at.is_some_and(|t| t <= now) {
+                self.stop_done_at = None;
+                self.live = false;
+                self.machine.stopped();
+                self.takes_stopped += 1;
+                self.busy_until = now + DECODE_MS;
+            }
+            if now % QUEUED_CLICK_POLL_MS == 0 && self.queue.pending() {
+                let stopping = matches!(self.machine.phase(), TakePhase::Stopping);
+                let busy = self.busy(now) || stopping;
+                match self.queue.due(now, busy) {
+                    QueueDue::Start { .. } => {
+                        self.queued_fired += 1;
+                        assert_eq!(
+                            self.toggle(now),
+                            Outcome::Start,
+                            "the waiter's start at {now}"
+                        );
+                    }
+                    QueueDue::Expired { waited_ms } => {
+                        panic!("a queued click expired after {waited_ms} ms at {now}")
+                    }
+                    QueueDue::Wait | QueueDue::Nothing => {}
+                }
+            }
+        }
+    }
+
+    fn phase_name(p: TakePhase) -> &'static str {
+        p.as_str()
+    }
+
+    #[test]
+    fn fifty_seeded_clicks_alternate_start_stop_through_the_take_machine() {
+        let mut rng: u64 = 1107;
+        let mut next_jitter = || {
+            // xorshift64: the run is the same every time.
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % 15
+        };
+        let mut sim = Sim::new();
+        let mut csv = String::from("i,click_ms,intent,outcome,phase_before,phase_after,queued\n");
+        let mut now = 0u64;
+        let mut t = 0u64;
+        let mut outcomes = Vec::new();
+        for i in 0..50usize {
+            let gap = if i == 0 {
+                100
+            } else {
+                GAPS[i % GAPS.len()] + next_jitter()
+            };
+            let at = t + gap;
+            while now < at {
+                now += 1;
+                sim.tick(now);
+            }
+            t = at;
+            let before = phase_name(sim.machine.phase());
+            let outcome = sim.toggle(now);
+            let after = phase_name(sim.machine.phase());
+            let intent = if i % 2 == 0 {
+                Outcome::Start
+            } else {
+                Outcome::Stop
+            };
+            csv.push_str(&format!(
+                "{i},{now},{intent:?},{outcome:?},{before},{after},{}\n",
+                sim.queue.pending()
+            ));
+            assert_ne!(
+                outcome,
+                Outcome::Dropped,
+                "click {i} at {now} ms was dropped"
+            );
+            assert_eq!(
+                outcome, intent,
+                "click {i} at {now} ms: start/stop out of order"
+            );
+            outcomes.push(outcome);
+        }
+        // drain: the last click (a stop during warm-up) fires once armed
+        for _ in 0..5_000 {
+            now += 1;
+            sim.tick(now);
+        }
+        assert_eq!(outcomes.len(), 50);
+        assert!(!sim.queue.pending());
+        assert!(!sim.live, "every take ends stopped");
+        assert_eq!(sim.takes_recorded, sim.takes_stopped);
+        // 8 full cycles start 2 takes each (the click + the waiter's queued
+        // start); clicks 48/49 start and stop one more.
+        assert_eq!(sim.queued_fired, 8);
+        assert_eq!(sim.takes_recorded, 17);
+        if let Ok(path) = std::env::var("YAP_PILL_CLICK_MODEL_CSV") {
+            std::fs::write(&path, csv).expect("write the model CSV");
+        }
+    }
+}

@@ -2308,6 +2308,53 @@ mod tests {
         assert!((hx + hw) as f64 >= 10.4 + 100.4);
     }
 
+    /// yap-1107-pill-click-always-registers acceptance 4 (the geometry half):
+    /// fifty seeded points inside a drawn capsule (a stadium at fractional
+    /// points, the shape YappyPill paints) are all inside both the rounded
+    /// single hitbox and fb-02's precise list. The on-screen run of the same
+    /// idea is `node scripts/pill-matrix.mjs --pill-click`.
+    #[test]
+    fn fifty_seeded_points_inside_the_drawn_capsule_all_hit() {
+        let (x, y, w, h) = (103.3, 57.7, 93.4, 41.6);
+        let r = h / 2.0;
+        let cells = hitbox_cells(x, y, w, h);
+        let list = sanitize_hit_rects(&[HitRect { x, y, w, h }]);
+        let mut rng: u64 = 1107;
+        let mut unit = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % 1_000_000) as f64 / 1_000_000.0
+        };
+        let mut hits = 0;
+        let mut tries = 0;
+        while hits < 50 {
+            tries += 1;
+            assert!(tries < 10_000, "sampler stalled");
+            let p = (x + unit() * w, y + unit() * h);
+            // inside the stadium: the straight middle, or within r of a cap centre
+            let cy = y + r;
+            let inside = (p.0 >= x + r && p.0 <= x + w - r)
+                || (p.0 - (x + r)).hypot(p.1 - cy) <= r
+                || (p.0 - (x + w - r)).hypot(p.1 - cy) <= r;
+            if !inside {
+                continue;
+            }
+            assert!(point_in_hitbox(p, cells), "point {p:?} missed {cells:?}");
+            assert!(point_in_hitboxes(p, &list), "point {p:?} missed {list:?}");
+            hits += 1;
+        }
+        // and the drawn extremes (the caps' outermost points) hit too
+        for p in [
+            (x, y + r),
+            (x + w, y + r),
+            (x + w / 2.0, y),
+            (x + w / 2.0, y + h),
+        ] {
+            assert!(point_in_hitbox(p, cells), "extreme {p:?}");
+        }
+    }
+
     #[test]
     fn an_unreported_or_broken_rect_is_never_clickable() {
         assert_eq!(hitbox_cells(0.0, 0.0, 0.0, 10.0), (0, 0, 0, 0));
