@@ -7280,28 +7280,48 @@ fn pill_drag_start(app: AppHandle) {
 /// paste target, so the text lands where the user was typing.
 #[tauri::command]
 fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), CommandError> {
-    let state = state.inner();
+    if pill_toggle(&app, state.inner()) {
+        return Err(CommandError::license_required());
+    }
+    Ok(())
+}
+
+/// yap-1107-pill-click-always-registers — one pill click through the ONE take
+/// machine. Returns whether a start was refused by the license.
+///
+/// A click is never dropped by a busy guard: while the previous take is still
+/// finishing (its stop in flight = machine `Stopping`, or decoding =
+/// `state.busy`) the click is QUEUED as the next start and a waiter starts it
+/// the moment the finish clears (`pill_click::ClickQueue`). A second click
+/// while one is queued is its toggle partner and cancels it, so start/stop
+/// alternate exactly as clicked. Clicks during warm-up are answered by the
+/// machine itself (`StopWhenArmed`).
+fn pill_toggle(app: &AppHandle, state: &Arc<AppState>) -> bool {
+    let mut queue_it = false;
     // yap-1107-start-stop-any-surface: the pill only sends its intent. The ONE
     // take machine decides start vs stop, so a click stops a take the hotkey,
     // the menu bar or the Dictate button started — and a click during warm-up
     // stops the take the moment it is armed instead of starting a second one.
     let mut refused = false;
-    take_intent_with(
-        &app,
+    let decision = take_intent_with(
+        app,
         state,
         take_control::Surface::Pill,
         take_control::Intent::Toggle,
         || {
-            if *state.busy.lock() {
-                log::info!("pill click action=ignored reason=busy");
+            let busy = *state.busy.lock();
+            if busy || pill_click::QUEUE.lock().pending() {
+                // The previous take is still decoding (or a click is already
+                // queued): this click is the NEXT intent, never a no-op.
+                queue_it = true;
                 return;
             }
-            if !license_allows_new_dictation(&app, state) {
+            if !license_allows_new_dictation(app, state) {
                 log::info!("pill click action=refused reason=license");
                 refused = true;
                 return;
             }
-            start_recording(&app, state);
+            start_recording(app, state);
             if *state.recording.lock() {
                 // A click take is hands-free: nothing is held, so key release
                 // or an fn edge must not finalize it. The next click (or any
@@ -7309,11 +7329,11 @@ fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<
                 *state.hands_free.lock() = true;
                 *state.hands_free_by_chord.lock() = false;
                 log::info!("pill click action=start hands_free=true");
-                ask_hands_free_during_meeting(&app, state, "pill_click");
+                ask_hands_free_during_meeting(app, state, "pill_click");
             } else {
                 log::warn!("pill click action=start_failed reason=take_did_not_start");
             }
-            emit_status(&app, state);
+            emit_status(app, state);
         },
         || {
             let pre = pill_click::PRESS
@@ -7323,7 +7343,7 @@ fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<
             match pill_click::paste_target(pre.as_ref(), pill_click::frontmost().as_ref()) {
                 pill_click::PasteTarget::Keep => {
                     log::info!("pill click action=stop refocus=false");
-                    take_stop(&app, state, take_control::Surface::Pill);
+                    take_stop(app, state, take_control::Surface::Pill);
                 }
                 pill_click::PasteTarget::Refocus(target) => {
                     // Activation lands through the main run loop, so the wait
@@ -7350,10 +7370,69 @@ fn pill_click_toggle(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<
             }
         },
     );
-    if refused {
-        return Err(CommandError::license_required());
+    // A click that lands while the stop is still in flight (the refocus wait
+    // keeps the machine `Stopping`) is the next start too.
+    if queue_it
+        || matches!(
+            decision,
+            take_control::Decision::Ignore(take_control::IgnoreReason::Stopping)
+        )
+    {
+        let action = pill_click::QUEUE.lock().click(hotkeys::now_ms());
+        match action {
+            pill_click::QueueAction::Queued => {
+                log::info!(
+                    "pill click action=queued reason={}",
+                    if queue_it { "busy" } else { "stopping" }
+                );
+                spawn_queued_click_waiter(app.clone(), state.clone());
+            }
+            pill_click::QueueAction::Cancelled => {
+                log::info!("pill click action=queue_cancelled");
+            }
+        }
+        emit_status(app, state);
     }
-    Ok(())
+    refused
+}
+
+/// yap-1107-pill-click-always-registers — drains [`pill_click::QUEUE`]: waits
+/// (off the main thread, bounded by `QUEUED_CLICK_TTL_MS`) for the previous
+/// take to finish, then runs the queued click as a fresh pill toggle.
+fn spawn_queued_click_waiter(app: AppHandle, state: Arc<AppState>) {
+    let spawned = std::thread::Builder::new()
+        .name("wv-pill-queued-click".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(
+                pill_click::QUEUED_CLICK_POLL_MS,
+            ));
+            let decoding = *state.busy.lock();
+            let stopping = matches!(
+                state.take_machine.lock().phase(),
+                take_control::TakePhase::Stopping
+            );
+            let due = pill_click::QUEUE
+                .lock()
+                .due(hotkeys::now_ms(), decoding || stopping);
+            match due {
+                pill_click::QueueDue::Wait => continue,
+                pill_click::QueueDue::Nothing => return,
+                pill_click::QueueDue::Expired { waited_ms } => {
+                    log::warn!("pill click action=queued_expired waited_ms={waited_ms}");
+                    return;
+                }
+                pill_click::QueueDue::Start { waited_ms } => {
+                    log::info!("pill click action=queued_start waited_ms={waited_ms}");
+                    if pill_toggle(&app, &state) {
+                        log::info!("pill click action=queued_refused reason=license");
+                    }
+                    return;
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::warn!("pill click queued_waiter_failed error={e}");
+    }
 }
 
 /// YV65 — live move. `dx`/`dy` are the cursor's total travel since

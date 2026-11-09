@@ -483,6 +483,31 @@ pub fn set_hitbox(x: f64, y: f64, w: f64, h: f64) {
     store_hitboxes(&[HitRect { x, y, w, h }]);
 }
 
+/// yap-1107-pill-click-always-registers — the clickable rect for a drawn
+/// capsule rect, in whole window points, rounded OUTWARD: the left/top edge
+/// floors and the right/bottom edge ceils, so the clickable rect always covers
+/// every painted point and never exceeds it by a whole point on any side.
+///
+/// The old store rounded x, y, w and h independently, so the right/bottom edge
+/// (x.round() + w.round()) could land up to a full point INSIDE the painted
+/// edge (x 10.4 -> 10, w 100.4 -> 100: drawn to 110.8, clickable to 110). A
+/// click on the pill's last sliver fell through to the app underneath.
+pub fn hitbox_cells(x: f64, y: f64, w: f64, h: f64) -> (i32, i32, i32, i32) {
+    if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return (0, 0, 0, 0);
+    }
+    let left = x.floor();
+    let top = y.floor();
+    let right = (x + w).ceil();
+    let bottom = (y + h).ceil();
+    (
+        left as i32,
+        top as i32,
+        (right - left) as i32,
+        (bottom - top) as i32,
+    )
+}
+
 /// yap-1106-fb-02-pill-first-click — the smallest hit area any pill control
 /// gets, in logical points (Apple's HIG floor for a pointer target is 24 x 24
 /// on macOS controls this small). A control drawn smaller is grown around its
@@ -583,13 +608,13 @@ pub fn set_hitboxes(rects: &[HitRect]) -> usize {
 fn store_hitboxes(rects: &[HitRect]) -> usize {
     let clean = sanitize_hit_rects(rects);
     let (bx, by, bw, bh) = bounding_rect(&clean).unwrap_or((0.0, 0.0, 0.0, 0.0));
-    // Floor the origin and ceil the far edge: the integer box may only ever
-    // grow past the real rects, never shave a control's edge off.
-    let (l, t) = (bx.floor(), by.floor());
-    HIT_X.store(l as i32, Ordering::SeqCst);
-    HIT_Y.store(t as i32, Ordering::SeqCst);
-    HIT_W.store(((bx + bw).ceil() - l) as i32, Ordering::SeqCst);
-    HIT_H.store(((by + bh).ceil() - t) as i32, Ordering::SeqCst);
+    // Floor the origin and ceil the far edge (`hitbox_cells`): the integer box
+    // may only ever grow past the real rects, never shave a control's edge off.
+    let (hx, hy, hw, hh) = hitbox_cells(bx, by, bw, bh);
+    HIT_X.store(hx, Ordering::SeqCst);
+    HIT_Y.store(hy, Ordering::SeqCst);
+    HIT_W.store(hw, Ordering::SeqCst);
+    HIT_H.store(hh, Ordering::SeqCst);
     let n = clean.len();
     match HIT_RECTS.lock() {
         Ok(mut g) => *g = clean,
@@ -1149,7 +1174,6 @@ pub fn hover_tick_ms(shown: bool, hovered: bool, meeting_recording: bool, dictat
 /// `+[NSEvent mouseLocation]` on a background thread — no main-thread hop, no
 /// window query, no AppKit object.
 pub const PROXIMITY_SLICE_MS: u64 = 30;
-
 /// The slice plan for one `tick_ms` wait: `(sleeps, last_ms)`. The first
 /// `sleeps - 1` naps are `slice_ms` long and the last is `last_ms`, so the total
 /// is always exactly `tick_ms`.
@@ -1812,6 +1836,8 @@ pub const PILL_HOVER_OUT_EVENT: &str = "pill-hover-out";
 /// Recompute and publish the capsule's AppKit screen rect. Main thread only —
 /// `outer_position`/`primary_monitor` are window-server queries.
 fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
+    let mut primary_h = 0.0;
+    let mut geo: Option<((f64, f64), f64)> = None;
     let rect = (|| {
         let origin = w.outer_position().ok()?;
         let mon = w.primary_monitor().ok().flatten()?;
@@ -1820,6 +1846,8 @@ fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
             return None;
         }
         let primary_height_pts = mon.size().height as f64 / scale;
+        primary_h = primary_height_pts;
+        geo = Some(((origin.x as f64, origin.y as f64), scale));
         capsule_screen_rect(
             (origin.x as f64, origin.y as f64),
             scale,
@@ -1832,7 +1860,73 @@ fn refresh_capsule_screen_rect(w: &tauri::WebviewWindow) {
             ),
         )
     })();
+    log_capsule_rect_change(rect, primary_h, geo);
     set_capsule_screen_rect(rect);
+}
+
+/// yap-1107-pill-click-always-registers — every published hit rect in TOP-LEFT
+/// global screen points (the CGEvent space), in the order the webview sent
+/// them. At rest (no card holding) the webview sends the capsule FIRST
+/// (drag.ts `sendCapsule`), so `rects[0]` is the drawn capsule the 50-click
+/// harness aims inside; the bounding union alone may cover empty glass between
+/// controls, which is click-through by design (fb-02).
+pub fn rects_top_left_screen(
+    rects: &[(f64, f64, f64, f64)],
+    origin_px: (f64, f64),
+    scale: f64,
+    primary_h: f64,
+) -> Vec<(f64, f64, f64, f64)> {
+    rects
+        .iter()
+        .filter_map(|&r| capsule_screen_rect(origin_px, scale, primary_h, r))
+        .map(|(x, y, w, h)| (x, primary_h - (y + h), w, h))
+        .collect()
+}
+
+/// yap-1107-pill-click-always-registers — one log line whenever the clickable
+/// capsule moves or resizes (never per tick): the rect in TOP-LEFT global
+/// screen points (the CGEvent space scripts/pill-click-50.swift clicks in) and
+/// the window-relative hitbox it came from. The measurement note reads these.
+fn log_capsule_rect_change(
+    rect: Option<(f64, f64, f64, f64)>,
+    primary_h: f64,
+    geo: Option<((f64, f64), f64)>,
+) {
+    let (x, y, w, h) = rect.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let prev = (
+        load_f64(&CAPSULE_SCREEN_X),
+        load_f64(&CAPSULE_SCREEN_Y),
+        load_f64(&CAPSULE_SCREEN_W),
+        load_f64(&CAPSULE_SCREEN_H),
+    );
+    let moved = (x - prev.0).abs() > 0.25
+        || (y - prev.1).abs() > 0.25
+        || (w - prev.2).abs() > 0.25
+        || (h - prev.3).abs() > 0.25;
+    if moved && w > 0.0 && h > 0.0 {
+        let list = geo
+            .map(|(origin, scale)| {
+                rects_top_left_screen(&hit_rects_now(), origin, scale, primary_h)
+            })
+            .unwrap_or_default();
+        let rects = list
+            .iter()
+            .map(|(rx, ry, rw, rh)| format!("{rx:.1},{ry:.1},{rw:.1},{rh:.1}"))
+            .collect::<Vec<_>>()
+            .join(";");
+        log::info!(
+            "pill hitbox screen_rect={:.1},{:.1},{:.1},{:.1} space=top_left_pt hit={},{},{},{} rects={}",
+            x,
+            primary_h - (y + h),
+            w,
+            h,
+            HIT_X.load(Ordering::SeqCst),
+            HIT_Y.load(Ordering::SeqCst),
+            HIT_W.load(Ordering::SeqCst),
+            HIT_H.load(Ordering::SeqCst),
+            rects
+        );
+    }
 }
 
 fn cursor_over_capsule(app: &AppHandle, w: &tauri::WebviewWindow) -> bool {
@@ -2184,6 +2278,109 @@ mod tests {
 
     /// The capsule hit-box gates whether the panel takes the cursor at all: an
     /// unreported (zero) box must stay fully click-through.
+    #[test]
+    fn hitbox_covers_the_drawn_capsule_within_one_point() {
+        // yap-1107-pill-click-always-registers acceptance 1: the clickable
+        // rect contains every painted point and overshoots by < 1 pt per side.
+        let drawn = [
+            (10.4, 20.6, 100.4, 31.3),
+            (0.0, 0.0, 88.0, 32.0),
+            (12.5, 7.5, 64.25, 24.75),
+            (199.99, 3.01, 0.02, 0.98),
+        ];
+        for (x, y, w, h) in drawn {
+            let (hx, hy, hw, hh) = hitbox_cells(x, y, w, h);
+            let (hx, hy, hw, hh) = (hx as f64, hy as f64, hw as f64, hh as f64);
+            assert!(hx <= x && x - hx < 1.0, "left {x} -> {hx}");
+            assert!(hy <= y && y - hy < 1.0, "top {y} -> {hy}");
+            assert!(hx + hw >= x + w && hx + hw - (x + w) < 1.0, "right");
+            assert!(hy + hh >= y + h && hy + hh - (y + h) < 1.0, "bottom");
+            // every corner of the drawn pill is a hit
+            let hit = (hx as i32, hy as i32, hw as i32, hh as i32);
+            for p in [(x, y), (x + w, y), (x, y + h), (x + w, y + h)] {
+                assert!(point_in_hitbox(p, hit), "corner {p:?} of {x},{y},{w},{h}");
+            }
+        }
+        // the old independent rounding lost the right edge's last 0.8 pt
+        let old_right = 10.4f64.round() + 100.4f64.round();
+        assert!(old_right < 10.4 + 100.4);
+        let (hx, _, hw, _) = hitbox_cells(10.4, 0.0, 100.4, 10.0);
+        assert!((hx + hw) as f64 >= 10.4 + 100.4);
+    }
+
+    /// yap-1107-pill-click-always-registers acceptance 4 (the geometry half):
+    /// fifty seeded points inside a drawn capsule (a stadium at fractional
+    /// points, the shape YappyPill paints) are all inside both the rounded
+    /// single hitbox and fb-02's precise list. The on-screen run of the same
+    /// idea is `node scripts/pill-matrix.mjs --pill-click`.
+    #[test]
+    fn fifty_seeded_points_inside_the_drawn_capsule_all_hit() {
+        let (x, y, w, h) = (103.3, 57.7, 93.4, 41.6);
+        let r = h / 2.0;
+        let cells = hitbox_cells(x, y, w, h);
+        let list = sanitize_hit_rects(&[HitRect { x, y, w, h }]);
+        let mut rng: u64 = 1107;
+        let mut unit = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % 1_000_000) as f64 / 1_000_000.0
+        };
+        let mut hits = 0;
+        let mut tries = 0;
+        while hits < 50 {
+            tries += 1;
+            assert!(tries < 10_000, "sampler stalled");
+            let p = (x + unit() * w, y + unit() * h);
+            // inside the stadium: the straight middle, or within r of a cap centre
+            let cy = y + r;
+            let inside = (p.0 >= x + r && p.0 <= x + w - r)
+                || (p.0 - (x + r)).hypot(p.1 - cy) <= r
+                || (p.0 - (x + w - r)).hypot(p.1 - cy) <= r;
+            if !inside {
+                continue;
+            }
+            assert!(point_in_hitbox(p, cells), "point {p:?} missed {cells:?}");
+            assert!(point_in_hitboxes(p, &list), "point {p:?} missed {list:?}");
+            hits += 1;
+        }
+        // and the drawn extremes (the caps' outermost points) hit too
+        for p in [
+            (x, y + r),
+            (x + w, y + r),
+            (x + w / 2.0, y),
+            (x + w / 2.0, y + h),
+        ] {
+            assert!(point_in_hitbox(p, cells), "extreme {p:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreported_or_broken_rect_is_never_clickable() {
+        assert_eq!(hitbox_cells(0.0, 0.0, 0.0, 10.0), (0, 0, 0, 0));
+        assert_eq!(hitbox_cells(0.0, 0.0, 10.0, -1.0), (0, 0, 0, 0));
+        assert_eq!(hitbox_cells(f64::NAN, 0.0, 10.0, 10.0), (0, 0, 0, 0));
+        assert!(!point_in_hitbox(
+            (0.0, 0.0),
+            hitbox_cells(0.0, 0.0, 0.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn logged_rects_are_top_left_screen_points_in_publish_order() {
+        // 2x display, window at physical (200, 100) = (100, 50) pt, primary 900 pt tall.
+        let capsule = (10.0, 20.0, 120.0, 36.0);
+        let control = (140.0, 26.0, 24.0, 24.0);
+        let got = rects_top_left_screen(&[capsule, control], (200.0, 100.0), 2.0, 900.0);
+        assert_eq!(
+            got,
+            vec![(110.0, 70.0, 120.0, 36.0), (240.0, 76.0, 24.0, 24.0)]
+        );
+        // the capsule (published first) stays first; empty rects never log
+        let none = rects_top_left_screen(&[(0.0, 0.0, 0.0, 0.0)], (0.0, 0.0), 2.0, 900.0);
+        assert!(none.is_empty());
+    }
+
     #[test]
     fn hitbox_only_captures_the_reported_capsule() {
         let hit = (120, 62, 60, 16);

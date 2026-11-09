@@ -74,6 +74,10 @@
  *           and every probe point is inside the hit rects the page told the
  *           NSPanel (window.__YAP_PILL_HITBOXES__). Writes clicks.json to --out.
  *
+ *   node scripts/pill-matrix.mjs --pill-click --out <dir>  yap-1107-pill-click-always-registers:
+ *           drawn vs clickable rects per dock, 50 seeded clicks (clicks.csv),
+ *           pressed before/after at 2x + the artifact row (see pillClickScene).
+ *
  *   --out   a SCRATCH dir (default: a fresh mktemp dir). The PNGs are evidence
  *           for a PR, never a commit — do not point this inside the repo.
  *   --only  a phase by variant (model-loading) or product id (model_loading).
@@ -98,8 +102,8 @@
  *       instrument failure · 9 self-test found the detectors blind.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -136,7 +140,7 @@ const CHROME =
 /* ── args ───────────────────────────────────────────────────────────────── */
 
 function parseArgs(argv) {
-  const a = { out: null, only: null, sky: "day", phase: null, selfTest: false, clicks: false };
+  const a = { out: null, only: null, sky: "day", phase: null, selfTest: false, clicks: false, pillClick: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--out" || k === "--only" || k === "--sky" || k === "--phase") {
@@ -149,6 +153,7 @@ function parseArgs(argv) {
     else if (k.startsWith("--phase=")) a.phase = k.slice(8);
     else if (k === "--self-test-must-fail") a.selfTest = true;
     else if (k === "--clicks") a.clicks = true;
+    else if (k === "--pill-click") a.pillClick = true;
     else usage("unknown argument " + k);
   }
   if (a.phase !== null && a.phase !== "meeting-saved" && a.phase !== "meeting-notes") usage("--phase knows two scenes: meeting-saved, meeting-notes");
@@ -157,7 +162,7 @@ function parseArgs(argv) {
   return a;
 }
 function usage(msg) {
-  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--phase meeting-saved] [--sky <dawn|day|dusk|night|all>] [--clicks] [--self-test-must-fail]");
+  console.error("pill-matrix: " + msg + "\nusage: node scripts/pill-matrix.mjs [--out <dir>] [--only <phase>] [--phase meeting-saved] [--sky <dawn|day|dusk|night|all>] [--clicks] [--pill-click] [--self-test-must-fail]");
   process.exit(2);
 }
 const ARGS = parseArgs(process.argv.slice(2));
@@ -728,6 +733,7 @@ async function run() {
 
     if (ARGS.selfTest) return await selfTest(cdp, base, phases);
     if (ARGS.clicks) return await clickMatrix(cdp, base, phases, outDir);
+    if (ARGS.pillClick) return await pillClickScene(cdp, base, phases, outDir);
     if (ARGS.phase === "meeting-notes") return await meetingNotesScene(cdp, base, phases, outDir);
 
     let todo = phases;
@@ -937,6 +943,240 @@ async function clickMatrix(cdp, base, phases, outDir) {
  * self-test exits 1 BY DESIGN (the run carries a deliberate break); a blind
  * detector exits 9.
  */
+/*
+ * yap-1107-pill-click-always-registers — `--pill-click`: the headless proof of
+ * "every click on the Yappy pill registers", runnable by the seat that builds
+ * the bundle (no app, no GUI). Writes, into --out:
+ *
+ *   rects.json + rects.md  acceptance 1 — per dock, at rest: the window frame,
+ *                          the DRAWN capsule (painted pixels of the canvas,
+ *                          alpha >= 128, read with getImageData at 2x), and the
+ *                          CLICKABLE rect the NSPanel gets: the capsule entry of
+ *                          window.__YAP_PILL_HITBOXES__ through fb-02's
+ *                          pad_to_min (MIN_HIT_PT) and hitbox_cells' floor/ceil
+ *                          (after) vs the old per-field Math.round (before).
+ *                          Finding `rect-side-off` when a side of the clickable
+ *                          rect is more than 1 pt from the drawn one.
+ *   clicks.csv             acceptances 2 + 4 — 50 clicks at seeded random points
+ *                          INSIDE the painted capsule (bottom dock): each must
+ *                          land in the hit rects, show the pressed shell by the
+ *                          next frame (< 50 ms after the pointer-down event) and
+ *                          send exactly one `pill_click_toggle`. state_before /
+ *                          state_after alternate idle <-> recording off the
+ *                          count of toggles sent (the backend half — warm-up,
+ *                          stopping, decoding — is the Rust test
+ *                          fifty_seeded_clicks_alternate_start_stop_through_the_take_machine).
+ *   pressed-before__<dock>.png / pressed-after__<dock>.png
+ *                          acceptance 5 — the pill at 2x as a press painted it
+ *                          before this item (no pressed state: the rest pill)
+ *                          and after (`&pressed=1`, the 96 percent shell).
+ *   artifact-press-row.png the approved pill.html motion-table row ("Shell
+ *                          scales to 96 percent while pressed") at 2x, from
+ *                          YAP_DESIGN_DIR (default the Obsidian design folder).
+ *
+ * This is headless Chrome, not the WKWebView: the NSPanel's own click-through
+ * and first-mouse are the Rust side (float_pill.rs), proven by its tests.
+ */
+const PILL_CLICK_SEED = 1107;
+const PILL_CLICK_COUNT = 50;
+const PRESS_BUDGET_MS = 50; // pill/press.ts
+const DRAWN_PROBE = String.raw`((hb) => {
+  const c = document.querySelector("canvas.kami-canvas");
+  if (!c) return { error: "no canvas.kami-canvas" };
+  const box = c.getBoundingClientRect();
+  const k = c.width / box.width;
+  let data;
+  try { data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; }
+  catch (e) { return { error: "canvas unreadable: " + e.message }; }
+  const pad = 8;
+  const x0 = Math.max(0, Math.floor((hb[0] - pad - box.left) * k)), y0 = Math.max(0, Math.floor((hb[1] - pad - box.top) * k));
+  const x1 = Math.min(c.width, Math.ceil((hb[0] + hb[2] + pad - box.left) * k)), y1 = Math.min(c.height, Math.ceil((hb[1] + hb[3] + pad - box.top) * k));
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if (data[(y * c.width + x) * 4 + 3] >= 128) { if (x < l) l = x; if (x > r) r = x; if (y < t) t = y; if (y > b) b = y; }
+  }
+  if (l === Infinity) return { error: "nothing painted near the capsule hit rect" };
+  window.__pillAlpha = (px, py) => { const x = Math.floor((px - box.left) * k), y = Math.floor((py - box.top) * k); return x >= 0 && y >= 0 && x < c.width && y < c.height ? data[(y * c.width + x) * 4 + 3] : 0; };
+  return { x: box.left + l / k, y: box.top + t / k, w: (r + 1 - l) / k, h: (b + 1 - t) / k, k };
+})`;
+const PRESS_HOOK = String.raw`(() => {
+  window.__pressLog = [];
+  if (!window.__pressHooked) {
+    window.__pressHooked = true;
+    window.addEventListener("pointerdown", (e) => {
+      const at = e.timeStamp;
+      const row = { at, sync: false, latency: null };
+      window.__pressLog.push(row);
+      // after the whole pointerdown dispatch (React's root listener included),
+      // before any IPC answer could arrive: "set synchronously by the press"
+      setTimeout(() => { row.sync = document.documentElement.hasAttribute("data-pill-pressed"); }, 0);
+      requestAnimationFrame(() => { if (document.documentElement.hasAttribute("data-pill-pressed")) row.latency = performance.now() - at; });
+    }, true);
+  }
+  return true;
+})()`;
+const toggles = "(window.__YAP_SMOKE_INVOKES__ || []).filter((c) => c === 'pill_click_toggle').length";
+
+function mulberry32(a) {
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** float_pill.rs pad_to_min + hitbox_cells (after) / the old per-field round (before). */
+function clickableRects(r) {
+  const nw = Math.max(r[2], 24), nh = Math.max(r[3], 24); // MIN_HIT_PT
+  const p = [r[0] - (nw - r[2]) / 2, r[1] - (nh - r[3]) / 2, nw, nh];
+  const l = Math.floor(p[0]), t = Math.floor(p[1]);
+  return {
+    after: [l, t, Math.ceil(p[0] + p[2]) - l, Math.ceil(p[1] + p[3]) - t],
+    before: p.map((v) => Math.round(v)),
+  };
+}
+
+function sides(drawn, hit) {
+  return {
+    left: drawn[0] - hit[0],
+    top: drawn[1] - hit[1],
+    right: hit[0] + hit[2] - (drawn[0] + drawn[2]),
+    bottom: hit[1] + hit[3] - (drawn[1] + drawn[3]),
+  };
+}
+
+const r1 = (v) => Math.round(v * 10) / 10;
+const fmtRect = (r) => r.map(r1).join(" | ");
+
+async function pillClickScene(cdp, base, phases, outDir) {
+  const idle = phases.find((p) => p.phase === "idle" && !p.license && !p.query);
+  if (!idle) {
+    console.error("pill-matrix --pill-click: no plain idle row in __YAP_PILL_PHASES__ (INSTRUMENT failure)");
+    return 3;
+  }
+  const tones = Object.fromEntries(phases.flatMap((p) => [[p.phase, p.tone], [p.id, p.tone]]));
+  const s = await openPage(cdp, tones);
+  const open = async (dock, extra) => {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false }, s);
+    await cdp.send("Page.navigate", { url: base + "/float.html?phase=" + encodeURIComponent(idle.phase) + "&pill=yappy&dock=" + dock + "&meeting=none" + (extra || "") }, s);
+    await settle(cdp, s, idle.phaseId || idle.id);
+    await fitPanel(cdp, s);
+    await sleep(SETTLE_MS);
+  };
+  const findings = [];
+  const rects = [];
+  for (const dock of DOCKS) {
+    // acceptance 5 — before (a press painted nothing new: the rest pill) / after.
+    await open(dock, "");
+    await shoot(cdp, s, join(outDir, "pressed-before__" + dock + ".png"));
+    const frame = await evaluate(cdp, s, "[0, 0, window.innerWidth, window.innerHeight]");
+    const hb = ((await evaluate(cdp, s, "window.__YAP_PILL_HITBOXES__ || []")) || [])[0];
+    if (!hb) {
+      findings.push({ id: "no-hitbox", dock, detail: "the page published no capsule hit rect" });
+      continue;
+    }
+    const drawn = await evaluate(cdp, s, DRAWN_PROBE + "(" + JSON.stringify(hb) + ")");
+    if (drawn.error) {
+      findings.push({ id: "drawn-unmeasured", dock, detail: drawn.error });
+      continue;
+    }
+    const d = [drawn.x, drawn.y, drawn.w, drawn.h];
+    const { after, before } = clickableRects(hb);
+    const sa = sides(d, after), sb = sides(d, before);
+    const off = Object.entries(sa).filter(([, v]) => Math.abs(v) > 1);
+    if (off.length) findings.push({ id: "rect-side-off", dock, detail: off.map(([k, v]) => k + " " + r1(v) + " pt").join(", ") });
+    if (Object.values(sa).some((v) => v < -0.5)) findings.push({ id: "drawn-outside-clickable", dock, detail: JSON.stringify(sa) });
+    rects.push({ dock, window: frame, published: hb, drawn: d, clickable_before: before, clickable_after: after, sides_before: sb, sides_after: sa });
+    await open(dock, "&pressed=1");
+    const pinned = await evaluate(cdp, s, "document.documentElement.hasAttribute('data-pill-pressed')");
+    if (!pinned) findings.push({ id: "phase-not-applied", dock, detail: "&pressed=1 did not pin data-pill-pressed (stale bundle?)" });
+    await shoot(cdp, s, join(outDir, "pressed-after__" + dock + ".png"));
+  }
+
+  // acceptances 2 + 4 — fifty seeded clicks inside the painted capsule, bottom dock.
+  const csv = ["i,x,y,click_ms,state_before,state_after,latency_ms,in_hitbox,toggles_sent,ok"];
+  let okCount = 0;
+  const bottom = rects.find((r) => r.dock === "bottom");
+  if (bottom) {
+    await open("bottom", "");
+    await evaluate(cdp, s, DRAWN_PROBE + "(" + JSON.stringify(bottom.published) + ")");
+    await evaluate(cdp, s, PRESS_HOOK);
+    const rnd = mulberry32(PILL_CLICK_SEED);
+    const [dx, dy, dw, dh] = bottom.drawn;
+    const hit = bottom.clickable_after;
+    const t0 = Date.now();
+    let sent = await evaluate(cdp, s, toggles);
+    for (let i = 0, tries = 0; i < PILL_CLICK_COUNT && tries < 5000; tries++) {
+      const x = dx + rnd() * dw, y = dy + rnd() * dh;
+      if ((await evaluate(cdp, s, "window.__pillAlpha(" + x + "," + y + ")")) < 128) continue; // outside the painted pill
+      const stateBefore = sent % 2 ? "recording" : "idle";
+      const clickMs = Date.now() - t0;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 }, s);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, s);
+      await sleep(90);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, s);
+      await sleep(450); // the release rebound settles before the next press
+      const now = await evaluate(cdp, s, toggles);
+      const press = (await evaluate(cdp, s, "window.__pressLog[window.__pressLog.length - 1] || null")) || {};
+      const inHit = x >= hit[0] && x <= hit[0] + hit[2] && y >= hit[1] && y <= hit[1] + hit[3];
+      const latency = typeof press.latency === "number" ? press.latency : null;
+      const ok = inHit && now - sent === 1 && press.sync === true && latency !== null && latency < PRESS_BUDGET_MS;
+      const stateAfter = now % 2 ? "recording" : "idle";
+      if (ok) okCount++;
+      else findings.push({ id: "click-not-registered", dock: "bottom", detail: "click " + i + " at (" + r1(x) + "," + r1(y) + "): in_hitbox=" + inHit + " toggles=" + (now - sent) + " pressed_sync=" + press.sync + " latency_ms=" + latency });
+      csv.push([i, r1(x), r1(y), clickMs, stateBefore, stateAfter, latency === null ? "" : r1(latency), inHit, now - sent, ok].join(","));
+      sent = now;
+      i++;
+    }
+    if (csv.length - 1 < PILL_CLICK_COUNT) findings.push({ id: "sampler-stalled", dock: "bottom", detail: "only " + (csv.length - 1) + " points found inside the painted capsule" });
+  }
+  writeFileSync(join(outDir, "clicks.csv"), csv.join("\n") + "\n");
+
+  // acceptance 5 — the approved artifact's row, at 2x.
+  const designDir = process.env.YAP_DESIGN_DIR || join(homedir(), "Obsidian", "Wilson-Brain", "Projects", "Yap", "design-2026-11-06");
+  const artifact = join(designDir, "pill.html");
+  if (existsSync(artifact)) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: SCALE, mobile: false }, s);
+    await cdp.send("Page.navigate", { url: "file://" + artifact }, s);
+    await sleep(SETTLE_MS);
+    const clip = await evaluate(cdp, s, String.raw`(() => {
+      const el = [...document.querySelectorAll("tr, li, p, div")].reverse().find((e) => /96 percent/.test(e.textContent || "") && e.children.length < 12);
+      if (!el) return null;
+      el.scrollIntoView({ block: "center" });
+      const r = el.getBoundingClientRect();
+      return { x: r.left + window.scrollX, y: r.top + window.scrollY, width: Math.max(1, r.width), height: Math.max(1, r.height), scale: 1 };
+    })()`);
+    if (clip) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: true }, s);
+      writeFileSync(join(outDir, "artifact-press-row.png"), Buffer.from(shot.data, "base64"));
+    } else findings.push({ id: "artifact-row-missing", dock: "-", detail: "no '96 percent' row in " + artifact });
+  } else findings.push({ id: "artifact-missing", dock: "-", detail: artifact + " not found (set YAP_DESIGN_DIR)" });
+  await cdp.send("Page.close", {}, s).catch(() => {});
+
+  const md = [
+    "# Pill click rects (generated by `node scripts/pill-matrix.mjs --pill-click`)",
+    "",
+    "Logical points, top-left of the float window, Yappy at rest, headless Chrome at " + SCALE + "x. Clickable = the capsule rect the page publishes, through float_pill.rs pad_to_min + hitbox_cells (after) or the old per-field round (before). Side deltas: positive = the clickable rect reaches past the drawn edge.",
+    "",
+    "| Dock | Rect | x | y | w | h | left | top | right | bottom |",
+    "|------|------|---|---|---|---|------|-----|-------|--------|",
+  ];
+  for (const r of rects) {
+    md.push("| " + r.dock + " | Window frame | " + fmtRect(r.window) + " | | | | |");
+    md.push("| " + r.dock + " | Drawn capsule | " + fmtRect(r.drawn) + " | | | | |");
+    md.push("| " + r.dock + " | Clickable before | " + fmtRect(r.clickable_before) + " | " + Object.values(r.sides_before).map(r1).join(" | ") + " |");
+    md.push("| " + r.dock + " | Clickable after | " + fmtRect(r.clickable_after) + " | " + Object.values(r.sides_after).map(r1).join(" | ") + " |");
+  }
+  md.push("", "Clicks: " + okCount + "/" + PILL_CLICK_COUNT + " registered (seed " + PILL_CLICK_SEED + ", clicks.csv). Findings: " + findings.length + ".");
+  for (const f of findings) md.push("- " + f.id + " (" + f.dock + "): " + f.detail);
+  writeFileSync(join(outDir, "rects.md"), md.join("\n") + "\n");
+  writeFileSync(join(outDir, "rects.json"), JSON.stringify({ seed: PILL_CLICK_SEED, clicks_ok: okCount, clicks: PILL_CLICK_COUNT, rects, findings }, null, 2));
+  for (const f of findings) console.log("FAIL " + f.id + " (" + f.dock + ") — " + f.detail);
+  console.log("pill-matrix --pill-click: " + rects.length + " dock(s) measured, " + okCount + "/" + PILL_CLICK_COUNT + " clicks registered, " + findings.length + " finding(s) -> " + outDir);
+  return findings.length ? 1 : 0;
+}
+
 async function selfTest(cdp, base, phases) {
   const expect = ["empty-text", "clipped-text", "overflow"];
   const p = phases[0];
