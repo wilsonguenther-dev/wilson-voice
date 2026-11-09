@@ -19,7 +19,6 @@ import {
   LADDER_CX, TAB_ART, VDOCK_MAX_W, VDOCK_OPEN, VDOCK_POSE, VDOCK_RADIUS, VDOCK_ROOM, VDOCK_SCENE, VDOCK_TAB, VDOCK_TAB_WINDOW,
   drawTabChick, drawTallRoom, mirrorBox, roomParts, roundRectContains, sideDock, tabCell, vChickAt, vChickBox, vInnerRect,
   vShellRect, vTierFor, vdockCropWarning, vdockFrame, type SideDock, type VProp,
-  VDOCK_STOP, VDOCK_STOP_ROW, vStopRect,
 } from "./vdock";
 
 const SIDES: readonly SideDock[] = ["left", "right"];
@@ -42,28 +41,6 @@ describe("yap-1106-pill-vertical-dock-world: the sizes", () => {
     expect([scene.w, scene.h]).toEqual([56, 180]);
     const tab = vShellRect("right", 0, { x: 0, y: 0, w: VDOCK_TAB.w, h: VDOCK_TAB.h });
     expect([tab.w, tab.h]).toEqual([30, 40]);
-  });
-
-  // yap-1107-parity-pill — pill.html #vstage .vshell.l/.r measure 64 x 216:
-  // pad 4, the 56 x 180 room, gap 4, the 24 px stop, pad 4.
-  it("parity_open_side_shell_is_64x216_with_the_stop_under_the_room", () => {
-    expect(VDOCK_OPEN).toEqual({ w: 64, h: 216 });
-    expect(VDOCK_STOP).toBe(24);
-    expect(VDOCK_STOP_ROW).toBe(28);
-    for (const side of SIDES) {
-      const open = vShellRect(side, 1, { x: 0, y: 0, w: VDOCK_OPEN.w, h: VDOCK_OPEN.h });
-      const room = vInnerRect(open);
-      const stop = vStopRect(open);
-      expect([room.w, room.h]).toEqual([56, 180]);
-      expect(stop.y).toBe(room.y + room.h + 4); // the grid gap
-      expect(stop.y + stop.h).toBe(open.y + open.h - 4); // the bottom padding
-      expect(stop.x + stop.w / 2).toBe(open.x + open.w / 2); // centred (justify-items: center)
-      // the room sprite at 2x is whole and inside its window
-      for (const dpr of DPRS) expect(vdockFrame(side, 1, "none", 1, dpr, open).fits, `${side}@${dpr}`).toBe(true);
-    }
-    // the tab has no stop row: its window stays 22 x 32
-    const tab = vInnerRect(vShellRect("left", 0, { x: 0, y: 0, w: VDOCK_TAB.w, h: VDOCK_TAB.h }));
-    expect([tab.w, tab.h]).toEqual([22, 32]);
   });
 
   it("side_dock_reads_only_left_and_right", () => {
@@ -177,10 +154,10 @@ describe("FB-20: every state x left/right, at true size and at 2x, is never clip
     expect(roundRectContains(r, 5, { x: 5, y: 0, w: 10, h: 20 })).toBe(true);
     expect(roundRectContains(r, 5, { x: -1, y: 5, w: 10, h: 10 })).toBe(false);
     // a shell too small for him does not fit, and says so in one line
-    const f = vdockFrame("left", 1, "none", 1, 1, { x: 0, y: 0, w: 64, h: 216 });
+    const f = vdockFrame("left", 1, "none", 1, 1, { x: 0, y: 0, w: 64, h: 188 });
     expect(f.fits).toBe(true);
     const tiny = { ...f, fits: false };
-    expect(vdockCropWarning(tiny, 1)).toBe("pill vdock_cropped dock=left mode=room shellW=64 shellH=216 dpr=1");
+    expect(vdockCropWarning(tiny, 1)).toBe("pill vdock_cropped dock=left mode=room shellW=64 shellH=188 dpr=1");
   });
 });
 

@@ -6,8 +6,6 @@ import {
   matrixLicenseScenes,
   matrixPhases,
   matrixRailScene,
-  matrixLongTakeScene,
-  matrixFixupScene,
   matrixStuckEngineScenes,
   forcedEngine,
   PILL_STYLES,
@@ -122,19 +120,5 @@ describe("yap-1106-stuck-pill-keeps-its-scene matrix rows (integrator, loop3 bat
     }
     expect(forcedEngine("melting")).toBeNull();
     expect(forcedEngine(null)).toBeNull();
-  });
-});
-
-describe("yap-1107-parity-pill — pill.html row 5 \"Long take\"", () => {
-  it("parity_long_take_forces_the_desk_tier_on_a_locked_take", () => {
-    expect(forcedPill("?phase=listening-locked&take=long")?.longTake).toBe(true);
-    expect(forcedPill("?phase=listening-locked")?.longTake).toBe(false);
-    expect(forcedPill("?phase=listening-locked&take=short")?.longTake).toBe(false);
-    const row = matrixLongTakeScene();
-    expect(row).toMatchObject({ phase: "listening-locked", id: "longtake", phaseId: PHASE_ID["listening-locked"], query: "take=long", offer: "" });
-    expect(row.label.length).toBeGreaterThan(0);
-  });
-  it("parity_fixup_scene_is_a_done_pill_with_two_fixed_words", () => {
-    expect(matrixFixupScene()).toMatchObject({ phase: "done", id: "fixup", phaseId: PHASE_ID.done, query: "fixed=2", offer: "" });
   });
 });
