@@ -601,30 +601,3 @@ YAP_MODEL_DIR="$HOME/code/wilson-voice-loop/cache/models" \
 ```
 
 Commit the one dated row it appends between the markers below.
-
-## summary recall by notes strategy (yap-audit-notes-strategy)
-
-The NT4 falsifier now runs every arm of docs/decisions/notes-strategy-2026-10.md (A, B, E, and C
-when `YAP_EVAL_ARM_C_MODEL` names a 3B file) and prints a `NOTES-ARMS-TABLE`; the gates bind the
-shipped arm (`NOTES_STRATEGY`, E) only. Same command as above.
-
-| Arm | Action recall | Action precision | Decision recall | Owner accuracy | Summary 4-gram verbatim | Cross-section dups | Max items per segment | Wall s | Peak RSS MB |
-|---|---|---|---|---|---|---|---|---|---|
-| A | pending integrator run | | | | | | | | |
-| B | pending integrator run | | | | | | | | |
-| C | pending (needs YAP_EVAL_ARM_C_MODEL) | | | | | | | | |
-| E | pending integrator run | | | | | | | | |
-
-Not measured yet (written by a code-only coder, 2026-11-08T03:12:13Z); the integrator pastes the printed rows here
-and in the decision doc. Numbers are never typed by hand.
-
-The call-bleed leg (yap-audit-notes-strategy bounce fix, 2026-11-08T06:42:09Z): the same arms on `call-bleed-2voice` after
-the AEC pre-pass and the shipped ASR, the second `NOTES-ARMS-TABLE` the same command prints. Same gates, shipped arm.
-
-| Arm (call-bleed-2voice) | Action recall | Action precision | Decision recall | Owner accuracy | Summary 4-gram verbatim | Cross-section dups | Max items per segment | Wall s | Peak RSS MB |
-|---|---|---|---|---|---|---|---|---|---|
-| A (call-bleed) | pending integrator run | | | | | | | | |
-| B (call-bleed) | pending integrator run | | | | | | | | |
-| C (call-bleed) | pending (needs YAP_EVAL_ARM_C_MODEL) | | | | | | | | |
-| E (call-bleed) | pending integrator run | | | | | | | | |
-
