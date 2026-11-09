@@ -208,6 +208,27 @@ describe("yap-1106-pill-vertical-dock-world: the room paints", () => {
     expect(o.px(VDOCK_ROOM.window.x + 5, VDOCK_ROOM.window.y + 5).b).toBeGreaterThan(200);
   });
 
+  it("parity_dawn_and_dusk_put_the_sun_low_in_the_pane_day_puts_it_high", () => {
+    // yap-1107-parity-pill (batch-3 bounce: vdock.ts branch coverage) — the
+    // window's sun sits 7 art px under the pane top by day and 7 px above the
+    // pane bottom at dawn and dusk; the core is #ffd23f.
+    const w = VDOCK_ROOM.window;
+    const gx = w.x + 3, gy = w.y + 3, gh = w.h - 6;
+    const sunAt = (o: Raster, y: number) => { const p = o.px(gx + 7, y); return [p.r, p.g, p.b]; };
+    for (const time of ["dawn", "dusk", "day"] as const) {
+      const o = new Raster(VDOCK_SCENE.w, VDOCK_SCENE.h);
+      drawTallRoom(o, skyLook(time), POSE, { prop: "none", propIn: 0, ink: 0, elapsed: 0 });
+      const low = sunAt(o, gy + gh - 7), high = sunAt(o, gy + 7);
+      if (time === "day") {
+        expect(high).toEqual([0xff, 0xd2, 0x3f]);
+        expect(low).not.toEqual([0xff, 0xd2, 0x3f]);
+      } else {
+        expect(low).toEqual([0xff, 0xd2, 0x3f]);
+        expect(high).not.toEqual([0xff, 0xd2, 0x3f]);
+      }
+    }
+  });
+
   it("paints_yappy_where_the_pose_says", () => {
     for (const prop of PROPS) {
       const o = new Raster(VDOCK_SCENE.w, VDOCK_SCENE.h);

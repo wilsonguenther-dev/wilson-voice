@@ -167,8 +167,8 @@ export function vShellRect(dock: SideDock, openV: number, char: FitBox): FitBox 
 export function vInnerRect(shell: FitBox): FitBox {
   // The stop row grows in with the shell: none on the 30 x 40 tab, all 28 px
   // on the open 64 x 216 shell, so the room is exactly 56 x 180 when open.
-  const span = VDOCK_OPEN.h - VDOCK_TAB.h;
-  const stopRow = span > 0 ? clamp01((shell.h - VDOCK_TAB.h) / span) * VDOCK_STOP_ROW : 0;
+  // VDOCK_OPEN.h - VDOCK_TAB.h is a positive constant (216 - 40), so no zero guard.
+  const stopRow = clamp01((shell.h - VDOCK_TAB.h) / (VDOCK_OPEN.h - VDOCK_TAB.h)) * VDOCK_STOP_ROW;
   return { x: shell.x + VDOCK_PAD, y: shell.y + VDOCK_PAD, w: shell.w - 2 * VDOCK_PAD, h: shell.h - 2 * VDOCK_PAD - stopRow };
 }
 
