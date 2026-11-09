@@ -1580,6 +1580,7 @@ fn write_all_index_records(files: &mut [Option<std::fs::File>], pending: &[Pendi
 /// The meeting journal's writer thread. Creates the spills, writes the marker
 /// FIRST (that pair is the crash signal), then appends audio and index records
 /// with a BATCHED flush (finding #12: a timer, not every callback).
+#[allow(clippy::too_many_arguments)]
 fn meeting_writer_loop(
     dir: &Path,
     spills: &[PathBuf],
