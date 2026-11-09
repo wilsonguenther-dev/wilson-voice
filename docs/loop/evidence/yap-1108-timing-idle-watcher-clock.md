@@ -50,3 +50,13 @@ commented as test-only, with a row-change paragraph in docs/BUDGETS.md. The stat
 is now appended to main's docs/loop/evidence/timing-tests-audit.md (that file is on the base now).
 
 Integrator also runs: (cd desktop/src-tauri && cargo test --features custom-protocol --test long_take_budget no_new_polling_timer_was_introduced)
+
+## Retry 2 (2026-11-09T03:14:46Z, coder B2, base ce41786f, merged origin/loop3/integration-3 c28ab4c9..)
+
+The previous try bounced on a rebase conflict in docs/loop/evidence/timing-tests-audit.md (two
+append-only status lines written at the same spot). Merged origin/loop3/integration-3 and kept both
+lines: integration-3's row 4 line (cloud_route) first, then this item's rows 1-2 line. No code change
+in this round. Re-checked without compiling: rustfmt --check is clean on src/transcription.rs and
+tests/long_take_budget.rs, and a replica of short_timer_census over the merged src/transcription.rs
+gives exactly the allowlist {1:2, 2:4, 5:3, 10:2, 20:1, 50:6, 79:1, 80:1, 120:1, 150:2, 200:2,
+300:2, 400:4}. The stress runs and the whole-target run are still the integrator's (commands above).
