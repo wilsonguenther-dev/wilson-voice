@@ -62,9 +62,13 @@ describe("one pill during a meeting", () => {
       expect(boxGap(l.clock!, l.char)).toBe(0);
       if (dock === "left") expect(l.clock!.x).toBe(l.char.x + l.char.w);
       else expect(l.clock!.x + l.clock!.w).toBe(l.char.x);
-      // level with him: the clock's rows lie inside his, so the shell is one band
-      expect(l.clock!.y).toBeGreaterThanOrEqual(l.char.y);
-      expect(l.clock!.y + l.clock!.h).toBeLessThanOrEqual(l.char.y + l.char.h);
+      // level with him: the shorter box's rows lie inside the taller one's, so
+      // the shell is one band (yap-1107-parity-pill: the 44 px clock is taller
+      // than the approved 30 x 40 resting tab, which sits centred on it).
+      const [inner, outer] = l.char.h <= l.clock!.h ? [l.char, l.clock!] : [l.clock!, l.char];
+      expect(inner.y).toBeGreaterThanOrEqual(outer.y);
+      expect(inner.y + inner.h).toBeLessThanOrEqual(outer.y + outer.h);
+      if (l.char.h < l.clock!.h) expect(l.char.y - l.clock!.y).toBeCloseTo((l.clock!.h - l.char.h) / 2, 6);
       expect(l.shell!.h).toBeCloseTo(CLOCK_H, 6);
       expect(l.shell!.w).toBeCloseTo(l.char.w + l.clock!.w, 6);
       // the shell never sits behind the bubble or the hint
