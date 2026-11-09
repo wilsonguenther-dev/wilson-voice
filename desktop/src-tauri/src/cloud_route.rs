@@ -1461,7 +1461,7 @@ mod tests {
             done: impl Fn(&Gate) -> bool,
         ) -> MutexGuard<'a, Gate> {
             let deadline = Instant::now() + HANG_GUARD;
-            while !g.stalled && !done(&*g) {
+            while !g.stalled && !done(&g) {
                 let now = Instant::now();
                 if now >= deadline {
                     g.stalled = true;

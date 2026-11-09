@@ -1,6 +1,6 @@
 # yap-1108-timing-cloud-polish-parallel: audit row 4 status
 
-Status line for docs/loop/evidence/timing-tests-audit.md row 4 (that file is not on main or on loop3/integration-2 yet, only on the held branch loop3/yap-1107-timing-tests-deterministic, so the line lives here to avoid an add/add conflict; the merge seat appends it once main carries the audit):
+Row 4 status, also appended to docs/loop/evidence/timing-tests-audit.md (main's copy kept):
 
 - 2026-11-08T21:56:45Z row 4 `lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency` (src/cloud_route.rs:1427): CONVERTED, test-only. The real 646 ms sleeps against a 1.5 s wall bound are replaced by a gated fake-latency executor check. No production code changed.
 
@@ -12,6 +12,10 @@ The old test slept each chunk's mock latency for real and asserted the whole run
 
 From the repo root:
 
-    bash scripts/stress-tests.sh --runs 20 --log-dir docs/loop/evidence/stress lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency
+    bash scripts/stress-tests.sh --runs 20 --log-dir docs/loop/evidence/stress-harness lib cloud_route::tests::a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency
 
 (8 yes loaders, --test-threads=8; log saved under docs/loop/evidence/), plus one normal unloaded run of the whole lib target (from desktop/src-tauri: `cargo test --features custom-protocol --lib`).
+
+## Batch-1 bounce fix
+
+clippy -D warnings `explicit_auto_deref` at src/cloud_route.rs:1464: `done(&*g)` is now `done(&g)` (the MutexGuard auto-derefs to &Gate). Behaviour identical.
