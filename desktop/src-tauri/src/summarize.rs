@@ -83,9 +83,9 @@ use crate::meetings::{
     MeetingSegment, MIC_TRACK, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
-    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
-    SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
-    summary_map_max_out, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    fit_to_budget, parse_ready, parse_response_for, summary_map_max_out, PolishRequest,
+    PolishResponse, SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
+    SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
@@ -1089,24 +1089,80 @@ pub enum Bucket {
 
 /// Words that open an imperative action item ("Send the deck to Priya").
 const IMPERATIVE_VERBS: &[&str] = &[
-    "send", "book", "schedule", "email", "call", "share", "draft", "write", "update",
-    "review", "check", "prepare", "finish", "fix", "ship", "file", "create", "add",
-    "confirm", "ask", "invite", "circulate", "post", "follow", "set", "reach", "get",
-    "find", "look", "test", "submit", "sign", "order", "contact", "loop",
+    "send",
+    "book",
+    "schedule",
+    "email",
+    "call",
+    "share",
+    "draft",
+    "write",
+    "update",
+    "review",
+    "check",
+    "prepare",
+    "finish",
+    "fix",
+    "ship",
+    "file",
+    "create",
+    "add",
+    "confirm",
+    "ask",
+    "invite",
+    "circulate",
+    "post",
+    "follow",
+    "set",
+    "reach",
+    "get",
+    "find",
+    "look",
+    "test",
+    "submit",
+    "sign",
+    "order",
+    "contact",
+    "loop",
 ];
 
 /// Owner-led commitments: `<owner> will …`, `<owner> to …`, `I'll …`.
 const COMMIT_AFTER_OWNER: &[&str] = &[
-    "will ", "to ", "should ", "must ", "needs to ", "has to ", "is going to ",
-    "agreed to ", "offered to ", "promised to ", "owns ", "can ", "is on ",
+    "will ",
+    "to ",
+    "should ",
+    "must ",
+    "needs to ",
+    "has to ",
+    "is going to ",
+    "agreed to ",
+    "offered to ",
+    "promised to ",
+    "owns ",
+    "can ",
+    "is on ",
 ];
 
 /// Settled things. Checked first: "we also decided to drop X" carries a
 /// `to <verb>` that would otherwise read as a commitment.
 const DECISION_MARKERS: &[&str] = &[
-    "decided", "decision", "we agreed", "agreed that", "agreed the", "settled",
-    "will remain", "will stay", "stays at", "remains at", "stay at", "remain at",
-    "going with", "go with", "approved", "signed off", "is final",
+    "decided",
+    "decision",
+    "we agreed",
+    "agreed that",
+    "agreed the",
+    "settled",
+    "will remain",
+    "will stay",
+    "stays at",
+    "remains at",
+    "stay at",
+    "remain at",
+    "going with",
+    "go with",
+    "approved",
+    "signed off",
+    "is final",
 ];
 
 /// #250 round 3 (B4) — words that open a sentence capitalized only because
@@ -1114,17 +1170,110 @@ const DECISION_MARKERS: &[&str] = &[
 /// ("Nice to meet you", "Happy to help", "Hard to say", "Honestly can we…").
 /// None of them is ever an owner, whatever follows.
 const NOT_A_NAME: &[&str] = &[
-    "nice", "happy", "thanks", "thank", "good", "great", "hard", "easy", "yes", "no", "yeah",
-    "yep", "nope", "honestly", "sure", "okay", "ok", "well", "glad", "fine", "right", "sorry",
-    "hopefully", "actually", "basically", "really", "maybe", "perhaps", "probably",
-    "definitely", "certainly", "clearly", "obviously", "please", "hi", "hello", "hey",
-    "welcome", "cool", "awesome", "fair", "true", "important", "worth", "free", "ready",
-    "next", "first", "last", "just", "now", "today", "tomorrow", "here", "excited", "safe",
-    "likely", "unlikely", "able", "quick", "back", "lovely", "fun", "interesting", "funny",
-    "weird", "strange", "sad", "tough", "impossible", "possible", "better", "best", "kind",
-    "time", "nothing", "everybody", "anybody", "anyone", "somebody", "you", "he", "she",
-    "his", "her", "their", "your", "let's", "lets", "oh", "um", "uh", "so", "and", "but",
-    "also", "then", "quite", "very", "too", "exactly", "absolutely", "totally", "agreed",
+    "nice",
+    "happy",
+    "thanks",
+    "thank",
+    "good",
+    "great",
+    "hard",
+    "easy",
+    "yes",
+    "no",
+    "yeah",
+    "yep",
+    "nope",
+    "honestly",
+    "sure",
+    "okay",
+    "ok",
+    "well",
+    "glad",
+    "fine",
+    "right",
+    "sorry",
+    "hopefully",
+    "actually",
+    "basically",
+    "really",
+    "maybe",
+    "perhaps",
+    "probably",
+    "definitely",
+    "certainly",
+    "clearly",
+    "obviously",
+    "please",
+    "hi",
+    "hello",
+    "hey",
+    "welcome",
+    "cool",
+    "awesome",
+    "fair",
+    "true",
+    "important",
+    "worth",
+    "free",
+    "ready",
+    "next",
+    "first",
+    "last",
+    "just",
+    "now",
+    "today",
+    "tomorrow",
+    "here",
+    "excited",
+    "safe",
+    "likely",
+    "unlikely",
+    "able",
+    "quick",
+    "back",
+    "lovely",
+    "fun",
+    "interesting",
+    "funny",
+    "weird",
+    "strange",
+    "sad",
+    "tough",
+    "impossible",
+    "possible",
+    "better",
+    "best",
+    "kind",
+    "time",
+    "nothing",
+    "everybody",
+    "anybody",
+    "anyone",
+    "somebody",
+    "you",
+    "he",
+    "she",
+    "his",
+    "her",
+    "their",
+    "your",
+    "let's",
+    "lets",
+    "oh",
+    "um",
+    "uh",
+    "so",
+    "and",
+    "but",
+    "also",
+    "then",
+    "quite",
+    "very",
+    "too",
+    "exactly",
+    "absolutely",
+    "totally",
+    "agreed",
 ];
 
 /// #250 round 4 (R2-B2) — common English words that open a sentence and are
@@ -1132,24 +1281,155 @@ const NOT_A_NAME: &[&str] = &[
 /// small talk ("Everything will be fine", "Monday will be busy", "Coffee will
 /// help"). None of them is ever an owner, and none is ever a transcript name.
 const COMMON_WORDS: &[&str] = &[
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
-    "february", "march", "april", "may", "june", "july", "august", "september", "october",
-    "november", "december", "everything", "nothing", "something", "anything", "everywhere",
-    "somewhere", "nowhere", "coffee", "tea", "lunch", "dinner", "breakfast", "traffic",
-    "revenue", "sales", "budget", "money", "weather", "rain", "food", "water", "work",
-    "life", "team", "morning", "afternoon", "evening", "tonight", "weekend", "week", "month",
-    "year", "quarter", "noon", "midnight", "people", "things", "stuff", "nobody", "none",
-    "each", "every", "all", "both", "some", "most", "many", "much", "more", "less", "other",
-    "another", "such", "same", "which", "where", "while", "because", "although", "after",
-    "before", "since", "until", "during", "without", "with", "for", "from", "into", "onto",
-    "over", "under", "about", "again", "still", "even", "only", "never", "always", "often",
-    "sometimes", "usually", "soon", "later", "earlier", "otherwise", "instead", "anyway",
-    "meanwhile", "though", "however", "therefore", "plus", "or", "nor", "yet", "not",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "everything",
+    "nothing",
+    "something",
+    "anything",
+    "everywhere",
+    "somewhere",
+    "nowhere",
+    "coffee",
+    "tea",
+    "lunch",
+    "dinner",
+    "breakfast",
+    "traffic",
+    "revenue",
+    "sales",
+    "budget",
+    "money",
+    "weather",
+    "rain",
+    "food",
+    "water",
+    "work",
+    "life",
+    "team",
+    "morning",
+    "afternoon",
+    "evening",
+    "tonight",
+    "weekend",
+    "week",
+    "month",
+    "year",
+    "quarter",
+    "noon",
+    "midnight",
+    "people",
+    "things",
+    "stuff",
+    "nobody",
+    "none",
+    "each",
+    "every",
+    "all",
+    "both",
+    "some",
+    "most",
+    "many",
+    "much",
+    "more",
+    "less",
+    "other",
+    "another",
+    "such",
+    "same",
+    "which",
+    "where",
+    "while",
+    "because",
+    "although",
+    "after",
+    "before",
+    "since",
+    "until",
+    "during",
+    "without",
+    "with",
+    "for",
+    "from",
+    "into",
+    "onto",
+    "over",
+    "under",
+    "about",
+    "again",
+    "still",
+    "even",
+    "only",
+    "never",
+    "always",
+    "often",
+    "sometimes",
+    "usually",
+    "soon",
+    "later",
+    "earlier",
+    "otherwise",
+    "instead",
+    "anyway",
+    "meanwhile",
+    "though",
+    "however",
+    "therefore",
+    "plus",
+    "or",
+    "nor",
+    "yet",
+    "not",
     // review-opus2 N1: the everyday nouns of a work meeting are not people.
-    "pricing", "price", "prices", "product", "design", "support", "finance", "legal",
-    "customer", "customers", "client", "clients", "launch", "release", "deadline", "meeting",
-    "call", "plan", "project", "demo", "deck", "doc", "report", "update", "marketing",
-    "engineering", "hiring", "onboarding", "billing", "growth", "progress", "nobody",
+    "pricing",
+    "price",
+    "prices",
+    "product",
+    "design",
+    "support",
+    "finance",
+    "legal",
+    "customer",
+    "customers",
+    "client",
+    "clients",
+    "launch",
+    "release",
+    "deadline",
+    "meeting",
+    "call",
+    "plan",
+    "project",
+    "demo",
+    "deck",
+    "doc",
+    "report",
+    "update",
+    "marketing",
+    "engineering",
+    "hiring",
+    "onboarding",
+    "billing",
+    "growth",
+    "progress",
+    "nobody",
 ];
 
 /// Is `lower` (already lowercased) one of [`COMMON_WORDS`]?
@@ -1169,9 +1449,32 @@ fn is_name_word(word: &str) -> bool {
         && !is_common_word(&lower)
         && !matches!(
             lower.as_str(),
-            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
-                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
-                | "a" | "an" | "our" | "my" | "i" | "we" | "me" | "them" | "these" | "those"
+            "the"
+                | "this"
+                | "that"
+                | "it"
+                | "they"
+                | "there"
+                | "someone"
+                | "nobody"
+                | "everyone"
+                | "whether"
+                | "if"
+                | "what"
+                | "how"
+                | "why"
+                | "who"
+                | "when"
+                | "a"
+                | "an"
+                | "our"
+                | "my"
+                | "i"
+                | "we"
+                | "me"
+                | "them"
+                | "these"
+                | "those"
         )
 }
 
@@ -1230,9 +1533,30 @@ fn is_owner_word(word: &str) -> bool {
         && !is_common_word(&lower)
         && !matches!(
             lower.as_str(),
-            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
-                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
-                | "a" | "an" | "our" | "my" | "also" | "and" | "so" | "then"
+            "the"
+                | "this"
+                | "that"
+                | "it"
+                | "they"
+                | "there"
+                | "someone"
+                | "nobody"
+                | "everyone"
+                | "whether"
+                | "if"
+                | "what"
+                | "how"
+                | "why"
+                | "who"
+                | "when"
+                | "a"
+                | "an"
+                | "our"
+                | "my"
+                | "also"
+                | "and"
+                | "so"
+                | "then"
         )
 }
 
@@ -1245,7 +1569,10 @@ fn owner_commitment(text: &str) -> bool {
     };
     let rest = rest.trim_start().to_lowercase();
     let lower_first = first.to_lowercase();
-    if let Some(owner) = lower_first.strip_suffix("'ll").or(lower_first.strip_suffix("\u{2019}ll")) {
+    if let Some(owner) = lower_first
+        .strip_suffix("'ll")
+        .or(lower_first.strip_suffix("\u{2019}ll"))
+    {
         return !owner.is_empty();
     }
     if !is_owner_word(first) {
@@ -1280,8 +1607,14 @@ fn backfill_commitment(text: &str, names: &[String]) -> bool {
         return false;
     }
     const EXPLICIT: &[&str] = &[
-        "will ", "is going to ", "agreed to ", "offered to ", "promised to ", "needs to ",
-        "has to ", "should ",
+        "will ",
+        "is going to ",
+        "agreed to ",
+        "offered to ",
+        "promised to ",
+        "needs to ",
+        "has to ",
+        "should ",
     ];
     known(bare) && (EXPLICIT.iter().any(|c| rest.starts_with(c)) || rest.starts_with("to "))
 }
@@ -1291,9 +1624,20 @@ fn backfill_commitment(text: &str, names: &[String]) -> bool {
 /// decided whether to keep it". Checked before the decision markers.
 fn open_about_decision(lower: &str) -> bool {
     [
-        "asked whether", "asked if", "decided whether", "decide whether", "nobody decided",
-        "no one decided", "not decided", "haven't decided", "hasn't decided", "didn't decide",
-        "did not decide", "not yet decided", "undecided", "still deciding",
+        "asked whether",
+        "asked if",
+        "decided whether",
+        "decide whether",
+        "nobody decided",
+        "no one decided",
+        "not decided",
+        "haven't decided",
+        "hasn't decided",
+        "didn't decide",
+        "did not decide",
+        "not yet decided",
+        "undecided",
+        "still deciding",
     ]
     .iter()
     .any(|m| lower.contains(m))
@@ -1321,8 +1665,15 @@ fn is_strong_question(lower: &str) -> bool {
 
 fn is_weak_question(lower: &str) -> bool {
     [
-        "whether ", "should we ", "do we ", "does anyone ", "can we ", "are we ", "is it ",
-        "how do we ", "what if ",
+        "whether ",
+        "should we ",
+        "do we ",
+        "does anyone ",
+        "can we ",
+        "are we ",
+        "is it ",
+        "how do we ",
+        "what if ",
     ]
     .iter()
     .any(|q| lower.starts_with(q))
@@ -1334,8 +1685,19 @@ fn is_weak_question(lower: &str) -> bool {
 
 fn generic_commitment(lower: &str) -> bool {
     [
-        " will ", "'ll ", " need to ", " needs to ", " has to ", " have to ", " must ",
-        " should ", " to do", "follow up", "going to ", " by friday", " by monday",
+        " will ",
+        "'ll ",
+        " need to ",
+        " needs to ",
+        " has to ",
+        " have to ",
+        " must ",
+        " should ",
+        " to do",
+        "follow up",
+        "going to ",
+        " by friday",
+        " by monday",
     ]
     .iter()
     .any(|c| format!(" {lower} ").contains(c))
@@ -1416,9 +1778,33 @@ pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
 /// Words that greet, thank or say goodbye. A clause made only of these, its
 /// addressees and filler is small talk.
 const GREETING_WORDS: &[&str] = &[
-    "thanks", "thank", "hi", "hello", "hey", "cheers", "congrats", "congratulations", "bye",
-    "goodbye", "nice", "great", "good", "glad", "happy", "welcome", "lovely", "cool", "awesome",
-    "sorry", "appreciate", "appreciated", "pleasure", "morning", "afternoon", "evening", "night",
+    "thanks",
+    "thank",
+    "hi",
+    "hello",
+    "hey",
+    "cheers",
+    "congrats",
+    "congratulations",
+    "bye",
+    "goodbye",
+    "nice",
+    "great",
+    "good",
+    "glad",
+    "happy",
+    "welcome",
+    "lovely",
+    "cool",
+    "awesome",
+    "sorry",
+    "appreciate",
+    "appreciated",
+    "pleasure",
+    "morning",
+    "afternoon",
+    "evening",
+    "night",
     "kudos",
 ];
 
@@ -1428,27 +1814,90 @@ const GREETING_WORDS: &[&str] = &[
 /// welcome) also start proper nouns ("Good Shepherd Health", "Great Lakes"),
 /// so a name after them counts only in the last slot after filler.
 const UNAMBIGUOUS_GREETINGS: &[&str] = &[
-    "thanks", "thank", "hi", "hello", "hey", "cheers", "congrats", "congratulations", "bye",
-    "goodbye", "kudos",
+    "thanks",
+    "thank",
+    "hi",
+    "hello",
+    "hey",
+    "cheers",
+    "congrats",
+    "congratulations",
+    "bye",
+    "goodbye",
+    "kudos",
 ];
 
 /// Gratitude openers whose clause may name a reason after `for` / `on`
 /// ("Thanks Wilson for pulling the numbers together", "Congrats on the
 /// launch"); `appreciate` takes any object ("Appreciate everyone making the
 /// time").
-const GRATITUDE_OPENERS: &[&str] =
-    &["thanks", "thank", "cheers", "congrats", "congratulations", "kudos", "appreciate", "appreciated"];
+const GRATITUDE_OPENERS: &[&str] = &[
+    "thanks",
+    "thank",
+    "cheers",
+    "congrats",
+    "congratulations",
+    "kudos",
+    "appreciate",
+    "appreciated",
+];
 
 /// Addressees and filler that carry no decision and no topic. Fix round 3
 /// (review BLOCKING): weekdays, "it", "is", "on", "board", "we're" are NOT
 /// here — "Great, Monday it is." and "Good, so we're on board." are
 /// decisions. A weekday counts only right after "happy" ("Happy Friday").
 const PLEASANTRY_FILLER: &[&str] = &[
-    "everyone", "everybody", "all", "y'all", "you", "guys", "folks", "team", "again", "so",
-    "much", "very", "really", "too", "today", "here", "and", "to", "see", "meet", "have",
-    "having", "be", "being", "back", "us", "for", "joining", "coming", "the", "time", "call",
-    "chat", "day", "weekend", "week", "about", "late", "i", "i'm", "im", "a", "one",
-    "of", "both", "lot", "oh", "well", "ok", "okay", "also",
+    "everyone",
+    "everybody",
+    "all",
+    "y'all",
+    "you",
+    "guys",
+    "folks",
+    "team",
+    "again",
+    "so",
+    "much",
+    "very",
+    "really",
+    "too",
+    "today",
+    "here",
+    "and",
+    "to",
+    "see",
+    "meet",
+    "have",
+    "having",
+    "be",
+    "being",
+    "back",
+    "us",
+    "for",
+    "joining",
+    "coming",
+    "the",
+    "time",
+    "call",
+    "chat",
+    "day",
+    "weekend",
+    "week",
+    "about",
+    "late",
+    "i",
+    "i'm",
+    "im",
+    "a",
+    "one",
+    "of",
+    "both",
+    "lot",
+    "oh",
+    "well",
+    "ok",
+    "okay",
+    "also",
 ];
 
 /// Fix round 6 (review-opus2 BLOCKING on b3d048c): the words a courtesy reason
@@ -1460,23 +1909,106 @@ const PLEASANTRY_FILLER: &[&str] = &[
 /// vocabulary to spell a decision ("Thanks for setting the launch back a
 /// week."). Those are now handled by `SCHEDULE_WORDS` and `TWO_SENSE_VERBS`.
 const COURTESY_REASON: &[&str] = &[
-    "it", "that", "this", "your", "everyone's", "everybody's", "my", "our", "me", "them",
-    "him", "her", "his", "their", "help", "helping", "hosting", "host", "together", "numbers",
-    "patience", "waiting", "flagging", "input", "feedback", "support", "effort", "efforts",
-    "work", "hard", "great", "good", "nice", "sharing", "listening", "attending", "dialing",
-    "dialling", "in", "showing", "up", "staying", "organizing", "organising", "update",
-    "updates", "notes", "launch", "win", "promotion", "birthday", "anniversary", "news",
-    "presentation", "demo", "thoughts", "questions", "everything", "invite", "invitation",
-    "intro", "introduction", "quick", "turnaround",
+    "it",
+    "that",
+    "this",
+    "your",
+    "everyone's",
+    "everybody's",
+    "my",
+    "our",
+    "me",
+    "them",
+    "him",
+    "her",
+    "his",
+    "their",
+    "help",
+    "helping",
+    "hosting",
+    "host",
+    "together",
+    "numbers",
+    "patience",
+    "waiting",
+    "flagging",
+    "input",
+    "feedback",
+    "support",
+    "effort",
+    "efforts",
+    "work",
+    "hard",
+    "great",
+    "good",
+    "nice",
+    "sharing",
+    "listening",
+    "attending",
+    "dialing",
+    "dialling",
+    "in",
+    "showing",
+    "up",
+    "staying",
+    "organizing",
+    "organising",
+    "update",
+    "updates",
+    "notes",
+    "launch",
+    "win",
+    "promotion",
+    "birthday",
+    "anniversary",
+    "news",
+    "presentation",
+    "demo",
+    "thoughts",
+    "questions",
+    "everything",
+    "invite",
+    "invitation",
+    "intro",
+    "introduction",
+    "quick",
+    "turnaround",
 ];
 
 /// The non-schedule filler a courtesy reason may carry ("for joining",
 /// "for being here", "for all of your help"). Deliberately NOT all of
 /// `PLEASANTRY_FILLER`: see `SCHEDULE_WORDS`.
 const REASON_FILLER: &[&str] = &[
-    "everyone", "everybody", "all", "y'all", "you", "guys", "folks", "team", "again", "so",
-    "much", "very", "really", "too", "here", "and", "us", "the", "a", "of", "both", "lot", "i",
-    "joining", "coming", "being", "be", "call", "chat", "also",
+    "everyone",
+    "everybody",
+    "all",
+    "y'all",
+    "you",
+    "guys",
+    "folks",
+    "team",
+    "again",
+    "so",
+    "much",
+    "very",
+    "really",
+    "too",
+    "here",
+    "and",
+    "us",
+    "the",
+    "a",
+    "of",
+    "both",
+    "lot",
+    "i",
+    "joining",
+    "coming",
+    "being",
+    "be",
+    "call",
+    "chat",
+    "also",
 ];
 
 /// A schedule or time word in the reason means it can carry a decision
@@ -1484,9 +2016,9 @@ const REASON_FILLER: &[&str] = &[
 /// kept. "time" is the one exception, and only as the object of a courtesy
 /// ("making the time", "your time", "taking the time").
 const SCHEDULE_WORDS: &[&str] = &[
-    "back", "week", "weeks", "day", "days", "today", "tonight", "tomorrow", "to", "have",
-    "having", "one", "late", "early", "earlier", "later", "weekend", "next", "until", "till",
-    "by", "before", "after", "month", "months", "quarter", "year", "date", "deadline",
+    "back", "week", "weeks", "day", "days", "today", "tonight", "tomorrow", "to", "have", "having",
+    "one", "late", "early", "earlier", "later", "weekend", "next", "until", "till", "by", "before",
+    "after", "month", "months", "quarter", "year", "date", "deadline",
 ];
 
 /// Verbs with a courtesy sense AND a decision sense ("pulling the numbers
@@ -1505,8 +2037,21 @@ const TWO_SENSE_VERBS: &[(&str, &[&str])] = &[
 /// Things a two-sense verb can act on as a decision ("pulling the launch",
 /// "setting the demo for today").
 const AGENDA_NOUNS: &[&str] = &[
-    "launch", "demo", "presentation", "call", "meeting", "release", "pilot", "offsite",
-    "deal", "contract", "price", "plan", "budget", "date", "deadline",
+    "launch",
+    "demo",
+    "presentation",
+    "call",
+    "meeting",
+    "release",
+    "pilot",
+    "offsite",
+    "deal",
+    "contract",
+    "price",
+    "plan",
+    "budget",
+    "date",
+    "deadline",
 ];
 
 /// Is the reason a gratitude opener gives (`words[from..]`) only courtesy?
@@ -1519,7 +2064,10 @@ const AGENDA_NOUNS: &[&str] = &[
 /// everyone making the time", "Thanks Wilson for pulling the numbers
 /// together" and "Thank you all for joining" are small talk.
 fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
-    let reason: Vec<&str> = lower[from.min(lower.len())..].iter().map(String::as_str).collect();
+    let reason: Vec<&str> = lower[from.min(lower.len())..]
+        .iter()
+        .map(String::as_str)
+        .collect();
     let has_agenda = reason.iter().any(|w| AGENDA_NOUNS.contains(w));
     (from..lower.len()).enumerate().all(|(k, j)| {
         let w = lower[j].as_str();
@@ -1530,7 +2078,10 @@ fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
         }
         if w == "time" {
             return k > 0
-                && matches!(reason[k - 1], "the" | "your" | "making" | "taking" | "make" | "our");
+                && matches!(
+                    reason[k - 1],
+                    "the" | "your" | "making" | "taking" | "make" | "our"
+                );
         }
         if SCHEDULE_WORDS.contains(&w) {
             return false;
@@ -1548,8 +2099,15 @@ fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
 /// Wilson …", "oh hi").
 const CLAUSE_LEAD_INS: &[&str] = &["and", "so", "oh", "well", "ok", "okay", "also"];
 
-const WEEKDAYS: &[&str] =
-    &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const WEEKDAYS: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+];
 
 /// Is `text` small talk rather than a statement of substance?
 ///
@@ -1564,12 +2122,16 @@ const WEEKDAYS: &[&str] =
 /// "Thank-you cards" and "Bye-laws" are single non-greeting words. A causal
 /// "Thanks to <thing>" (not to an addressee) is not gratitude.
 fn is_pleasantry(text: &str) -> bool {
-    let normalized = text.replace(" - ", ",").replace(['\u{2014}', '\u{2013}'], ",");
+    let normalized = text
+        .replace(" - ", ",")
+        .replace(['\u{2014}', '\u{2013}'], ",");
     let clauses: Vec<Vec<&str>> = normalized
         .split([',', ';', ':', '.', '!', '?'])
         .map(|c| {
             c.split(|ch: char| ch.is_whitespace() || ch == '/')
-                .map(|w| w.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-'))
+                .map(|w| {
+                    w.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-')
+                })
                 .map(|w| w.trim_matches('-'))
                 .filter(|w| !w.is_empty())
                 .collect::<Vec<&str>>()
@@ -1630,7 +2192,8 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
         }
         let run_start = i;
         while i < lower.len()
-            && (PLEASANTRY_FILLER.contains(&lower[i].as_str()) && !matches!(lower[i].as_str(), "for" | "the")
+            && (PLEASANTRY_FILLER.contains(&lower[i].as_str())
+                && !matches!(lower[i].as_str(), "for" | "the")
                 || is_name(i))
         {
             i += 1;
@@ -1665,7 +2228,11 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
         }
         // Fix round 4: "next" is not filler ("Good for next week" is a
         // decision) — only inside a goodbye ("see you all next week").
-        if w == "next" && lower[start..i].windows(2).any(|p| p[0] == "see" && p[1] == "you") {
+        if w == "next"
+            && lower[start..i]
+                .windows(2)
+                .any(|p| p[0] == "see" && p[1] == "you")
+        {
             continue;
         }
         // An addressee's name: anywhere after an unambiguous greeting, or as
@@ -1676,8 +2243,15 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
         }
         return None;
     }
-    let see_you = lower[start..].windows(2).any(|p| p[0] == "see" && p[1] == "you");
-    Some(see_you || lower[start..].iter().any(|w| GREETING_WORDS.contains(&w.as_str())))
+    let see_you = lower[start..]
+        .windows(2)
+        .any(|p| p[0] == "see" && p[1] == "you");
+    Some(
+        see_you
+            || lower[start..]
+                .iter()
+                .any(|w| GREETING_WORDS.contains(&w.as_str())),
+    )
 }
 
 /// A named owner who will DO something outranks a decision word later in the
@@ -1685,7 +2259,9 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
 fn owner_commits_strongly(text: &str) -> bool {
     let first = text.split_whitespace().next().unwrap_or("");
     let lower = first.to_lowercase();
-    owner_commitment(text) && lower != "we" && !lower.starts_with("we'")
+    owner_commitment(text)
+        && lower != "we"
+        && !lower.starts_with("we'")
         && !text.to_lowercase().contains(" will remain")
         && !text.to_lowercase().contains(" will stay")
 }
@@ -1697,14 +2273,17 @@ fn passive_settled(lower: &str) -> bool {
         .split(" will be ")
         .nth(1)
         .and_then(|rest| rest.split_whitespace().next())
-        .is_some_and(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).ends_with("ed"))
+        .is_some_and(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .ends_with("ed")
+        })
 }
 
 /// Function words that two unrelated lines share ("the", "will"); they say
 /// nothing about which line an item came from.
 const CITE_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you",
-    "has", "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
+    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you", "has",
+    "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
 ];
 
 fn content_words(text: &str) -> Vec<String> {
@@ -1747,18 +2326,28 @@ pub fn ground_extract_with(
     source: &str,
     names: &[String],
 ) {
-    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+    for list in [
+        &mut extract.actions,
+        &mut extract.decisions,
+        &mut extract.questions,
+    ] {
         for item in list.iter_mut() {
             let words = content_words(&item.text);
             let score = |l: &TranscriptLine| overlap(&words, &l.text);
-            let cited = lines.iter().find(|l| l.label == item.segment).map_or(0, score);
+            let cited = lines
+                .iter()
+                .find(|l| l.label == item.segment)
+                .map_or(0, score);
             // Only a citation that shares NO content word with its item moves,
             // and only to a line that clearly matches (two words or more): the
             // model's id stands whenever it is plausible at all.
             if cited > 0 {
                 continue;
             }
-            if let Some(best) = lines.iter().max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone()))) {
+            if let Some(best) = lines
+                .iter()
+                .max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone())))
+            {
                 if score(best) >= 2 {
                     item.segment = best.label.clone();
                 }
@@ -1794,14 +2383,21 @@ pub fn ground_extract_with(
         let Some(text) = validate_item(source, text.trim_end_matches('.')) else {
             continue;
         };
-        let item = ExtractedItem { text, segment: line.label.clone() };
+        let item = ExtractedItem {
+            text,
+            segment: line.label.clone(),
+        };
         match bucket {
             Bucket::Actions => extract.actions.push(item),
             Bucket::Decisions => extract.decisions.push(item),
             Bucket::Questions => extract.questions.push(item),
         }
     }
-    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
+    for list in [
+        &mut extract.actions,
+        &mut extract.decisions,
+        &mut extract.questions,
+    ] {
         list.sort_by(|a, b| a.segment.cmp(&b.segment));
         let mut kept: Vec<ExtractedItem> = Vec::with_capacity(list.len());
         for item in list.drain(..) {
@@ -2006,9 +2602,22 @@ pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
 /// did: "The pricing review … is complete" from a transcript that said "this
 /// is the pricing review" claims more than was said.
 const STATUS_CLAIMS: &[&str] = &[
-    "is complete", "is completed", "was completed", "is done", "was done", "is finished",
-    "was finished", "is final", "was finalized", "is finalized", "was a success",
-    "is resolved", "was resolved", "went well", "is wrapped up", "was wrapped up",
+    "is complete",
+    "is completed",
+    "was completed",
+    "is done",
+    "was done",
+    "is finished",
+    "was finished",
+    "is final",
+    "was finalized",
+    "is finalized",
+    "was a success",
+    "is resolved",
+    "was resolved",
+    "went well",
+    "is wrapped up",
+    "was wrapped up",
 ];
 
 /// Word stems that say something is finished, as a person would say it:
@@ -2043,7 +2652,9 @@ pub fn status_supported(source: &str, sentence: &str) -> bool {
     if np.is_empty() {
         np = content_words(&l)
             .into_iter()
-            .filter(|w| !says_completion(w) && !STATUS_CLAIMS.iter().any(|c| c.contains(w.as_str())))
+            .filter(|w| {
+                !says_completion(w) && !STATUS_CLAIMS.iter().any(|c| c.contains(w.as_str()))
+            })
             .collect();
     }
     split_sentences(source).iter().any(|src| {
@@ -2090,10 +2701,7 @@ pub fn split_sentences(text: &str) -> Vec<String> {
             if ABBREVIATIONS.contains(&last.as_str()) {
                 continue;
             }
-            let next_word = chars[i + 1..]
-                .iter()
-                .find(|c| !c.is_whitespace())
-                .copied();
+            let next_word = chars[i + 1..].iter().find(|c| !c.is_whitespace()).copied();
             if matches!(last.as_str(), "a.m" | "p.m")
                 && next_word.is_some_and(|c| c.is_lowercase() || c.is_ascii_digit())
             {
@@ -2128,7 +2736,9 @@ fn drop_unsaid_status(source: &str, narrative: &str) -> String {
         .filter(|s| status_supported(source, s))
         .collect();
     if kept.is_empty() {
-        log::warn!("summary: every sentence claims a status the meeting never stated — kept as written");
+        log::warn!(
+            "summary: every sentence claims a status the meeting never stated — kept as written"
+        );
         return narrative.to_string();
     }
     kept.join(" ")
@@ -3691,7 +4301,11 @@ pub fn point_overlap(a: &str, b: &str) -> f64 {
     let (wa, wb) = (set(a), set(b));
     let small = wa.len().min(wb.len());
     if small == 0 {
-        return if wa.is_empty() && wb.is_empty() { 1.0 } else { 0.0 };
+        return if wa.is_empty() && wb.is_empty() {
+            1.0
+        } else {
+            0.0
+        };
     }
     let shared = wa.iter().filter(|w| wb.contains(w)).count();
     shared as f64 / small as f64
@@ -3708,7 +4322,10 @@ pub fn dedupe_key_points(points: Vec<String>) -> Vec<String> {
         if content_words(&p).is_empty() {
             continue;
         }
-        if kept.iter().any(|k| point_overlap(k, &p) >= KEY_POINT_OVERLAP_MAX) {
+        if kept
+            .iter()
+            .any(|k| point_overlap(k, &p) >= KEY_POINT_OVERLAP_MAX)
+        {
             continue;
         }
         kept.push(p);
@@ -3718,9 +4335,31 @@ pub fn dedupe_key_points(points: Vec<String>) -> Vec<String> {
 
 /// Day, month and relative-date words: a sentence carrying one says WHEN.
 const DATE_WORDS: &[&str] = &[
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
-    "february", "march", "april", "june", "july", "august", "september", "october",
-    "november", "december", "today", "tomorrow", "tonight", "week", "month", "quarter", "year",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "today",
+    "tomorrow",
+    "tonight",
+    "week",
+    "month",
+    "quarter",
+    "year",
 ];
 
 /// Number words count as numbers ("forty nine dollars").
@@ -3738,11 +4377,23 @@ fn information_score(sentence: &str, names: &[String]) -> usize {
         .filter(|w| !w.is_empty())
         .collect();
     let numbers = crate::polish::digit_runs(sentence).len()
-        + words.iter().filter(|w| NUMBER_WORDS.contains(w)).count().min(2);
-    let dates = words.iter().filter(|w| DATE_WORDS.contains(w)).count().min(2);
+        + words
+            .iter()
+            .filter(|w| NUMBER_WORDS.contains(w))
+            .count()
+            .min(2);
+    let dates = words
+        .iter()
+        .filter(|w| DATE_WORDS.contains(w))
+        .count()
+        .min(2);
     let named = names
         .iter()
-        .filter(|n| sentence.split(|c: char| !c.is_alphanumeric()).any(|w| w == n.as_str()))
+        .filter(|n| {
+            sentence
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w == n.as_str())
+        })
         .count()
         .min(2);
     3 * numbers + 2 * dates + 2 * named + usize::from(content_words(sentence).len() >= 5)
@@ -4318,7 +4969,8 @@ fn live_sidecars() -> &'static std::sync::Mutex<Vec<u32>> {
 
 /// Stop every live summary sidecar (app quit). Returns how many were signalled.
 pub fn stop_all_sidecars() -> usize {
-    let pids: Vec<u32> = std::mem::take(&mut *live_sidecars().lock().unwrap_or_else(|p| p.into_inner()));
+    let pids: Vec<u32> =
+        std::mem::take(&mut *live_sidecars().lock().unwrap_or_else(|p| p.into_inner()));
     for pid in &pids {
         // SAFETY: plain kill(2) on a pid this process spawned and still owns.
         unsafe {
@@ -4435,7 +5087,10 @@ impl SidecarSession {
                 let _ = self.child.kill();
                 return Err(SummaryError::Cancelled);
             }
-            match self.lines.recv_timeout(left.min(Duration::from_millis(100))) {
+            match self
+                .lines
+                .recv_timeout(left.min(Duration::from_millis(100)))
+            {
                 Ok(line) => {
                     if let Some(response) = parse_response_for(&line, req.id) {
                         return Ok(response);

@@ -75,7 +75,10 @@ fn words(text: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(|w| {
             let w = w.to_lowercase().replace('\'', "");
-            w.strip_suffix('s').filter(|s| s.len() > 3).map(str::to_string).unwrap_or(w)
+            w.strip_suffix('s')
+                .filter(|s| s.len() > 3)
+                .map(str::to_string)
+                .unwrap_or(w)
         })
         .collect()
 }
@@ -211,7 +214,11 @@ fn score_against(s: &MeetingSummary, truth: &Truth) -> Scores {
     let distractors_filed = s
         .actions
         .iter()
-        .filter(|a| distractor_starts.iter().any(|d| (a.start_seconds - d).abs() < 0.01))
+        .filter(|a| {
+            distractor_starts
+                .iter()
+                .any(|d| (a.start_seconds - d).abs() < 0.01)
+        })
         .count();
 
     let decision_recall = if decisions.is_empty() {
@@ -232,13 +239,18 @@ fn score_against(s: &MeetingSummary, truth: &Truth) -> Scores {
         .collect();
     let mut duplicates = 0;
     for (x, (_, a)) in sections.iter().enumerate() {
-        if sections[..x].iter().any(|(_, b)| jaccard(&a.text, &b.text) >= DUP_JACCARD) {
+        if sections[..x]
+            .iter()
+            .any(|(_, b)| jaccard(&a.text, &b.text) >= DUP_JACCARD)
+        {
             duplicates += 1;
         }
     }
     let mut per_segment: BTreeMap<String, usize> = BTreeMap::new();
     for (_, i) in &sections {
-        *per_segment.entry(format!("{:.2}", i.start_seconds)).or_default() += 1;
+        *per_segment
+            .entry(format!("{:.2}", i.start_seconds))
+            .or_default() += 1;
     }
 
     let (mut right, mut blank, mut wrong) = (0, 0, 0);
@@ -261,13 +273,21 @@ fn score_against(s: &MeetingSummary, truth: &Truth) -> Scores {
         explicit_recall: recall_of(&explicit),
         implicit_recall: recall_of(&implicit),
         late_recall: recall_of(&late),
-        action_precision: if s.actions.is_empty() { 0.0 } else { true_actions as f64 / s.actions.len() as f64 },
+        action_precision: if s.actions.is_empty() {
+            0.0
+        } else {
+            true_actions as f64 / s.actions.len() as f64
+        },
         distractors_filed,
         decision_recall,
         verbatim: summary_verbatim_ratio(&s.narrative, &truth.transcript),
         duplicates,
         max_items_per_segment: per_segment.values().copied().max().unwrap_or(0),
-        owner_ok: if matched == 0 { 0.0 } else { (right + blank) as f64 / matched as f64 },
+        owner_ok: if matched == 0 {
+            0.0
+        } else {
+            (right + blank) as f64 / matched as f64
+        },
         owner_right: right,
         owner_blank: blank,
         owner_wrong: wrong,
@@ -277,25 +297,46 @@ fn score_against(s: &MeetingSummary, truth: &Truth) -> Scores {
 fn gate_failures(sc: &Scores) -> Vec<String> {
     let mut f = Vec::new();
     if sc.action_recall < GATE_ACTION_RECALL {
-        f.push(format!("action recall {:.2} < {GATE_ACTION_RECALL}", sc.action_recall));
+        f.push(format!(
+            "action recall {:.2} < {GATE_ACTION_RECALL}",
+            sc.action_recall
+        ));
     }
     if sc.action_precision < GATE_ACTION_PRECISION {
-        f.push(format!("action precision {:.2} < {GATE_ACTION_PRECISION}", sc.action_precision));
+        f.push(format!(
+            "action precision {:.2} < {GATE_ACTION_PRECISION}",
+            sc.action_precision
+        ));
     }
     if sc.decision_recall < GATE_DECISION_RECALL {
-        f.push(format!("decision recall {:.2} < {GATE_DECISION_RECALL}", sc.decision_recall));
+        f.push(format!(
+            "decision recall {:.2} < {GATE_DECISION_RECALL}",
+            sc.decision_recall
+        ));
     }
     if sc.verbatim > GATE_VERBATIM_MAX {
-        f.push(format!("summary verbatim ratio {:.2} > {GATE_VERBATIM_MAX}", sc.verbatim));
+        f.push(format!(
+            "summary verbatim ratio {:.2} > {GATE_VERBATIM_MAX}",
+            sc.verbatim
+        ));
     }
     if sc.duplicates > GATE_DUPLICATES_MAX {
-        f.push(format!("cross-section duplicates {} > {GATE_DUPLICATES_MAX}", sc.duplicates));
+        f.push(format!(
+            "cross-section duplicates {} > {GATE_DUPLICATES_MAX}",
+            sc.duplicates
+        ));
     }
     if sc.max_items_per_segment > GATE_ITEMS_PER_SEGMENT_MAX {
-        f.push(format!("items per cited segment {} > {GATE_ITEMS_PER_SEGMENT_MAX}", sc.max_items_per_segment));
+        f.push(format!(
+            "items per cited segment {} > {GATE_ITEMS_PER_SEGMENT_MAX}",
+            sc.max_items_per_segment
+        ));
     }
     if sc.owner_ok < GATE_OWNER_OK {
-        f.push(format!("owner accuracy-or-blank {:.2} < {GATE_OWNER_OK}", sc.owner_ok));
+        f.push(format!(
+            "owner accuracy-or-blank {:.2} < {GATE_OWNER_OK}",
+            sc.owner_ok
+        ));
     }
     f
 }
@@ -305,23 +346,46 @@ fn gate_failures(sc: &Scores) -> Vec<String> {
 #[test]
 fn the_fixture_plants_what_the_gate_counts() {
     let c = notes_planted::commitments();
-    assert_eq!(c.iter().filter(|p| p.explicit).count(), 6, "explicit commitments");
-    assert_eq!(c.iter().filter(|p| !p.explicit).count(), 4, "implicit commitments");
+    assert_eq!(
+        c.iter().filter(|p| p.explicit).count(),
+        6,
+        "explicit commitments"
+    );
+    assert_eq!(
+        c.iter().filter(|p| !p.explicit).count(),
+        4,
+        "implicit commitments"
+    );
     assert_eq!(notes_planted::decisions().len(), 2);
-    let distractors: Vec<_> =
-        SCRIPT.iter().filter(|l| l.plant == notes_planted::Plant::Distractor).collect();
+    let distractors: Vec<_> = SCRIPT
+        .iter()
+        .filter(|l| l.plant == notes_planted::Plant::Distractor)
+        .collect();
     assert_eq!(distractors.len(), 6);
     for d in &distractors {
         let t = d.text.to_lowercase();
-        assert!(t.contains("going to") || t.contains("'ll"), "distractor shape: {}", d.text);
+        assert!(
+            t.contains("going to") || t.contains("'ll"),
+            "distractor shape: {}",
+            d.text
+        );
     }
-    let late = c.iter().filter(|p| p.start_seconds >= MEETING_SECONDS * 0.8).count();
+    let late = c
+        .iter()
+        .filter(|p| p.start_seconds >= MEETING_SECONDS * 0.8)
+        .count();
     assert!(late >= 2, "only {late} commitments in the last 20%");
     let segs = notes_planted::segments();
     let last = segs.last().unwrap();
     assert!(last.end_seconds <= MEETING_SECONDS && last.start_seconds >= MEETING_SECONDS * 0.95);
-    assert!(segs.windows(2).all(|w| w[0].end_seconds < w[1].start_seconds), "segments overlap");
-    assert!(segs.iter().any(|s| s.track == wilson_voice_lib::meetings::SYSTEM_TRACK));
+    assert!(
+        segs.windows(2)
+            .all(|w| w[0].end_seconds < w[1].start_seconds),
+        "segments overlap"
+    );
+    assert!(segs
+        .iter()
+        .any(|s| s.track == wilson_voice_lib::meetings::SYSTEM_TRACK));
     // Every keyword is a word of its own line (so a perfect note can match).
     for p in c.iter().chain(notes_planted::decisions().iter()) {
         let line = SCRIPT.iter().enumerate().find(|(i, _)| {
@@ -332,10 +396,19 @@ fn the_fixture_plants_what_the_gate_counts() {
 }
 
 fn item(text: &str, at: f64, speaker: Option<&str>) -> SummaryItem {
-    SummaryItem { text: text.into(), segment: String::new(), start_seconds: at, speaker: speaker.map(Into::into) }
+    SummaryItem {
+        text: text.into(),
+        segment: String::new(),
+        start_seconds: at,
+        speaker: speaker.map(Into::into),
+    }
 }
 
-fn summary(narrative: &str, actions: Vec<SummaryItem>, decisions: Vec<SummaryItem>) -> MeetingSummary {
+fn summary(
+    narrative: &str,
+    actions: Vec<SummaryItem>,
+    decisions: Vec<SummaryItem>,
+) -> MeetingSummary {
     MeetingSummary {
         markdown: String::new(),
         narrative: narrative.into(),
@@ -359,7 +432,11 @@ fn perfect() -> MeetingSummary {
         .iter()
         .map(|p| item(&p.keywords.join(" "), p.start_seconds, None))
         .collect();
-    summary("A partner call about a regional rollout, a renewal and staff readiness.", actions, decisions)
+    summary(
+        "A partner call about a regional rollout, a renewal and staff readiness.",
+        actions,
+        decisions,
+    )
 }
 
 #[test]
@@ -376,9 +453,16 @@ fn a_perfect_set_of_notes_passes_every_gate() {
 fn each_failure_mode_from_the_audit_trips_its_gate() {
     // The summary is a paste of the transcript.
     let mut s = perfect();
-    s.narrative = SCRIPT.iter().take(12).map(|l| l.text).collect::<Vec<_>>().join(" ");
+    s.narrative = SCRIPT
+        .iter()
+        .take(12)
+        .map(|l| l.text)
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(score(&s).verbatim > 0.9);
-    assert!(gate_failures(&score(&s)).iter().any(|f| f.contains("verbatim")));
+    assert!(gate_failures(&score(&s))
+        .iter()
+        .any(|f| f.contains("verbatim")));
     // Small talk filed as actions.
     let mut s = perfect();
     for at in notes_planted::distractor_starts() {
@@ -391,7 +475,9 @@ fn each_failure_mode_from_the_audit_trips_its_gate() {
     let mut s = perfect();
     let dup = s.actions[0].clone();
     s.decisions.push(dup);
-    assert!(gate_failures(&score(&s)).iter().any(|f| f.contains("duplicates")));
+    assert!(gate_failures(&score(&s))
+        .iter()
+        .any(|f| f.contains("duplicates")));
     // Wrong owners under echo: every Them item filed as Me.
     let mut s = perfect();
     for a in &mut s.actions {
@@ -408,13 +494,22 @@ fn each_failure_mode_from_the_audit_trips_its_gate() {
     assert_eq!(score(&s).owner_ok, 1.0);
     // Implicit commitments missed: recall 0.6.
     let mut s = perfect();
-    let implicit: Vec<f64> =
-        notes_planted::commitments().iter().filter(|p| !p.explicit).map(|p| p.start_seconds).collect();
-    s.actions.retain(|a| !implicit.iter().any(|t| (a.start_seconds - 0.5 - t).abs() < 0.01));
+    let implicit: Vec<f64> = notes_planted::commitments()
+        .iter()
+        .filter(|p| !p.explicit)
+        .map(|p| p.start_seconds)
+        .collect();
+    s.actions.retain(|a| {
+        !implicit
+            .iter()
+            .any(|t| (a.start_seconds - 0.5 - t).abs() < 0.01)
+    });
     let sc = score(&s);
     assert!((sc.action_recall - 0.6).abs() < 1e-9);
     assert_eq!(sc.implicit_recall, 0.0);
-    assert!(gate_failures(&sc).iter().any(|f| f.contains("action recall")));
+    assert!(gate_failures(&sc)
+        .iter()
+        .any(|f| f.contains("action recall")));
 }
 
 // ── the real model, through summary_jobs ─────────────────────────────────────
@@ -430,20 +525,31 @@ fn sidecar_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("YAP_POLISH_BIN").map(PathBuf::from) {
         return p.is_file().then_some(p);
     }
-    let triple = if cfg!(target_arch = "aarch64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" };
-    let staged = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("binaries/yap-polish-{triple}"));
+    let triple = if cfg!(target_arch = "aarch64") {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-apple-darwin"
+    };
+    let staged =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("binaries/yap-polish-{triple}"));
     staged.is_file().then_some(staged)
 }
 
 /// Resident KB of this process and of its direct children (the sidecar).
 fn rss_kb() -> (u64, u64) {
     let me = std::process::id();
-    let Ok(out) = std::process::Command::new("/bin/ps").args(["-axo", "pid=,ppid=,rss="]).output() else {
+    let Ok(out) = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,ppid=,rss="])
+        .output()
+    else {
         return (0, 0);
     };
     let (mut own, mut kids) = (0, 0);
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let f: Vec<u64> = line.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        let f: Vec<u64> = line
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
         if f.len() == 3 {
             if f[0] == me as u64 {
                 own = f[2];
@@ -530,7 +636,8 @@ fn run_arm(
         strategy,
         out: Mutex::new(None),
     });
-    let jobs = SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).expect("notes worker");
+    let jobs =
+        SummaryJobs::spawn(backend.clone(), Arc::new(|_: &NotesStatus| {})).expect("notes worker");
     let started = Instant::now();
     assert!(jobs.submit(job));
     let end = jobs

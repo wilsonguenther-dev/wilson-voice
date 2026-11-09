@@ -368,9 +368,19 @@ impl TeardownReport {
                 missed.push(s.name);
             }
         }
-        let join = |v: &[&str]| if v.is_empty() { "-".to_string() } else { v.join(",") };
+        let join = |v: &[&str]| {
+            if v.is_empty() {
+                "-".to_string()
+            } else {
+                v.join(",")
+            }
+        };
         if missed.is_empty() {
-            format!("exit clean closed={} ms={}", join(&done), self.total.as_millis())
+            format!(
+                "exit clean closed={} ms={}",
+                join(&done),
+                self.total.as_millis()
+            )
         } else {
             format!(
                 "exit unclean closed={} missed={} ms={}",
@@ -849,19 +859,42 @@ mod clean_line_tests {
         let report = TeardownReport {
             total: Duration::from_millis(42),
             steps: vec![
-                StepReport { name: "pill", elapsed: Duration::from_millis(1), outcome: StepOutcome::Done },
-                StepReport { name: "meeting", elapsed: Duration::from_millis(2), outcome: StepOutcome::Done },
+                StepReport {
+                    name: "pill",
+                    elapsed: Duration::from_millis(1),
+                    outcome: StepOutcome::Done,
+                },
+                StepReport {
+                    name: "meeting",
+                    elapsed: Duration::from_millis(2),
+                    outcome: StepOutcome::Done,
+                },
             ],
         };
         assert_eq!(report.clean_line(), "exit clean closed=pill,meeting ms=42");
         let report = TeardownReport {
             total: Duration::from_millis(900),
             steps: vec![
-                StepReport { name: "pill", elapsed: Duration::from_millis(1), outcome: StepOutcome::Done },
-                StepReport { name: "asr", elapsed: Duration::from_millis(800), outcome: StepOutcome::TimedOut },
-                StepReport { name: "db", elapsed: Duration::ZERO, outcome: StepOutcome::Skipped },
+                StepReport {
+                    name: "pill",
+                    elapsed: Duration::from_millis(1),
+                    outcome: StepOutcome::Done,
+                },
+                StepReport {
+                    name: "asr",
+                    elapsed: Duration::from_millis(800),
+                    outcome: StepOutcome::TimedOut,
+                },
+                StepReport {
+                    name: "db",
+                    elapsed: Duration::ZERO,
+                    outcome: StepOutcome::Skipped,
+                },
             ],
         };
-        assert_eq!(report.clean_line(), "exit unclean closed=pill missed=asr,db ms=900");
+        assert_eq!(
+            report.clean_line(),
+            "exit unclean closed=pill missed=asr,db ms=900"
+        );
     }
 }

@@ -90,13 +90,20 @@ fn an_output_capped_map_answer_keeps_its_items_and_shows_no_note() {
             return Ok(a);
         }
         let full = misfiled_map(req);
-        let cut = full.find("{\"text\":\"The open question").expect("cut point");
+        let cut = full
+            .find("{\"text\":\"The open question")
+            .expect("cut point");
         Ok(full[..cut + 30].to_string())
     });
     let s = summarize_segments(&segments_from(FIXTURE), &model).expect("a summary");
     assert!(!s.truncated, "an output cap is not an input cut");
     assert!(!s.markdown.contains(NOTE), "{}", s.markdown);
-    assert_eq!(s.actions.len(), 2, "the closed items survive: {:?}", s.actions);
+    assert_eq!(
+        s.actions.len(),
+        2,
+        "the closed items survive: {:?}",
+        s.actions
+    );
 }
 
 #[test]
