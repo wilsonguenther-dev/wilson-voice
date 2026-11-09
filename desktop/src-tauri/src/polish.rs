@@ -2269,6 +2269,12 @@ struct SidecarPool {
     status: Mutex<SidecarStatus>,
     /// Respawns spent this session — bounded by [`MAX_SIDECAR_RESTARTS`].
     restarts: AtomicU64,
+    /// yap-1108-timing-sticky-pool-no-wait — blocking waits this pool has
+    /// entered: every timed read of the child's answer ([`Sidecar::exchange`],
+    /// the only place the take can block on the child). The cold no-op and the
+    /// sticky failure must never reach one, and the tests assert exactly that
+    /// instead of timing the take against a wall clock.
+    waits: AtomicU64,
     launch: Launcher,
     ready_budget: Duration,
     /// When the warm child was last asked for anything (YV81). Stamped on every
@@ -2312,6 +2318,7 @@ impl SidecarPool {
             launched: Mutex::new(None),
             status: Mutex::new(SidecarStatus::new(SidecarState::NotInstalled, None)),
             restarts: AtomicU64::new(0),
+            waits: AtomicU64::new(0),
             launch,
             ready_budget,
             last_used: Mutex::new(started),
@@ -2441,6 +2448,13 @@ impl SidecarPool {
         *self.status.lock()
     }
 
+    /// Blocking waits entered so far (see the `waits` field) — how "no wait"
+    /// is proven without a wall-clock bound a descheduled test thread fails.
+    #[cfg(test)]
+    fn waits_entered(&self) -> u64 {
+        self.waits.load(Ordering::Relaxed)
+    }
+
     fn set(&self, state: SidecarState, reason: Option<&'static str>) {
         *self.status.lock() = SidecarStatus::new(state, reason);
     }
@@ -2494,6 +2508,8 @@ impl SidecarPool {
                 return Err(PolishError::Unavailable);
             }
         }
+        // The one blocking wait on this path: counted before it is entered.
+        self.waits.fetch_add(1, Ordering::Relaxed);
         match sidecar.exchange(req) {
             Ok(text) => Ok(text),
             Err(e) => {
@@ -3190,9 +3206,20 @@ mod polish_fallback_tests {
         // and never loses one.
         assert_eq!(out, rules_text(RAW, DictationMode::Notes));
         // And nothing was waited out — not the readiness budget, not even the
-        // per-take deadline. This is the assertion the livelock would fail.
+        // per-take deadline. This is the assertion the livelock would fail:
+        // a livelocked take blocks on the child, and every blocking wait the
+        // pool can enter is counted before it is entered. Proven by count,
+        // not by a wall-clock bound a descheduled test thread fails
+        // (yap-1108-timing-sticky-pool-no-wait, audit row 29).
+        assert_eq!(
+            pool.waits_entered(),
+            0,
+            "a cold sidecar made the take wait on the child"
+        );
+        // Hang guard only — the count above carries the claim. Well under the
+        // 10 s readiness budget, so waiting that out would still fail here.
         assert!(
-            took < Duration::from_millis(500),
+            took < Duration::from_secs(5),
             "a cold sidecar cost the take {took:?}"
         );
         assert_eq!(
@@ -3226,14 +3253,34 @@ mod polish_fallback_tests {
             2,
             "one spawn plus exactly one restart, per app session"
         );
+        // The wait counter is live: each of the two deaths was found by a
+        // timed read (`died` is only reached from a failed exchange), so the
+        // zero-delta below is a real observation, not a counter stuck at 0.
+        let waits_before = pool.waits_entered();
+        assert!(
+            waits_before >= 2,
+            "two deaths but only {waits_before} timed reads counted"
+        );
         // Sticky: a later take neither launches a third process nor blocks…
+        // proven by counters (no launch, no wait entered), not by a 200 ms
+        // wall bound a descheduled test thread fails (audit row 5).
         let started = Instant::now();
         assert_eq!(
             pool.rewrite(&model, &stub_request()),
             Err(PolishError::Unavailable)
         );
-        assert!(started.elapsed() < Duration::from_millis(200));
+        let took = started.elapsed();
         assert_eq!(launches.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            pool.waits_entered(),
+            waits_before,
+            "a sticky-failed pool waited on a child it should not have"
+        );
+        // Hang guard only — the counters above carry the claim.
+        assert!(
+            took < Duration::from_secs(5),
+            "sticky failure took {took:?}"
+        );
         // …and Diagnostics is told why, not just that.
         assert_eq!(pool.status().reason, Some("died"));
         // Picking a different model in Settings is not the failure the budget

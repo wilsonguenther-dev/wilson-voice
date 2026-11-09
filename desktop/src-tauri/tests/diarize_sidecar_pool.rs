@@ -241,14 +241,36 @@ fn a_dead_child_respawns_once_then_stays_failed() {
         "one spawn plus exactly one restart, per session"
     );
 
-    // Sticky: a later request neither launches a third process nor blocks.
+    // The wait counter is live: every death was found by a readiness wait or
+    // a timed read (`died` is reached from nowhere else), so the zero-delta
+    // below is a real observation, not a counter stuck at 0.
+    let waits_before = pool.waits_entered();
+    assert!(
+        waits_before >= 2,
+        "two deaths but only {waits_before} waits counted"
+    );
+
+    // Sticky: a later request neither launches a third process nor blocks —
+    // proven by counters (no launch, no wait entered), not by a 200 ms wall
+    // bound a descheduled test thread fails (yap-1108-timing-sticky-pool-no-wait,
+    // audit row 6).
     let started = Instant::now();
     assert_eq!(
         pool.load_models(&segmentation, &embedding),
         Err(DiarizeError::Unavailable)
     );
-    assert!(started.elapsed() < Duration::from_millis(200));
+    let took = started.elapsed();
     assert_eq!(launches.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        pool.waits_entered(),
+        waits_before,
+        "a sticky-failed pool waited on a child it should not have"
+    );
+    // Hang guard only — the counters above carry the claim.
+    assert!(
+        took < Duration::from_secs(5),
+        "sticky failure took {took:?}"
+    );
     assert_eq!(pool.status().reason, Some("died"));
 
     // And `shutdown` is a teardown, not a reset — a failed session that quietly

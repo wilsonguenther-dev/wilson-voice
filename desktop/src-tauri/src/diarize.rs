@@ -249,6 +249,12 @@ pub struct DiarizePool {
     status: Mutex<DiarizeStatus>,
     /// Respawns spent this session — bounded by [`MAX_RESTARTS`].
     restarts: AtomicU64,
+    /// yap-1108-timing-sticky-pool-no-wait — blocking waits this pool has
+    /// entered: every readiness wait ([`Sidecar::wait_ready`]) and every timed
+    /// read of an answer ([`Sidecar::exchange`]), counted before each is
+    /// entered. A sticky-failed pool must never reach one; the tests assert
+    /// that by count instead of timing the refusal against a wall clock.
+    waits: AtomicU64,
     launch: DiarizeLauncher,
     ready_budget: Duration,
     /// When the child was last asked for anything. Stamped on every request,
@@ -276,6 +282,7 @@ impl DiarizePool {
             slot: Mutex::new(None),
             status: Mutex::new(DiarizeStatus::new(DiarizeState::NotStarted, None)),
             restarts: AtomicU64::new(0),
+            waits: AtomicU64::new(0),
             launch,
             ready_budget,
             last_used: Mutex::new(started),
@@ -286,6 +293,13 @@ impl DiarizePool {
 
     pub fn status(&self) -> DiarizeStatus {
         *self.status.lock()
+    }
+
+    /// Blocking waits (readiness waits plus timed answer reads) this pool has
+    /// entered. Diagnostics, and how a test proves a refusal never waited on
+    /// a child without a wall-clock bound a descheduled thread can fail.
+    pub fn waits_entered(&self) -> u64 {
+        self.waits.load(Ordering::Relaxed)
     }
 
     /// Whether a child is currently held. Diagnostics, and the assertion a test
@@ -462,6 +476,7 @@ impl DiarizePool {
         // Unlike the polish path this WAITS: there is no keystroke behind a
         // diarization, and a job that starts by silently skipping the sidecar
         // would produce an unlabelled transcript with no reason attached.
+        self.waits.fetch_add(1, Ordering::Relaxed);
         match sidecar.wait_ready(self.ready_budget) {
             Ok(()) => self.set(DiarizeState::Ready, None),
             Err(ReadyFailure::Timeout) => {
@@ -476,6 +491,7 @@ impl DiarizePool {
             }
         }
 
+        self.waits.fetch_add(1, Ordering::Relaxed);
         match sidecar.exchange(req, deadline) {
             // A refusal is the protocol working. The child stays warm, the
             // restart budget is untouched, and the caller is told which "no" it
