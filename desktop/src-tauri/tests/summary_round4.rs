@@ -10,8 +10,8 @@ mod support;
 use support::{labels_in, segments_from, StubModel};
 use wilson_voice_lib::polish_protocol::PolishRequest;
 use wilson_voice_lib::summarize::{
-    action_owner, classify_item, ground_extract, point_overlap, summarize_segments,
-    split_sentences, transcript_lines, transcript_names, validate_narrative, Bucket, MapExtract,
+    action_owner, classify_item, ground_extract, point_overlap, split_sentences,
+    summarize_segments, transcript_lines, transcript_names, validate_narrative, Bucket, MapExtract,
     SummaryError,
 };
 
@@ -60,6 +60,10 @@ fn assert_distinct(points: &[String]) {
 /// facts), and the Summary paragraph is the one written from them.
 #[test]
 fn round3_shape_keeps_three_or_more_distinct_points_and_the_summary_comes_from_them() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(match req.mode.as_str() {
             "map" => map_answer(req),
@@ -73,18 +77,33 @@ fn round3_shape_keeps_three_or_more_distinct_points_and_the_summary_comes_from_t
     assert!(points.len() >= 3, "{}", s.markdown);
     assert_distinct(&points);
     // A point that is also an action item stays.
-    assert!(points.iter().any(|p| p.starts_with("Jeisil will send")), "{points:?}");
     assert!(
-        s.narrative.starts_with("The starter package stays at forty nine dollars a month."),
+        points.iter().any(|p| p.starts_with("Jeisil will send")),
+        "{points:?}"
+    );
+    assert!(
+        s.narrative
+            .starts_with("The starter package stays at forty nine dollars a month."),
         "the Summary is written from the key points: {}",
         s.narrative
     );
     // Key points first, from the TRANSCRIPT — not from a finished Summary.
     let h = model.stage("headline");
     assert_eq!(h.len(), 1);
-    assert!(h[0].text.contains("Okay, this is the pricing review"), "{}", h[0].text);
-    assert!(!h[0].text.contains("seg_"), "ids are not facts: {}", h[0].text);
-    assert!(model.stage("reduce").is_empty(), "no REDUCE once the summary held up");
+    assert!(
+        h[0].text.contains("Okay, this is the pricing review"),
+        "{}",
+        h[0].text
+    );
+    assert!(
+        !h[0].text.contains("seg_"),
+        "ids are not facts: {}",
+        h[0].text
+    );
+    assert!(
+        model.stage("reduce").is_empty(),
+        "no REDUCE once the summary held up"
+    );
 }
 
 /// The model returns one fact three times: dedupe keeps ONE, and
@@ -92,6 +111,10 @@ fn round3_shape_keeps_three_or_more_distinct_points_and_the_summary_comes_from_t
 /// lone point is not a section, so Key points is left out.
 #[test]
 fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(match req.mode.as_str() {
             "map" => map_answer(req),
@@ -109,13 +132,20 @@ fn fewer_than_three_distinct_points_are_never_padded_from_the_transcript() {
         );
     }
     // No paragraph from the model → the MAP/REDUCE narrative stands in.
-    assert_eq!(s.narrative, "The team reviewed pricing for the Drivia consulting tier.");
+    assert_eq!(
+        s.narrative,
+        "The team reviewed pricing for the Drivia consulting tier."
+    );
 }
 
 /// A failed HEADLINE call yields no padded points (DO 8) and a title that is
 /// not transcript words (DO 6).
 #[test]
 fn a_failed_headline_call_never_pads_key_points() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| match req.mode.as_str() {
         "map" => Ok(map_answer(req)),
         "headline" => Err(SummaryError::Protocol),
@@ -140,26 +170,49 @@ const NOT_OWNERS: &[&str] = &[
 
 #[test]
 fn small_talk_with_will_or_should_never_becomes_an_owned_action() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(NOT_OWNERS);
     let lines = transcript_lines(&segments);
-    let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    let source = lines
+        .iter()
+        .map(|l| l.render())
+        .collect::<Vec<_>>()
+        .join("\n");
     let names = transcript_names(&lines);
     assert!(names.is_empty(), "no names in small talk: {names:?}");
     let mut extract = MapExtract::default();
     ground_extract(&mut extract, &lines, &source);
-    assert!(extract.actions.is_empty(), "backfilled small talk: {:?}", extract.actions);
+    assert!(
+        extract.actions.is_empty(),
+        "backfilled small talk: {:?}",
+        extract.actions
+    );
     for line in NOT_OWNERS {
         assert_eq!(action_owner(line, &names), None, "fake owner for {line}");
         // Even with every word on the name list, a common word is no owner.
-        let everyone: Vec<String> =
-            line.split_whitespace().map(str::to_string).collect();
-        assert_eq!(action_owner(line, &everyone), None, "common word as owner: {line}");
-        assert_ne!(classify_item(Bucket::Actions, line), Some(Bucket::Actions), "{line}");
+        let everyone: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+        assert_eq!(
+            action_owner(line, &everyone),
+            None,
+            "common word as owner: {line}"
+        );
+        assert_ne!(
+            classify_item(Bucket::Actions, line),
+            Some(Bucket::Actions),
+            "{line}"
+        );
     }
 }
 
 #[test]
 fn a_real_owner_is_a_name_the_meeting_uses() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(&[
         "Jeisil will send the pricing doc by Friday.",
         "Coffee will help.",
@@ -168,9 +221,17 @@ fn a_real_owner_is_a_name_the_meeting_uses() {
         "Priya will draft the follow up.",
     ]);
     let lines = transcript_lines(&segments);
-    let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    let source = lines
+        .iter()
+        .map(|l| l.render())
+        .collect::<Vec<_>>()
+        .join("\n");
     let names = transcript_names(&lines);
-    assert_eq!(names, vec!["Jeisil".to_string()], "Priya is said once mid-sentence");
+    assert_eq!(
+        names,
+        vec!["Jeisil".to_string()],
+        "Priya is said once mid-sentence"
+    );
     let mut extract = MapExtract::default();
     ground_extract(&mut extract, &lines, &source);
     let texts: Vec<&str> = extract.actions.iter().map(|a| a.text.as_str()).collect();
@@ -181,9 +242,16 @@ fn a_real_owner_is_a_name_the_meeting_uses() {
 
 #[test]
 fn a_status_the_meeting_stated_is_kept_and_prices_stay_whole() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let source = "seg_0001: We finished the migration yesterday.\nseg_0002: We're done with the import too.\nseg_0003: Jeisil will send the pricing doc by Friday at $49.99 a seat.";
     let narrative = "The migration is finished. The import is done. Jeisil will send the pricing doc by Friday at $49.99 a seat.";
-    assert_eq!(validate_narrative(source, narrative).as_deref(), Some(narrative));
+    assert_eq!(
+        validate_narrative(source, narrative).as_deref(),
+        Some(narrative)
+    );
     // One true sentence is a summary, never a rejection.
     let one = "seg_0001: We finished the migration yesterday.";
     assert_eq!(
@@ -204,6 +272,10 @@ fn a_status_the_meeting_stated_is_kept_and_prices_stay_whole() {
 
 #[test]
 fn sentences_split_only_at_real_ends() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     assert_eq!(
         split_sentences("It costs $49.99 a seat. Dr. Britt agreed, e.g. for Liberty. We meet at 3.30pm. Then 9 a.m. tomorrow works. Done! Really?"),
         vec![
@@ -215,13 +287,20 @@ fn sentences_split_only_at_real_ends() {
             "Really?",
         ]
     );
-    assert_eq!(split_sentences("Version 1.2.3 ships"), vec!["Version 1.2.3 ships"]);
+    assert_eq!(
+        split_sentences("Version 1.2.3 ships"),
+        vec!["Version 1.2.3 ships"]
+    );
 }
 
 /// review-opus2 N1's probe set: none is an owner, none is backfilled, none
 /// classifies as an action.
 #[test]
 fn review_opus2_n1_words_are_never_owners() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let lines_in = [
         "Everything will be ready",
         "Friday will be tight",
@@ -232,7 +311,11 @@ fn review_opus2_n1_words_are_never_owners() {
         "Revenue is going to climb",
     ];
     let lines = transcript_lines(&segments_from(&lines_in));
-    let source = lines.iter().map(|l| l.render()).collect::<Vec<_>>().join("\n");
+    let source = lines
+        .iter()
+        .map(|l| l.render())
+        .collect::<Vec<_>>()
+        .join("\n");
     let names = transcript_names(&lines);
     let mut extract = MapExtract::default();
     ground_extract(&mut extract, &lines, &source);
@@ -241,17 +324,32 @@ fn review_opus2_n1_words_are_never_owners() {
         let first = vec![line.split_whitespace().next().unwrap().to_string()];
         assert_eq!(action_owner(line, &names), None, "{line}");
         assert_eq!(action_owner(line, &first), None, "{line}");
-        assert_ne!(classify_item(Bucket::Actions, line), Some(Bucket::Actions), "{line}");
+        assert_ne!(
+            classify_item(Bucket::Actions, line),
+            Some(Bucket::Actions),
+            "{line}"
+        );
     }
 }
 
 #[test]
 fn key_points_hide_when_fewer_than_two() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use wilson_voice_lib::summarize::{render_notes, Headline};
-    let one = Headline { title: "T".into(), key_points: vec!["Only one point here.".into()], summary: String::new() };
+    let one = Headline {
+        title: "T".into(),
+        key_points: vec!["Only one point here.".into()],
+        summary: String::new(),
+    };
     let md = render_notes(&one, &[], "A summary.", &[], &[], &[], 0, 1, false);
     assert!(!md.contains("### Key points"), "{md}");
-    let two = Headline { key_points: vec!["One point here.".into(), "Another fact entirely.".into()], ..one };
+    let two = Headline {
+        key_points: vec!["One point here.".into(), "Another fact entirely.".into()],
+        ..one
+    };
     let md = render_notes(&two, &[], "A summary.", &[], &[], &[], 0, 1, false);
     assert!(md.contains("### Key points"), "{md}");
 }
