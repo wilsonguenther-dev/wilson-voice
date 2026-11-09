@@ -70,6 +70,10 @@ fn answer_naming_the_wrong_person(segment: &str) -> String {
 /// cited segment, not either of the two the model offered.
 #[test]
 fn the_speaker_is_looked_up_from_the_cited_segment_never_read_off_the_model() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(&TURNS);
     let model = StubModel::new(|req| {
         if req.mode == "reduce" {
@@ -121,6 +125,10 @@ fn the_speaker_is_looked_up_from_the_cited_segment_never_read_off_the_model() {
 /// could be tempted to prefer it.
 #[test]
 fn a_speaker_key_in_the_model_answer_lands_nowhere() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let source = TURNS.join("\n");
     let labels: Vec<String> = (1..=3).map(|i| format!("seg_{i:04}")).collect();
     let out = parse_map_output(
@@ -149,6 +157,10 @@ fn a_speaker_key_in_the_model_answer_lands_nowhere() {
 /// an id through that the transcript does not hold.
 #[test]
 fn an_uncited_id_resolves_to_no_speaker_rather_than_the_wrong_one() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(&TURNS);
     let lines = transcript_lines_with(&segments, &enrolled());
     assert_eq!(lines.len(), 3);
@@ -164,6 +176,10 @@ fn an_uncited_id_resolves_to_no_speaker_rather_than_the_wrong_one() {
 /// unchanged as TEXT — a trailing space or a stray tag is a different prompt.
 #[test]
 fn no_speaker_source_renders_exactly_what_yv97_rendered() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(&TURNS);
     let before = transcript_lines(&segments);
     let after = transcript_lines_with(&segments, &NoSpeakers);
@@ -205,6 +221,10 @@ fn no_speaker_source_renders_exactly_what_yv97_rendered() {
 /// on the same screen, about the same sentence.
 #[test]
 fn track_speakers_agree_with_the_rendered_transcript_line_for_line() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_on_tracks(&[
         (0.0, MIC_TRACK, TURNS[0]),
         (4.0, SYSTEM_TRACK, TURNS[1]),
@@ -247,6 +267,10 @@ fn track_speakers_agree_with_the_rendered_transcript_line_for_line() {
 /// claim and this suite measures claims.
 #[test]
 fn the_clustering_branch_declines_rather_than_tagging_every_line() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_from(&TURNS);
     for kind in [MeetingKind::InPerson, MeetingKind::Unknown] {
         let speakers = TrackSpeakers::for_meeting(kind, &segments);
@@ -287,6 +311,10 @@ fn the_clustering_branch_declines_rather_than_tagging_every_line() {
 /// `is_me`, asserted at the seam where a name would first become visible.
 #[test]
 fn a_track_is_never_promoted_to_an_identity() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     for kind in [
         MeetingKind::Virtual,
         MeetingKind::InPerson,
@@ -312,6 +340,10 @@ fn a_track_is_never_promoted_to_an_identity() {
 /// A speaker whose label is blank is "unknown", not a speaker called "".
 #[test]
 fn a_blank_speaker_is_no_speaker() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     struct Blank;
     impl SpeakerSource for Blank {
         fn speaker_for(
@@ -335,6 +367,10 @@ fn a_blank_speaker_is_no_speaker() {
 /// (Aidan): …` inside the model's prompt.
 #[test]
 fn a_truncated_attributed_line_is_not_double_labelled() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_on_tracks(&[
         (
             0.0,

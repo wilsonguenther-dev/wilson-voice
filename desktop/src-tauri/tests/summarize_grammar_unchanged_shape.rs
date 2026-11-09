@@ -146,8 +146,8 @@ fn the_models_output_type_has_no_speaker_field() {
 
 /// No code path constructs a speaker from model output.
 ///
-/// `SummaryItem.speaker` is assigned in exactly one place in this module, and
-/// the expression it is assigned from is the evidence lookup — never anything
+/// `SummaryItem.speaker` is assigned from the evidence lookup (directly, or via
+/// the cited transcript line's track in the arm E backfill) — never anything
 /// reached through the parsed item, which in `summarize_segments_with` is bound
 /// as `i`.
 #[test]
@@ -162,6 +162,11 @@ fn the_only_speaker_assignment_reads_the_lookup() {
         vec![
             "speaker: None,",                                      // TranscriptLine::new
             "speaker: cited.and_then(|(_, _, who)| who.clone()),", // the lookup
+            // Arm E recall backfill: the item is the transcript line's own
+            // words cited to that line, so its speaker is that line's track,
+            // which `transcript_lines_with` filled from the same evidence
+            // lookup. Still never read off model output.
+            "speaker: line.speaker.as_ref().map(|s| s.label().to_string()),",
         ],
         "every construction of a speaker value in summarize.rs, in order"
     );
