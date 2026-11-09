@@ -139,9 +139,6 @@ const PAIRS: Pair[] = [
   { fg: "--pill-text", bg: "--pill-shell-top", floor: BODY, where: "pill capsule text" },
   { fg: "--pill-text", bg: "--pill-shell-bottom", floor: BODY, where: "pill capsule text" },
   { fg: "--pill-bubble-text", bg: "--pill-bubble-surface", floor: BODY, where: "Yappy's speech bubble" },
-  // yap-1107-parity-pill — the approved shell's segment text (pill.html --on-shell / --on-shell-2).
-  { fg: "--pill-on-shell", bg: "--pill-shell", floor: BODY, where: "pill segment text (Pasting, Cancelled, the clock)" },
-  { fg: "--pill-on-shell-2", bg: "--pill-shell", floor: BODY, where: "pill segment .sub word (words, Click to dictate)" },
   { fg: "--text-on-fill", bg: "--pill-shell-highlight", floor: BODY, where: "pill .ctrl glyph" },
   {
     fg: "--text-on-fill", bg: "--accent-meeting", bgAlpha: 0.34, ground: "--pill-shell-top",
@@ -149,10 +146,7 @@ const PAIRS: Pair[] = [
   },
   // ── UI boundaries: the focus ring against everything it can sit on ───────
   ...PAGE_SURFACES.map((bg) => ({ fg: "--focus-ring", bg, floor: UI, where: "global :focus-visible ring (main window)" })),
-  // yap-1107-parity-pill — the bubble is now the approved light card (#fffdf7) and
-  // is never focusable (pointer-events: none, no tabindex), so the pill ring is
-  // held against the surfaces a focused control can actually sit on.
-  ...["--pill-shell-top", "--pill-shell-bottom", "--pill-shell-highlight", "--pill-shell", "--pill-shell-2"].map((bg) => ({
+  ...["--pill-shell-top", "--pill-shell-bottom", "--pill-shell-highlight", "--pill-bubble-surface"].map((bg) => ({
     fg: "--focus-ring-pill", bg, floor: UI, where: "global :focus-visible ring (float pill)",
   })),
 ];
