@@ -69,7 +69,7 @@ their rows still measure the old pipeline):
   item. Small talk that borrows the shape stays out ("We'll see how the traffic is", "It's going to
   rain", "You'll love the new cafe", "we will need more tables", questions, "let me share my
   screen"). Over both fixtures' scripts it marks exactly the 16 planted commitments and none of the
-  other 60 lines (test `summary_items_first::a_speaker_committing_is_an_action_and_small_talk_is_not`).
+  other 88 lines (test `summary_items_first::a_speaker_committing_is_an_action_and_small_talk_is_not`).
   Log line: `summarize items_first_backfill model_actions=N added=M`.
 - The cited window now carries each line's speaker label (`cited_window`), so "Call will send the
   deck" cited to a line the Call track spoke is not refused as an invented name.
