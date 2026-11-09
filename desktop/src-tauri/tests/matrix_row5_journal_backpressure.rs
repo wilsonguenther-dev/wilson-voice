@@ -43,11 +43,48 @@ use wilson_voice_lib::meeting_matrix::{quality_note, Coverage, ROWS};
 /// 100 ms of 16 kHz mono — one plausible capture callback's worth.
 const BLOCK: usize = 1_600;
 
-/// The longest a single `append` may take. A `try_send` returns in
-/// microseconds; a blocking `send` against a parked writer would sit here until
-/// `WRITER_PAUSE_CAP` (5 s) let the writer go. Two orders of magnitude of room,
-/// so a loaded CI runner cannot fail this while a real regression cannot pass.
-const NEVER_BLOCKS: Duration = Duration::from_millis(500);
+/// yap-1108-timing-open-m-budgets — "append never waits" is now COUNTED, not
+/// timed (it replaces the old 500 ms per-append / 2 s total wall bounds).
+///
+/// With the writer parked, a full bounded queue can take a blocking `send` only
+/// after the writer RECEIVES something, and a parked writer receives at most
+/// the one block its `recv_timeout` was already sitting on when the park was
+/// raised. So: if every `append` returned while the writer's receive count
+/// stayed within that one block, no `append` waited for the writer — on any
+/// machine, at any load. A blocking hand-off can only come back after the
+/// park cap (`WRITER_PAUSE_CAP`) lets the writer drain, which moves the count
+/// and fails here on the first offer that blocked.
+const WRITER_RECEIVES_WHILE_PARKED: u64 = 1;
+
+/// A HANG guard, never a measurement: how long the recovery half waits for the
+/// unparked writer to drain the queue before calling it stuck.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Asserts no `append` so far had to wait for the parked writer (see
+/// [`WRITER_RECEIVES_WHILE_PARKED`]).
+fn assert_no_wait_entered(journal: &MeetingJournal, i: usize) {
+    let received = journal.writer_audio_received();
+    assert!(
+        received <= WRITER_RECEIVES_WHILE_PARKED,
+        "append #{i} came back only after the parked writer took {received} blocks: the \
+         journal hand-off is blocking on the disk, which on the real path is the cpal \
+         input callback parking mid-meeting"
+    );
+}
+
+/// Waits (hang-guarded) until the writer has taken `blocks` audio blocks off
+/// the queue.
+fn wait_for_writer(journal: &MeetingJournal, blocks: u64) {
+    let started = Instant::now();
+    while journal.writer_audio_received() < blocks {
+        assert!(
+            started.elapsed() < DRAIN_DEADLINE,
+            "the unparked writer took {} of {blocks} blocks in {DRAIN_DEADLINE:?} — it is stuck",
+            journal.writer_audio_received()
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 
 fn tmpdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -87,25 +124,16 @@ fn a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait() {
 
     let mut accepted_samples = 0u64;
     let mut rejections = 0usize;
-    let mut slowest = Duration::ZERO;
-    let started = Instant::now();
 
     for i in 0..200 {
         let chunk = block(i);
-        let at = Instant::now();
         let took = journal.append(0, &chunk);
-        let waited = at.elapsed();
-        slowest = slowest.max(waited);
 
         // Checked per call, not after the loop: a blocking hand-off parks for
         // `WRITER_PAUSE_CAP` on EVERY offer, so a version of this that only
         // looked at the total would take a quarter of an hour to say so — and a
         // test that hangs is a test somebody eventually deletes.
-        assert!(
-            waited < NEVER_BLOCKS,
-            "append #{i} waited {waited:?}: the journal hand-off is blocking on the disk, \
-             which on the real path is the cpal input callback parking mid-meeting"
-        );
+        assert_no_wait_entered(&journal, i);
         assert!(
             took == chunk.len() || took == 0,
             "append must accept the whole chunk or none of it, got {took} of {}",
@@ -123,15 +151,9 @@ fn a_wedged_writer_makes_the_meeting_journal_drop_and_never_wait() {
         "a depth-1 queue with a parked writer accepted all 200 chunks — the journal is not \
          bounded, or the test seam stopped working, and either way row 5 is unproven"
     );
-    assert!(
-        slowest < NEVER_BLOCKS,
-        "the slowest append took {slowest:?}"
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "200 appends against a wedged writer took {:?} — a try_send does not take that long",
-        started.elapsed()
-    );
+    // The whole run, not just each call: 200 offers against a wedged writer,
+    // and the writer still took no more than the one block it was sitting on.
+    assert_no_wait_entered(&journal, 199);
 
     // Nothing is uncounted: every sample the journal refused is in the counter,
     // and the counter counts nothing else. This is the invariant the gap
@@ -163,29 +185,34 @@ fn the_meeting_journal_takes_writes_again_once_the_writer_catches_up() {
     let pause = journal.pause_handle();
 
     pause.store(true, Ordering::SeqCst);
-    let overflowing = Instant::now();
+    let mut accepted_blocks = 0u64;
     for i in 0..50 {
-        let _ = journal.append(0, &block(i));
+        if journal.append(0, &block(i)) > 0 {
+            accepted_blocks += 1;
+        }
         // Bailed on inside the loop, for the reason the other test explains: a
         // blocking hand-off parks per offer, so checking only the total turns a
         // failure into a four-minute wait.
-        assert!(
-            overflowing.elapsed() < NEVER_BLOCKS,
-            "filling the queue took {:?} by append #{i} — the hand-off is waiting for the writer",
-            overflowing.elapsed()
-        );
+        assert_no_wait_entered(&journal, i);
     }
     let dropped_during = journal.dropped_samples();
     assert!(dropped_during > 0, "the parked writer refused nothing");
 
     pause.store(false, Ordering::SeqCst);
 
-    // Paced like a real callback (100 ms of audio per block), which a drained
-    // depth-1 queue keeps up with comfortably.
+    // yap-1108-timing-open-m-budgets — paced on the WRITER, not on a 5 ms
+    // sleep: each block is offered only once the writer has taken everything
+    // accepted so far, which is the "a drained queue keeps up" condition the
+    // old pacing approximated (and which a starved runner could miss, offering
+    // twenty blocks into a queue nobody had drained yet).
     let mut accepted_after = 0u64;
     for i in 50..70 {
-        std::thread::sleep(Duration::from_millis(5));
-        accepted_after += journal.append(0, &block(i)) as u64;
+        wait_for_writer(&journal, accepted_blocks);
+        let took = journal.append(0, &block(i)) as u64;
+        if took > 0 {
+            accepted_blocks += 1;
+        }
+        accepted_after += took;
     }
 
     assert!(
