@@ -51,24 +51,68 @@ const NOTE: &str = "did not fit the model";
 
 #[test]
 fn the_real_runs_misfiled_lines_are_reclassified() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for (from, text, want) in [
-        (Actions, "Jeisil will send the updated pricing doc to the team by Friday", Some(Actions)),
-        (Actions, "Wilson to book the demo with Liberty University next week", Some(Actions)),
-        (Actions, "The open question is whether annual billing gets a discount", Some(Questions)),
-        (Actions, "We also decided to drop the free trial for enterprise accounts", Some(Decisions)),
-        (Decisions, "The starter package will remain at forty-nine dollars a month", Some(Decisions)),
-        (Actions, "We agreed the starter package stays at forty nine dollars a month", Some(Decisions)),
+        (
+            Actions,
+            "Jeisil will send the updated pricing doc to the team by Friday",
+            Some(Actions),
+        ),
+        (
+            Actions,
+            "Wilson to book the demo with Liberty University next week",
+            Some(Actions),
+        ),
+        (
+            Actions,
+            "The open question is whether annual billing gets a discount",
+            Some(Questions),
+        ),
+        (
+            Actions,
+            "We also decided to drop the free trial for enterprise accounts",
+            Some(Decisions),
+        ),
+        (
+            Decisions,
+            "The starter package will remain at forty-nine dollars a month",
+            Some(Decisions),
+        ),
+        (
+            Actions,
+            "We agreed the starter package stays at forty nine dollars a month",
+            Some(Decisions),
+        ),
         // Owner + verb outranks a question word later in the line.
-        (Questions, "Jeisil will check whether annual billing gets a discount", Some(Actions)),
+        (
+            Questions,
+            "Jeisil will check whether annual billing gets a discount",
+            Some(Actions),
+        ),
         (Actions, "Send the deck to the team", Some(Actions)),
         (Actions, "I'll draft the renewal email", Some(Actions)),
         (Decisions, "Should we offer annual billing", Some(Questions)),
-        (Actions, "Does annual billing get a discount?", Some(Questions)),
+        (
+            Actions,
+            "Does annual billing get a discount?",
+            Some(Questions),
+        ),
         // An "action item" with no commitment at all is not one.
-        (Actions, "The pricing review for the Drivia consulting tier is complete", None),
+        (
+            Actions,
+            "The pricing review for the Drivia consulting tier is complete",
+            None,
+        ),
         (Actions, "Move the onboarding review", Some(Actions)),
-        (Decisions, "Drop the free trial for enterprise accounts", Some(Decisions)),
+        (
+            Decisions,
+            "Drop the free trial for enterprise accounts",
+            Some(Decisions),
+        ),
     ] {
         assert_eq!(classify_item(from, text), want, "{text}");
     }
@@ -76,6 +120,10 @@ fn the_real_runs_misfiled_lines_are_reclassified() {
 
 #[test]
 fn the_fixture_notes_file_each_line_under_the_right_heading() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| misfiled_map(req)))
     });
@@ -97,8 +145,14 @@ fn the_fixture_notes_file_each_line_under_the_right_heading() {
     assert!(!actions.contains("open question"), "{actions}");
     assert!(!actions.contains("decided"), "{actions}");
     let decisions = section("### Decisions");
-    assert!(decisions.contains("decided to drop the free trial"), "{decisions}");
-    assert!(decisions.contains("will remain at forty nine"), "{decisions}");
+    assert!(
+        decisions.contains("decided to drop the free trial"),
+        "{decisions}"
+    );
+    assert!(
+        decisions.contains("will remain at forty nine"),
+        "{decisions}"
+    );
     let questions = section("### Open questions");
     assert!(questions.contains("whether annual billing"), "{questions}");
     assert!(!md.contains(NOTE), "{md}");
@@ -129,6 +183,10 @@ fn round2_real_map(req: &PolishRequest) -> String {
 
 #[test]
 fn skipped_lines_are_backfilled_and_swapped_citations_corrected() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| round2_real_map(req)))
     });
@@ -149,14 +207,25 @@ fn skipped_lines_are_backfilled_and_swapped_citations_corrected() {
     assert!(decisions[1].contains("free trial"), "{decisions:?}");
     // Citations: the free-trial decision is the 6th line (20 s), the question
     // the 5th (16 s) — the model had them swapped.
-    let free_trial = s.decisions.iter().find(|d| d.text.contains("free trial")).unwrap();
+    let free_trial = s
+        .decisions
+        .iter()
+        .find(|d| d.text.contains("free trial"))
+        .unwrap();
     let question = &s.questions[0];
-    assert!(free_trial.start_seconds > question.start_seconds, "{free_trial:?} {question:?}");
+    assert!(
+        free_trial.start_seconds > question.start_seconds,
+        "{free_trial:?} {question:?}"
+    );
     assert_eq!(s.questions.len(), 1);
 }
 
 #[test]
 fn backfill_never_adds_a_line_without_a_clear_marker() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let quiet: &[&str] = &[
         "I will say the numbers looked fine this quarter.",
         "Pricing came up again for the consulting tier.",
@@ -167,7 +236,10 @@ fn backfill_never_adds_a_line_without_a_clear_marker() {
         }))
     });
     let s = summarize_segments(&segments_from(quiet), &model).expect("a summary");
-    assert!(s.actions.is_empty() && s.decisions.is_empty() && s.questions.is_empty(), "{s:?}");
+    assert!(
+        s.actions.is_empty() && s.decisions.is_empty() && s.questions.is_empty(),
+        "{s:?}"
+    );
 }
 
 // ── fix round 1 (review BLOCKING): a pleasantry is never a Decision ─────────
@@ -178,6 +250,10 @@ fn backfill_never_adds_a_line_without_a_clear_marker() {
 /// a marker — even one that opens with a pleasantry — still stands.
 #[test]
 fn a_pleasantry_the_model_files_as_a_decision_is_dropped() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
@@ -199,10 +275,22 @@ fn a_pleasantry_the_model_files_as_a_decision_is_dropped() {
         assert_eq!(classify_item(Actions, text), None, "{text}");
     }
     for (text, want) in [
-        ("Thanks everyone, we decided to drop the free trial.", Some(Decisions)),
-        ("The starter package will remain at forty-nine dollars a month", Some(Decisions)),
-        ("Drop the free trial for enterprise accounts", Some(Decisions)),
-        ("Annual billing moves to the new contract template", Some(Decisions)),
+        (
+            "Thanks everyone, we decided to drop the free trial.",
+            Some(Decisions),
+        ),
+        (
+            "The starter package will remain at forty-nine dollars a month",
+            Some(Decisions),
+        ),
+        (
+            "Drop the free trial for enterprise accounts",
+            Some(Decisions),
+        ),
+        (
+            "Annual billing moves to the new contract template",
+            Some(Decisions),
+        ),
     ] {
         assert_eq!(classify_item(Decisions, text), want, "{text}");
     }
@@ -217,6 +305,10 @@ fn a_pleasantry_the_model_files_as_a_decision_is_dropped() {
 /// an addressee or filler word ("Good morning everyone", "Great, thanks all").
 #[test]
 fn a_real_line_that_opens_with_a_pleasantry_word_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         // The reviewers' probes.
@@ -268,6 +360,10 @@ fn a_real_line_that_opens_with_a_pleasantry_word_is_kept() {
 /// which EVERY clause is a greeting, thanks or goodbye.
 #[test]
 fn a_line_with_substance_next_to_a_greeting_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         // review-opus, 0baec25
@@ -297,8 +393,14 @@ fn a_line_with_substance_next_to_a_greeting_is_kept() {
         // the control both seats used
         "Sorry, the launch moves to May.",
     ] {
-        assert!(classify_item(Decisions, text).is_some(), "Decisions dropped: {text}");
-        assert!(classify_item(Questions, text).is_some(), "Questions dropped: {text}");
+        assert!(
+            classify_item(Decisions, text).is_some(),
+            "Decisions dropped: {text}"
+        );
+        assert!(
+            classify_item(Questions, text).is_some(),
+            "Questions dropped: {text}"
+        );
     }
 }
 
@@ -307,6 +409,10 @@ fn a_line_with_substance_next_to_a_greeting_is_kept() {
 /// nobody's decision, question or task.
 #[test]
 fn small_talk_is_dropped_from_every_bucket() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
@@ -331,6 +437,10 @@ fn small_talk_is_dropped_from_every_bucket() {
 /// moves to May" under decisions, and the stored notes had no "May" at all.
 #[test]
 fn a_decision_after_a_thank_you_reaches_the_stored_notes() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let lines: &[&str] = &[
         "Okay, quick sync on the launch for the Drivia consulting tier.",
         "Thanks everyone, the launch moves to May.",
@@ -350,11 +460,17 @@ fn a_decision_after_a_thank_you_reaches_the_stored_notes() {
     let s = summarize_segments(&segments_from(lines), &model).expect("a summary");
     println!("{}", s.markdown);
     assert!(
-        s.decisions.iter().any(|d| d.text.contains("launch moves to May")),
+        s.decisions
+            .iter()
+            .any(|d| d.text.contains("launch moves to May")),
         "{:?}",
         s.decisions
     );
-    let decisions = s.markdown.split("### Decisions").nth(1).expect("a Decisions section");
+    let decisions = s
+        .markdown
+        .split("### Decisions")
+        .nth(1)
+        .expect("a Decisions section");
     assert!(decisions.contains("May"), "{}", s.markdown);
 }
 
@@ -366,17 +482,36 @@ fn a_decision_after_a_thank_you_reaches_the_stored_notes() {
 /// filler. Each is kept in the bucket(s) the reviewer named.
 #[test]
 fn a_decision_inside_gratitude_or_next_week_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for (text, buckets) in [
-        ("Appreciate the team pushing the launch to May.", &[Decisions, Actions][..]),
-        ("Appreciate Jeisil moving the demo to Thursday.", &[Decisions, Actions][..]),
-        ("Kudos on shipping the pilot two weeks early.", &[Decisions, Actions][..]),
+        (
+            "Appreciate the team pushing the launch to May.",
+            &[Decisions, Actions][..],
+        ),
+        (
+            "Appreciate Jeisil moving the demo to Thursday.",
+            &[Decisions, Actions][..],
+        ),
+        (
+            "Kudos on shipping the pilot two weeks early.",
+            &[Decisions, Actions][..],
+        ),
         ("Good for next week.", &[Decisions][..]),
         ("Great, a call next week.", &[Decisions][..]),
-        ("Congrats on closing Liberty University for the fall pilot.", &[Actions][..]),
+        (
+            "Congrats on closing Liberty University for the fall pilot.",
+            &[Actions][..],
+        ),
     ] {
         for &from in buckets {
-            assert!(classify_item(from, text).is_some(), "{from:?} dropped: {text}");
+            assert!(
+                classify_item(from, text).is_some(),
+                "{from:?} dropped: {text}"
+            );
         }
     }
     // The courtesy lines built from the same openers are still small talk.
@@ -404,6 +539,10 @@ fn a_decision_inside_gratitude_or_next_week_is_kept() {
 /// stored notes had no Decisions section.
 #[test]
 fn an_appreciate_decision_reaches_the_stored_notes_without_a_backfill() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let lines: &[&str] = &[
         "Okay, quick sync on the launch for the Drivia consulting tier.",
         "Appreciate the team pushing the launch to May.",
@@ -427,7 +566,11 @@ fn an_appreciate_decision_reaches_the_stored_notes_without_a_backfill() {
         "{:?}",
         s.decisions
     );
-    let decisions = s.markdown.split("### Decisions").nth(1).expect("a Decisions section");
+    let decisions = s
+        .markdown
+        .split("### Decisions")
+        .nth(1)
+        .expect("a Decisions section");
     assert!(decisions.contains("May"), "{}", s.markdown);
 }
 
@@ -441,6 +584,10 @@ fn an_appreciate_decision_reaches_the_stored_notes_without_a_backfill() {
 /// on the courtesy list (joining, coming, the time, help, hosting, …).
 #[test]
 fn a_gratitude_wrapped_decision_with_no_date_or_name_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         // review-opus, f8fb110 — each returned None from Decisions.
@@ -470,7 +617,11 @@ fn a_gratitude_wrapped_decision_with_no_date_or_name_is_kept() {
         "Thank you for pulling it.",
         "Thanks for taking the launch.",
     ] {
-        assert_eq!(classify_item(Decisions, text), Some(Decisions), "Decisions dropped: {text}");
+        assert_eq!(
+            classify_item(Decisions, text),
+            Some(Decisions),
+            "Decisions dropped: {text}"
+        );
     }
     // Courtesy reasons are still small talk in every bucket.
     for text in [
