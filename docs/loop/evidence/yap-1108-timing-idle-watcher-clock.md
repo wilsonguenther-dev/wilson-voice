@@ -38,3 +38,15 @@ From the repo root:
     bash scripts/stress-tests.sh --runs 20 --log-dir docs/loop/evidence/stress-harness lib transcription::tests::state_transitions_unloaded_to_loaded_to_idle_unloaded
     bash scripts/stress-tests.sh --runs 20 --log-dir docs/loop/evidence/stress-harness lib transcription::tests::empty_audio_is_a_no_op_and_use_keeps_the_engine_warm
     (cd desktop/src-tauri && cargo test --features custom-protocol --lib transcription::tests)
+
+## Retry after the batch-1 bounce (2026-11-09T02:14:00Z, coder B3, base c28ab4c9 origin/loop3/integration-1)
+
+Batch 1 bounced (and the landed merge was reverted, 1ca9bd89) on
+tests/long_take_budget.rs no_new_polling_timer_was_introduced: the test-only literals changed the
+transcription.rs sub-1000 ms census. This retry re-applies the same code (git revert of 1ca9bd89) and
+updates short_timer_allowlist() to the measured census
+{1:2, 2:4, 5:3, 10:2, 20:1, 50:6, 79:1, 80:1, 120:1, 150:2, 200:2, 300:2, 400:4}, each changed row
+commented as test-only, with a row-change paragraph in docs/BUDGETS.md. The status line for rows 1-2
+is now appended to main's docs/loop/evidence/timing-tests-audit.md (that file is on the base now).
+
+Integrator also runs: (cd desktop/src-tauri && cargo test --features custom-protocol --test long_take_budget no_new_polling_timer_was_introduced)
