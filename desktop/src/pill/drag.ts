@@ -20,16 +20,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  beginPress,
-  CLICK_SLOP,
-  endPress,
-  markPressed,
-  pressLogLine,
-  pressVisualLatency,
-  trackPress,
-  type PressKind,
-} from "./press";
+import { beginPress, CLICK_SLOP, endPress, trackPress, type PressKind } from "./press";
 import { prefersReducedMotion } from "./motion";
 
 /**
@@ -348,10 +339,7 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
             break;
           case "blob": {
             const r = root();
-            if (r) {
-              markPressed(r, false); // a drag is not a press: the blob takes over
-              applyDragVisual(r, "blob", state.target, reduce.current);
-            }
+            if (r) applyDragVisual(r, "blob", state.target, reduce.current);
             console.info(`pill drag event=blob from=${state.from} reduce_motion=${reduce.current}`);
             break;
           }
@@ -402,10 +390,6 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
           ? null
           : endPress(press.current, e.screenX, e.screenY, performance.now());
       last.current = kind;
-      // yap-1107-pill-click-always-registers — the pressed shell lets go on
-      // every release path (click, drag end, cancel, Esc).
-      const pr = root();
-      if (pr) markPressed(pr, false);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);
       } catch {
@@ -431,18 +415,7 @@ export function usePillDrag(feedback: PillGestureFeedback = {}): PillDrag {
         reduce.current = prefersReducedMotion();
         t0.current = performance.now();
         const r = root();
-        if (r) {
-          applyDragVisual(r, "rest", null, reduce.current);
-          // yap-1107-pill-click-always-registers — the pressed shell (pill.html:
-          // 96 percent) goes up HERE, synchronously, before any IPC: the press
-          // is visible on the next frame whatever the backend is doing. The
-          // frame that paints it is timed against the event (acceptance 2).
-          markPressed(r, true);
-          const downAt = e.timeStamp;
-          if (typeof requestAnimationFrame === "function") {
-            requestAnimationFrame(() => console.info(pressLogLine(pressVisualLatency(downAt, performance.now()))));
-          }
-        }
+        if (r) applyDragVisual(r, "rest", null, reduce.current);
         press.current = beginPress(e.screenX, e.screenY, performance.now());
         try {
           // Capture so the gesture keeps reporting once the panel slides out
