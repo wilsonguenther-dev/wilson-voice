@@ -64,28 +64,28 @@
 //! YV128–130 build the profile table; nothing here needs to change when they
 //! do, which is the point of the seam.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::meeting_echo::{
-    echo_words, word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD,
+    word_ngram_containment, word_trigram_containment, ECHO_CONTAINMENT_THRESHOLD,
 };
 use crate::meetings::{
     diarization_target, format_offset, is_two_track, speaker_label, DiarizationTarget, MeetingKind,
     MeetingSegment, MIC_TRACK, UNCLUSTERED_SPEAKER_LABEL,
 };
 use crate::polish_protocol::{
-    fit_to_budget, parse_ready, parse_response_for, summary_map_max_out, PolishRequest,
-    PolishResponse, SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
-    SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
+    fit_to_budget, parse_ready, parse_response_for, PolishRequest, PolishResponse,
+    SUMMARIZE_HEADLINE, SUMMARIZE_MAP, SUMMARIZE_REDUCE, SUMMARY_HEADLINE_MAX_OUT,
+    summary_map_max_out, SUMMARY_REDUCE_MAX_OUT, TRUNCATION_MARKER,
 };
 
 /// Token budget for ONE map chunk's input, measured in the model's own
@@ -179,256 +179,6 @@ pub const ECHO_OWNER_UNCLEAR_MIN: f64 = 0.15;
 /// mic may carry more than one local voice. Never "Me" on a guess.
 pub const MIC_SHARED_OWNER: &str = "Someone here";
 
-// ── yap-audit-notes-strategy: which notes strategy runs ─────────────────────
-
-/// yap-audit-notes-strategy — the notes strategies the NT4 eval measures.
-///
-/// * `A` — the baseline: MAP (narrative + items) → REDUCE, every item and
-///   narrative held to the 0.80 content-word [`GROUNDEDNESS_FLOOR`].
-/// * `B` — `A` with a paraphrase-tolerant grounding check: digits, names and
-///   contacts stay hard-gated, the rest matches at lemma level
-///   ([`LEMMA_GROUNDEDNESS_FLOOR`]). Necessary, not sufficient.
-/// * `E` — ITEMS FIRST, SUMMARY LAST (shipped): MAP keeps the grammar items and
-///   a 3-8 word topic label per chunk instead of a narrative; there is no
-///   REDUCE fold; the Summary is ONE pass over the surviving items and the
-///   topic labels; items are grounded against their CITED segment +-1; the
-///   Summary has hard digit/name/contact gates and a 4-gram verbatim ceiling
-///   ([`SUMMARY_VERBATIM_CEILING`]).
-///
-/// Arm C of the decision (a 3B model) is not a strategy: it is `E` run by the
-/// eval with a different model file (`YAP_EVAL_ARM_C_MODEL`), measured only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotesStrategy {
-    A,
-    B,
-    E,
-}
-
-impl NotesStrategy {
-    pub fn tag(self) -> &'static str {
-        match self {
-            NotesStrategy::A => "A",
-            NotesStrategy::B => "B",
-            NotesStrategy::E => "E",
-        }
-    }
-
-    fn code(self) -> u8 {
-        match self {
-            NotesStrategy::A => 1,
-            NotesStrategy::B => 2,
-            NotesStrategy::E => 3,
-        }
-    }
-
-    fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(NotesStrategy::A),
-            2 => Some(NotesStrategy::B),
-            3 => Some(NotesStrategy::E),
-            _ => None,
-        }
-    }
-}
-
-/// The strategy the shipped app runs (docs/decisions/notes-strategy-2026-10.md).
-pub const NOTES_STRATEGY: NotesStrategy = NotesStrategy::E;
-
-/// 0 = no override. Set only by the eval (to run each arm) and by the tests
-/// that pin arm A's MAP → REDUCE contract; the app never sets it.
-static NOTES_STRATEGY_OVERRIDE: AtomicU8 = AtomicU8::new(0);
-
-/// Run `strategy` instead of [`NOTES_STRATEGY`] in this process (`None` clears).
-/// For the eval and the arm-A contract tests only.
-pub fn set_notes_strategy_override(strategy: Option<NotesStrategy>) {
-    NOTES_STRATEGY_OVERRIDE.store(strategy.map_or(0, NotesStrategy::code), Ordering::SeqCst);
-}
-
-/// The strategy the next summary run uses.
-pub fn notes_strategy() -> NotesStrategy {
-    NotesStrategy::from_code(NOTES_STRATEGY_OVERRIDE.load(Ordering::SeqCst))
-        .unwrap_or(NOTES_STRATEGY)
-}
-
-thread_local! {
-    /// The strategy of the run in progress on this thread — read by
-    /// [`common_gates`]. Outside a run it is `A`, so a validator called on its
-    /// own keeps the floor it always had.
-    static RUN_STRATEGY: Cell<NotesStrategy> = const { Cell::new(NotesStrategy::A) };
-}
-
-/// Arms B and E — the share of an output's distinct content-word LEMMAS that
-/// must occur in the source. "discussed" grounds against "discuss", which the
-/// raw 0.80 floor rejected 38 times on one real meeting.
-pub const LEMMA_GROUNDEDNESS_FLOOR: f64 = 0.6;
-
-/// Arm E — the most of the Summary's distinct word 4-grams that may be lifted
-/// from the transcript (the NT4 eval gate, `GATE_VERBATIM_MAX`).
-pub const SUMMARY_VERBATIM_CEILING: f64 = 0.5;
-
-/// Arm E — lifted 4-grams the Summary gate forgives before it applies
-/// [`SUMMARY_VERBATIM_CEILING`]. The Summary is written from the items, which
-/// are the transcript's own lines, and it has to name what the meeting was
-/// about: the one phrase that does ("the Liberty University pilot") is lifted
-/// by necessity. Over a one-sentence Summary (13 distinct 4-grams) a single
-/// lifted 4-gram is 7.7 points of ratio, so without the allowance a real
-/// paraphrase at 7 of 13 (0.54) read as a re-transcript and the clean planted
-/// fixture of tests/summary_audit_guards.rs lost its Summary. Over a paragraph
-/// the allowance vanishes (40 words: 0.53 max; 100 words: 0.51 max), and a
-/// pasted line pair (13 of 16) is still refused. The NT4 eval keeps reporting
-/// the RAW ratio ([`narrative_containment`]); this only judges.
-pub const SUMMARY_VERBATIM_SLACK_NGRAMS: usize = 1;
-
-/// Arm E — a topic label is 3-8 words.
-pub const MIN_TOPIC_WORDS: usize = 3;
-pub const MAX_TOPIC_WORDS: usize = 8;
-
-/// Arm E — the honest fallback copy (docs/decisions/notes-strategy-2026-10.md).
-/// Every notes card ends with this line.
-pub const NOTES_FOOTER: &str =
-    "Written on this Mac by a small model. Check owners against the transcript.";
-/// The section that stands in for the Summary when no Summary passed.
-pub const TOPICS_HEADING: &str = "Topics";
-/// The section for action-shaped lines that failed the item gates — never
-/// filed under "Action items".
-pub const COMMITMENT_LINES_HEADING: &str = "Lines that sounded like commitments";
-
-/// Arm E — one chunk's topic label and when that chunk starts.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TopicLabel {
-    pub label: String,
-    pub start_seconds: f64,
-}
-
-/// Arm E — an action that failed the item gates, kept as the transcript's own
-/// words with its time and track, under [`COMMITMENT_LINES_HEADING`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct CommitmentLine {
-    pub quote: String,
-    pub start_seconds: f64,
-    pub track: Option<String>,
-}
-
-/// A word reduced to a crude lemma: lowercase, common English inflections
-/// off ("discussed" → "discuss", "planning" → "plann", "plans" → "plan" —
-/// both sides get the same treatment, so the stems only need to agree).
-pub fn lemma(word: &str) -> String {
-    let w = word.to_lowercase();
-    if let Some(stem) = w.strip_suffix("ies") {
-        if stem.len() >= 3 {
-            return format!("{stem}y");
-        }
-    }
-    for suffix in ["ing", "ed", "es", "ly", "s"] {
-        // "discuss", "process": a double s is the word, not a plural.
-        if suffix == "s" && w.ends_with("ss") {
-            break;
-        }
-        if let Some(stem) = w.strip_suffix(suffix) {
-            if stem.len() >= 3 {
-                return stem.trim_end_matches('e').to_string();
-            }
-        }
-    }
-    w.trim_end_matches('e').to_string()
-}
-
-/// Share of the output's distinct content-word lemmas found in the source.
-pub fn lemma_grounded(source: &str, output: &str) -> f64 {
-    let mut claimed: Vec<String> = crate::polish::content_words(output)
-        .iter()
-        .map(|w| lemma(w))
-        .collect();
-    claimed.sort();
-    claimed.dedup();
-    if claimed.is_empty() {
-        return 1.0;
-    }
-    let have: std::collections::HashSet<String> = crate::polish::content_words(source)
-        .iter()
-        .map(|w| lemma(w))
-        .collect();
-    let found = claimed.iter().filter(|w| have.contains(*w)).count();
-    found as f64 / claimed.len() as f64
-}
-
-/// Hard name gate: a capitalised word that does not open a sentence must be a
-/// word the source contains (any case). A sentence opener is held to the same
-/// rule when it is an owner-shaped subject ("Priya will send it", "Priya to
-/// book …") and not a pronoun: over a meeting that never said "Priya" that is
-/// an invented owner.
-pub fn invented_name(source: &str, output: &str) -> Option<String> {
-    const OWNER_VERBS: &[&str] = &["will", "to", "should", "must", "needs", "owns"];
-    const PRONOUNS: &[&str] = &[
-        "i",
-        "we",
-        "you",
-        "they",
-        "he",
-        "she",
-        "it",
-        "someone",
-        "somebody",
-        "everyone",
-        "everybody",
-        "nobody",
-        "this",
-        "that",
-        "there",
-        "the",
-        "a",
-        "an",
-    ];
-    let have: std::collections::HashSet<String> = source
-        .split(|c: char| !c.is_alphanumeric() && c != '\'')
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
-        .collect();
-    let tokens: Vec<&str> = output.split_whitespace().collect();
-    let mut sentence_start = true;
-    for (i, raw) in tokens.iter().enumerate() {
-        let word = raw.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
-        let opens = sentence_start;
-        sentence_start = raw.ends_with(['.', '!', '?', ':']);
-        if word.chars().count() < 2 {
-            continue;
-        }
-        if opens {
-            let next = tokens
-                .get(i + 1)
-                .map(|t| {
-                    t.trim_matches(|c: char| !c.is_alphanumeric())
-                        .to_lowercase()
-                })
-                .unwrap_or_default();
-            let lower = word.to_lowercase();
-            let owner_shaped = OWNER_VERBS.contains(&next.as_str()) || lower.ends_with("'ll");
-            if !owner_shaped || PRONOUNS.contains(&lower.trim_end_matches("'ll")) {
-                continue;
-            }
-        }
-        let word = word.trim_end_matches("'s");
-        if word.chars().next().is_some_and(char::is_uppercase)
-            && !have.contains(&word.to_lowercase())
-        {
-            return Some(word.to_string());
-        }
-    }
-    None
-}
-
-/// The arm B / E gate in place of the 0.80 floor: names hard-gated, the rest
-/// matched at lemma level.
-fn lemma_gates(source: &str, output: &str) -> Option<()> {
-    if invented_name(source, output).is_some() {
-        return reject("v10_invented_name").map(|_| ());
-    }
-    if lemma_grounded(source, output) < LEMMA_GROUNDEDNESS_FLOOR {
-        return reject("v3_ungrounded_lemma").map(|_| ());
-    }
-    Some(())
-}
-
 /// The verbatim measure: the share of `narrative`'s distinct word 4-grams that
 /// occur in `source` (`meeting_echo::word_ngram_containment` at n = 4).
 pub fn narrative_containment(source: &str, narrative: &str) -> f64 {
@@ -508,16 +258,6 @@ fn reject(reason: &'static str) -> Option<String> {
     // one INFO line with the counts by reason (see [`summary_run_line`]).
     log::debug!("summary rejected: {reason}");
     None
-}
-
-/// How many times the run in progress on this thread rejected for `reason`.
-fn run_rejected_count(reason: &str) -> usize {
-    RUN_REJECTIONS.with(|tally| {
-        tally
-            .borrow()
-            .as_ref()
-            .map_or(0, |t| t.get(reason).copied().unwrap_or(0))
-    })
 }
 
 /// Whether the run in progress on this thread rejected anything for `reason`.
@@ -1089,80 +829,24 @@ pub enum Bucket {
 
 /// Words that open an imperative action item ("Send the deck to Priya").
 const IMPERATIVE_VERBS: &[&str] = &[
-    "send",
-    "book",
-    "schedule",
-    "email",
-    "call",
-    "share",
-    "draft",
-    "write",
-    "update",
-    "review",
-    "check",
-    "prepare",
-    "finish",
-    "fix",
-    "ship",
-    "file",
-    "create",
-    "add",
-    "confirm",
-    "ask",
-    "invite",
-    "circulate",
-    "post",
-    "follow",
-    "set",
-    "reach",
-    "get",
-    "find",
-    "look",
-    "test",
-    "submit",
-    "sign",
-    "order",
-    "contact",
-    "loop",
+    "send", "book", "schedule", "email", "call", "share", "draft", "write", "update",
+    "review", "check", "prepare", "finish", "fix", "ship", "file", "create", "add",
+    "confirm", "ask", "invite", "circulate", "post", "follow", "set", "reach", "get",
+    "find", "look", "test", "submit", "sign", "order", "contact", "loop",
 ];
 
 /// Owner-led commitments: `<owner> will …`, `<owner> to …`, `I'll …`.
 const COMMIT_AFTER_OWNER: &[&str] = &[
-    "will ",
-    "to ",
-    "should ",
-    "must ",
-    "needs to ",
-    "has to ",
-    "is going to ",
-    "agreed to ",
-    "offered to ",
-    "promised to ",
-    "owns ",
-    "can ",
-    "is on ",
+    "will ", "to ", "should ", "must ", "needs to ", "has to ", "is going to ",
+    "agreed to ", "offered to ", "promised to ", "owns ", "can ", "is on ",
 ];
 
 /// Settled things. Checked first: "we also decided to drop X" carries a
 /// `to <verb>` that would otherwise read as a commitment.
 const DECISION_MARKERS: &[&str] = &[
-    "decided",
-    "decision",
-    "we agreed",
-    "agreed that",
-    "agreed the",
-    "settled",
-    "will remain",
-    "will stay",
-    "stays at",
-    "remains at",
-    "stay at",
-    "remain at",
-    "going with",
-    "go with",
-    "approved",
-    "signed off",
-    "is final",
+    "decided", "decision", "we agreed", "agreed that", "agreed the", "settled",
+    "will remain", "will stay", "stays at", "remains at", "stay at", "remain at",
+    "going with", "go with", "approved", "signed off", "is final",
 ];
 
 /// #250 round 3 (B4) — words that open a sentence capitalized only because
@@ -1170,110 +854,17 @@ const DECISION_MARKERS: &[&str] = &[
 /// ("Nice to meet you", "Happy to help", "Hard to say", "Honestly can we…").
 /// None of them is ever an owner, whatever follows.
 const NOT_A_NAME: &[&str] = &[
-    "nice",
-    "happy",
-    "thanks",
-    "thank",
-    "good",
-    "great",
-    "hard",
-    "easy",
-    "yes",
-    "no",
-    "yeah",
-    "yep",
-    "nope",
-    "honestly",
-    "sure",
-    "okay",
-    "ok",
-    "well",
-    "glad",
-    "fine",
-    "right",
-    "sorry",
-    "hopefully",
-    "actually",
-    "basically",
-    "really",
-    "maybe",
-    "perhaps",
-    "probably",
-    "definitely",
-    "certainly",
-    "clearly",
-    "obviously",
-    "please",
-    "hi",
-    "hello",
-    "hey",
-    "welcome",
-    "cool",
-    "awesome",
-    "fair",
-    "true",
-    "important",
-    "worth",
-    "free",
-    "ready",
-    "next",
-    "first",
-    "last",
-    "just",
-    "now",
-    "today",
-    "tomorrow",
-    "here",
-    "excited",
-    "safe",
-    "likely",
-    "unlikely",
-    "able",
-    "quick",
-    "back",
-    "lovely",
-    "fun",
-    "interesting",
-    "funny",
-    "weird",
-    "strange",
-    "sad",
-    "tough",
-    "impossible",
-    "possible",
-    "better",
-    "best",
-    "kind",
-    "time",
-    "nothing",
-    "everybody",
-    "anybody",
-    "anyone",
-    "somebody",
-    "you",
-    "he",
-    "she",
-    "his",
-    "her",
-    "their",
-    "your",
-    "let's",
-    "lets",
-    "oh",
-    "um",
-    "uh",
-    "so",
-    "and",
-    "but",
-    "also",
-    "then",
-    "quite",
-    "very",
-    "too",
-    "exactly",
-    "absolutely",
-    "totally",
-    "agreed",
+    "nice", "happy", "thanks", "thank", "good", "great", "hard", "easy", "yes", "no", "yeah",
+    "yep", "nope", "honestly", "sure", "okay", "ok", "well", "glad", "fine", "right", "sorry",
+    "hopefully", "actually", "basically", "really", "maybe", "perhaps", "probably",
+    "definitely", "certainly", "clearly", "obviously", "please", "hi", "hello", "hey",
+    "welcome", "cool", "awesome", "fair", "true", "important", "worth", "free", "ready",
+    "next", "first", "last", "just", "now", "today", "tomorrow", "here", "excited", "safe",
+    "likely", "unlikely", "able", "quick", "back", "lovely", "fun", "interesting", "funny",
+    "weird", "strange", "sad", "tough", "impossible", "possible", "better", "best", "kind",
+    "time", "nothing", "everybody", "anybody", "anyone", "somebody", "you", "he", "she",
+    "his", "her", "their", "your", "let's", "lets", "oh", "um", "uh", "so", "and", "but",
+    "also", "then", "quite", "very", "too", "exactly", "absolutely", "totally", "agreed",
 ];
 
 /// #250 round 4 (R2-B2) — common English words that open a sentence and are
@@ -1281,155 +872,24 @@ const NOT_A_NAME: &[&str] = &[
 /// small talk ("Everything will be fine", "Monday will be busy", "Coffee will
 /// help"). None of them is ever an owner, and none is ever a transcript name.
 const COMMON_WORDS: &[&str] = &[
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-    "january",
-    "february",
-    "march",
-    "april",
-    "may",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
-    "everything",
-    "nothing",
-    "something",
-    "anything",
-    "everywhere",
-    "somewhere",
-    "nowhere",
-    "coffee",
-    "tea",
-    "lunch",
-    "dinner",
-    "breakfast",
-    "traffic",
-    "revenue",
-    "sales",
-    "budget",
-    "money",
-    "weather",
-    "rain",
-    "food",
-    "water",
-    "work",
-    "life",
-    "team",
-    "morning",
-    "afternoon",
-    "evening",
-    "tonight",
-    "weekend",
-    "week",
-    "month",
-    "year",
-    "quarter",
-    "noon",
-    "midnight",
-    "people",
-    "things",
-    "stuff",
-    "nobody",
-    "none",
-    "each",
-    "every",
-    "all",
-    "both",
-    "some",
-    "most",
-    "many",
-    "much",
-    "more",
-    "less",
-    "other",
-    "another",
-    "such",
-    "same",
-    "which",
-    "where",
-    "while",
-    "because",
-    "although",
-    "after",
-    "before",
-    "since",
-    "until",
-    "during",
-    "without",
-    "with",
-    "for",
-    "from",
-    "into",
-    "onto",
-    "over",
-    "under",
-    "about",
-    "again",
-    "still",
-    "even",
-    "only",
-    "never",
-    "always",
-    "often",
-    "sometimes",
-    "usually",
-    "soon",
-    "later",
-    "earlier",
-    "otherwise",
-    "instead",
-    "anyway",
-    "meanwhile",
-    "though",
-    "however",
-    "therefore",
-    "plus",
-    "or",
-    "nor",
-    "yet",
-    "not",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december", "everything", "nothing", "something", "anything", "everywhere",
+    "somewhere", "nowhere", "coffee", "tea", "lunch", "dinner", "breakfast", "traffic",
+    "revenue", "sales", "budget", "money", "weather", "rain", "food", "water", "work",
+    "life", "team", "morning", "afternoon", "evening", "tonight", "weekend", "week", "month",
+    "year", "quarter", "noon", "midnight", "people", "things", "stuff", "nobody", "none",
+    "each", "every", "all", "both", "some", "most", "many", "much", "more", "less", "other",
+    "another", "such", "same", "which", "where", "while", "because", "although", "after",
+    "before", "since", "until", "during", "without", "with", "for", "from", "into", "onto",
+    "over", "under", "about", "again", "still", "even", "only", "never", "always", "often",
+    "sometimes", "usually", "soon", "later", "earlier", "otherwise", "instead", "anyway",
+    "meanwhile", "though", "however", "therefore", "plus", "or", "nor", "yet", "not",
     // review-opus2 N1: the everyday nouns of a work meeting are not people.
-    "pricing",
-    "price",
-    "prices",
-    "product",
-    "design",
-    "support",
-    "finance",
-    "legal",
-    "customer",
-    "customers",
-    "client",
-    "clients",
-    "launch",
-    "release",
-    "deadline",
-    "meeting",
-    "call",
-    "plan",
-    "project",
-    "demo",
-    "deck",
-    "doc",
-    "report",
-    "update",
-    "marketing",
-    "engineering",
-    "hiring",
-    "onboarding",
-    "billing",
-    "growth",
-    "progress",
-    "nobody",
+    "pricing", "price", "prices", "product", "design", "support", "finance", "legal",
+    "customer", "customers", "client", "clients", "launch", "release", "deadline", "meeting",
+    "call", "plan", "project", "demo", "deck", "doc", "report", "update", "marketing",
+    "engineering", "hiring", "onboarding", "billing", "growth", "progress", "nobody",
 ];
 
 /// Is `lower` (already lowercased) one of [`COMMON_WORDS`]?
@@ -1449,32 +909,9 @@ fn is_name_word(word: &str) -> bool {
         && !is_common_word(&lower)
         && !matches!(
             lower.as_str(),
-            "the"
-                | "this"
-                | "that"
-                | "it"
-                | "they"
-                | "there"
-                | "someone"
-                | "nobody"
-                | "everyone"
-                | "whether"
-                | "if"
-                | "what"
-                | "how"
-                | "why"
-                | "who"
-                | "when"
-                | "a"
-                | "an"
-                | "our"
-                | "my"
-                | "i"
-                | "we"
-                | "me"
-                | "them"
-                | "these"
-                | "those"
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "i" | "we" | "me" | "them" | "these" | "those"
         )
 }
 
@@ -1533,30 +970,9 @@ fn is_owner_word(word: &str) -> bool {
         && !is_common_word(&lower)
         && !matches!(
             lower.as_str(),
-            "the"
-                | "this"
-                | "that"
-                | "it"
-                | "they"
-                | "there"
-                | "someone"
-                | "nobody"
-                | "everyone"
-                | "whether"
-                | "if"
-                | "what"
-                | "how"
-                | "why"
-                | "who"
-                | "when"
-                | "a"
-                | "an"
-                | "our"
-                | "my"
-                | "also"
-                | "and"
-                | "so"
-                | "then"
+            "the" | "this" | "that" | "it" | "they" | "there" | "someone" | "nobody"
+                | "everyone" | "whether" | "if" | "what" | "how" | "why" | "who" | "when"
+                | "a" | "an" | "our" | "my" | "also" | "and" | "so" | "then"
         )
 }
 
@@ -1569,10 +985,7 @@ fn owner_commitment(text: &str) -> bool {
     };
     let rest = rest.trim_start().to_lowercase();
     let lower_first = first.to_lowercase();
-    if let Some(owner) = lower_first
-        .strip_suffix("'ll")
-        .or(lower_first.strip_suffix("\u{2019}ll"))
-    {
+    if let Some(owner) = lower_first.strip_suffix("'ll").or(lower_first.strip_suffix("\u{2019}ll")) {
         return !owner.is_empty();
     }
     if !is_owner_word(first) {
@@ -1607,14 +1020,8 @@ fn backfill_commitment(text: &str, names: &[String]) -> bool {
         return false;
     }
     const EXPLICIT: &[&str] = &[
-        "will ",
-        "is going to ",
-        "agreed to ",
-        "offered to ",
-        "promised to ",
-        "needs to ",
-        "has to ",
-        "should ",
+        "will ", "is going to ", "agreed to ", "offered to ", "promised to ", "needs to ",
+        "has to ", "should ",
     ];
     known(bare) && (EXPLICIT.iter().any(|c| rest.starts_with(c)) || rest.starts_with("to "))
 }
@@ -1624,20 +1031,9 @@ fn backfill_commitment(text: &str, names: &[String]) -> bool {
 /// decided whether to keep it". Checked before the decision markers.
 fn open_about_decision(lower: &str) -> bool {
     [
-        "asked whether",
-        "asked if",
-        "decided whether",
-        "decide whether",
-        "nobody decided",
-        "no one decided",
-        "not decided",
-        "haven't decided",
-        "hasn't decided",
-        "didn't decide",
-        "did not decide",
-        "not yet decided",
-        "undecided",
-        "still deciding",
+        "asked whether", "asked if", "decided whether", "decide whether", "nobody decided",
+        "no one decided", "not decided", "haven't decided", "hasn't decided", "didn't decide",
+        "did not decide", "not yet decided", "undecided", "still deciding",
     ]
     .iter()
     .any(|m| lower.contains(m))
@@ -1665,15 +1061,8 @@ fn is_strong_question(lower: &str) -> bool {
 
 fn is_weak_question(lower: &str) -> bool {
     [
-        "whether ",
-        "should we ",
-        "do we ",
-        "does anyone ",
-        "can we ",
-        "are we ",
-        "is it ",
-        "how do we ",
-        "what if ",
+        "whether ", "should we ", "do we ", "does anyone ", "can we ", "are we ", "is it ",
+        "how do we ", "what if ",
     ]
     .iter()
     .any(|q| lower.starts_with(q))
@@ -1685,19 +1074,8 @@ fn is_weak_question(lower: &str) -> bool {
 
 fn generic_commitment(lower: &str) -> bool {
     [
-        " will ",
-        "'ll ",
-        " need to ",
-        " needs to ",
-        " has to ",
-        " have to ",
-        " must ",
-        " should ",
-        " to do",
-        "follow up",
-        "going to ",
-        " by friday",
-        " by monday",
+        " will ", "'ll ", " need to ", " needs to ", " has to ", " have to ", " must ",
+        " should ", " to do", "follow up", "going to ", " by friday", " by monday",
     ]
     .iter()
     .any(|c| format!(" {lower} ").contains(c))
@@ -1778,33 +1156,9 @@ pub fn classify_item(from: Bucket, text: &str) -> Option<Bucket> {
 /// Words that greet, thank or say goodbye. A clause made only of these, its
 /// addressees and filler is small talk.
 const GREETING_WORDS: &[&str] = &[
-    "thanks",
-    "thank",
-    "hi",
-    "hello",
-    "hey",
-    "cheers",
-    "congrats",
-    "congratulations",
-    "bye",
-    "goodbye",
-    "nice",
-    "great",
-    "good",
-    "glad",
-    "happy",
-    "welcome",
-    "lovely",
-    "cool",
-    "awesome",
-    "sorry",
-    "appreciate",
-    "appreciated",
-    "pleasure",
-    "morning",
-    "afternoon",
-    "evening",
-    "night",
+    "thanks", "thank", "hi", "hello", "hey", "cheers", "congrats", "congratulations", "bye",
+    "goodbye", "nice", "great", "good", "glad", "happy", "welcome", "lovely", "cool", "awesome",
+    "sorry", "appreciate", "appreciated", "pleasure", "morning", "afternoon", "evening", "night",
     "kudos",
 ];
 
@@ -1814,90 +1168,27 @@ const GREETING_WORDS: &[&str] = &[
 /// welcome) also start proper nouns ("Good Shepherd Health", "Great Lakes"),
 /// so a name after them counts only in the last slot after filler.
 const UNAMBIGUOUS_GREETINGS: &[&str] = &[
-    "thanks",
-    "thank",
-    "hi",
-    "hello",
-    "hey",
-    "cheers",
-    "congrats",
-    "congratulations",
-    "bye",
-    "goodbye",
-    "kudos",
+    "thanks", "thank", "hi", "hello", "hey", "cheers", "congrats", "congratulations", "bye",
+    "goodbye", "kudos",
 ];
 
 /// Gratitude openers whose clause may name a reason after `for` / `on`
 /// ("Thanks Wilson for pulling the numbers together", "Congrats on the
 /// launch"); `appreciate` takes any object ("Appreciate everyone making the
 /// time").
-const GRATITUDE_OPENERS: &[&str] = &[
-    "thanks",
-    "thank",
-    "cheers",
-    "congrats",
-    "congratulations",
-    "kudos",
-    "appreciate",
-    "appreciated",
-];
+const GRATITUDE_OPENERS: &[&str] =
+    &["thanks", "thank", "cheers", "congrats", "congratulations", "kudos", "appreciate", "appreciated"];
 
 /// Addressees and filler that carry no decision and no topic. Fix round 3
 /// (review BLOCKING): weekdays, "it", "is", "on", "board", "we're" are NOT
 /// here — "Great, Monday it is." and "Good, so we're on board." are
 /// decisions. A weekday counts only right after "happy" ("Happy Friday").
 const PLEASANTRY_FILLER: &[&str] = &[
-    "everyone",
-    "everybody",
-    "all",
-    "y'all",
-    "you",
-    "guys",
-    "folks",
-    "team",
-    "again",
-    "so",
-    "much",
-    "very",
-    "really",
-    "too",
-    "today",
-    "here",
-    "and",
-    "to",
-    "see",
-    "meet",
-    "have",
-    "having",
-    "be",
-    "being",
-    "back",
-    "us",
-    "for",
-    "joining",
-    "coming",
-    "the",
-    "time",
-    "call",
-    "chat",
-    "day",
-    "weekend",
-    "week",
-    "about",
-    "late",
-    "i",
-    "i'm",
-    "im",
-    "a",
-    "one",
-    "of",
-    "both",
-    "lot",
-    "oh",
-    "well",
-    "ok",
-    "okay",
-    "also",
+    "everyone", "everybody", "all", "y'all", "you", "guys", "folks", "team", "again", "so",
+    "much", "very", "really", "too", "today", "here", "and", "to", "see", "meet", "have",
+    "having", "be", "being", "back", "us", "for", "joining", "coming", "the", "time", "call",
+    "chat", "day", "weekend", "week", "about", "late", "i", "i'm", "im", "a", "one",
+    "of", "both", "lot", "oh", "well", "ok", "okay", "also",
 ];
 
 /// Fix round 6 (review-opus2 BLOCKING on b3d048c): the words a courtesy reason
@@ -1909,106 +1200,23 @@ const PLEASANTRY_FILLER: &[&str] = &[
 /// vocabulary to spell a decision ("Thanks for setting the launch back a
 /// week."). Those are now handled by `SCHEDULE_WORDS` and `TWO_SENSE_VERBS`.
 const COURTESY_REASON: &[&str] = &[
-    "it",
-    "that",
-    "this",
-    "your",
-    "everyone's",
-    "everybody's",
-    "my",
-    "our",
-    "me",
-    "them",
-    "him",
-    "her",
-    "his",
-    "their",
-    "help",
-    "helping",
-    "hosting",
-    "host",
-    "together",
-    "numbers",
-    "patience",
-    "waiting",
-    "flagging",
-    "input",
-    "feedback",
-    "support",
-    "effort",
-    "efforts",
-    "work",
-    "hard",
-    "great",
-    "good",
-    "nice",
-    "sharing",
-    "listening",
-    "attending",
-    "dialing",
-    "dialling",
-    "in",
-    "showing",
-    "up",
-    "staying",
-    "organizing",
-    "organising",
-    "update",
-    "updates",
-    "notes",
-    "launch",
-    "win",
-    "promotion",
-    "birthday",
-    "anniversary",
-    "news",
-    "presentation",
-    "demo",
-    "thoughts",
-    "questions",
-    "everything",
-    "invite",
-    "invitation",
-    "intro",
-    "introduction",
-    "quick",
-    "turnaround",
+    "it", "that", "this", "your", "everyone's", "everybody's", "my", "our", "me", "them",
+    "him", "her", "his", "their", "help", "helping", "hosting", "host", "together", "numbers",
+    "patience", "waiting", "flagging", "input", "feedback", "support", "effort", "efforts",
+    "work", "hard", "great", "good", "nice", "sharing", "listening", "attending", "dialing",
+    "dialling", "in", "showing", "up", "staying", "organizing", "organising", "update",
+    "updates", "notes", "launch", "win", "promotion", "birthday", "anniversary", "news",
+    "presentation", "demo", "thoughts", "questions", "everything", "invite", "invitation",
+    "intro", "introduction", "quick", "turnaround",
 ];
 
 /// The non-schedule filler a courtesy reason may carry ("for joining",
 /// "for being here", "for all of your help"). Deliberately NOT all of
 /// `PLEASANTRY_FILLER`: see `SCHEDULE_WORDS`.
 const REASON_FILLER: &[&str] = &[
-    "everyone",
-    "everybody",
-    "all",
-    "y'all",
-    "you",
-    "guys",
-    "folks",
-    "team",
-    "again",
-    "so",
-    "much",
-    "very",
-    "really",
-    "too",
-    "here",
-    "and",
-    "us",
-    "the",
-    "a",
-    "of",
-    "both",
-    "lot",
-    "i",
-    "joining",
-    "coming",
-    "being",
-    "be",
-    "call",
-    "chat",
-    "also",
+    "everyone", "everybody", "all", "y'all", "you", "guys", "folks", "team", "again", "so",
+    "much", "very", "really", "too", "here", "and", "us", "the", "a", "of", "both", "lot", "i",
+    "joining", "coming", "being", "be", "call", "chat", "also",
 ];
 
 /// A schedule or time word in the reason means it can carry a decision
@@ -2016,9 +1224,9 @@ const REASON_FILLER: &[&str] = &[
 /// kept. "time" is the one exception, and only as the object of a courtesy
 /// ("making the time", "your time", "taking the time").
 const SCHEDULE_WORDS: &[&str] = &[
-    "back", "week", "weeks", "day", "days", "today", "tonight", "tomorrow", "to", "have", "having",
-    "one", "late", "early", "earlier", "later", "weekend", "next", "until", "till", "by", "before",
-    "after", "month", "months", "quarter", "year", "date", "deadline",
+    "back", "week", "weeks", "day", "days", "today", "tonight", "tomorrow", "to", "have",
+    "having", "one", "late", "early", "earlier", "later", "weekend", "next", "until", "till",
+    "by", "before", "after", "month", "months", "quarter", "year", "date", "deadline",
 ];
 
 /// Verbs with a courtesy sense AND a decision sense ("pulling the numbers
@@ -2037,21 +1245,8 @@ const TWO_SENSE_VERBS: &[(&str, &[&str])] = &[
 /// Things a two-sense verb can act on as a decision ("pulling the launch",
 /// "setting the demo for today").
 const AGENDA_NOUNS: &[&str] = &[
-    "launch",
-    "demo",
-    "presentation",
-    "call",
-    "meeting",
-    "release",
-    "pilot",
-    "offsite",
-    "deal",
-    "contract",
-    "price",
-    "plan",
-    "budget",
-    "date",
-    "deadline",
+    "launch", "demo", "presentation", "call", "meeting", "release", "pilot", "offsite",
+    "deal", "contract", "price", "plan", "budget", "date", "deadline",
 ];
 
 /// Is the reason a gratitude opener gives (`words[from..]`) only courtesy?
@@ -2064,10 +1259,7 @@ const AGENDA_NOUNS: &[&str] = &[
 /// everyone making the time", "Thanks Wilson for pulling the numbers
 /// together" and "Thank you all for joining" are small talk.
 fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
-    let reason: Vec<&str> = lower[from.min(lower.len())..]
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let reason: Vec<&str> = lower[from.min(lower.len())..].iter().map(String::as_str).collect();
     let has_agenda = reason.iter().any(|w| AGENDA_NOUNS.contains(w));
     (from..lower.len()).enumerate().all(|(k, j)| {
         let w = lower[j].as_str();
@@ -2078,10 +1270,7 @@ fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
         }
         if w == "time" {
             return k > 0
-                && matches!(
-                    reason[k - 1],
-                    "the" | "your" | "making" | "taking" | "make" | "our"
-                );
+                && matches!(reason[k - 1], "the" | "your" | "making" | "taking" | "make" | "our");
         }
         if SCHEDULE_WORDS.contains(&w) {
             return false;
@@ -2099,15 +1288,8 @@ fn courtesy_reason(words: &[&str], lower: &[String], from: usize) -> bool {
 /// Wilson …", "oh hi").
 const CLAUSE_LEAD_INS: &[&str] = &["and", "so", "oh", "well", "ok", "okay", "also"];
 
-const WEEKDAYS: &[&str] = &[
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-];
+const WEEKDAYS: &[&str] =
+    &["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
 /// Is `text` small talk rather than a statement of substance?
 ///
@@ -2122,16 +1304,12 @@ const WEEKDAYS: &[&str] = &[
 /// "Thank-you cards" and "Bye-laws" are single non-greeting words. A causal
 /// "Thanks to <thing>" (not to an addressee) is not gratitude.
 fn is_pleasantry(text: &str) -> bool {
-    let normalized = text
-        .replace(" - ", ",")
-        .replace(['\u{2014}', '\u{2013}'], ",");
+    let normalized = text.replace(" - ", ",").replace(['\u{2014}', '\u{2013}'], ",");
     let clauses: Vec<Vec<&str>> = normalized
         .split([',', ';', ':', '.', '!', '?'])
         .map(|c| {
             c.split(|ch: char| ch.is_whitespace() || ch == '/')
-                .map(|w| {
-                    w.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-')
-                })
+                .map(|w| w.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-'))
                 .map(|w| w.trim_matches('-'))
                 .filter(|w| !w.is_empty())
                 .collect::<Vec<&str>>()
@@ -2192,8 +1370,7 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
         }
         let run_start = i;
         while i < lower.len()
-            && (PLEASANTRY_FILLER.contains(&lower[i].as_str())
-                && !matches!(lower[i].as_str(), "for" | "the")
+            && (PLEASANTRY_FILLER.contains(&lower[i].as_str()) && !matches!(lower[i].as_str(), "for" | "the")
                 || is_name(i))
         {
             i += 1;
@@ -2228,11 +1405,7 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
         }
         // Fix round 4: "next" is not filler ("Good for next week" is a
         // decision) — only inside a goodbye ("see you all next week").
-        if w == "next"
-            && lower[start..i]
-                .windows(2)
-                .any(|p| p[0] == "see" && p[1] == "you")
-        {
+        if w == "next" && lower[start..i].windows(2).any(|p| p[0] == "see" && p[1] == "you") {
             continue;
         }
         // An addressee's name: anywhere after an unambiguous greeting, or as
@@ -2243,15 +1416,8 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
         }
         return None;
     }
-    let see_you = lower[start..]
-        .windows(2)
-        .any(|p| p[0] == "see" && p[1] == "you");
-    Some(
-        see_you
-            || lower[start..]
-                .iter()
-                .any(|w| GREETING_WORDS.contains(&w.as_str())),
-    )
+    let see_you = lower[start..].windows(2).any(|p| p[0] == "see" && p[1] == "you");
+    Some(see_you || lower[start..].iter().any(|w| GREETING_WORDS.contains(&w.as_str())))
 }
 
 /// A named owner who will DO something outranks a decision word later in the
@@ -2259,9 +1425,7 @@ fn pleasantry_clause(words: &[&str]) -> Option<bool> {
 fn owner_commits_strongly(text: &str) -> bool {
     let first = text.split_whitespace().next().unwrap_or("");
     let lower = first.to_lowercase();
-    owner_commitment(text)
-        && lower != "we"
-        && !lower.starts_with("we'")
+    owner_commitment(text) && lower != "we" && !lower.starts_with("we'")
         && !text.to_lowercase().contains(" will remain")
         && !text.to_lowercase().contains(" will stay")
 }
@@ -2273,17 +1437,14 @@ fn passive_settled(lower: &str) -> bool {
         .split(" will be ")
         .nth(1)
         .and_then(|rest| rest.split_whitespace().next())
-        .is_some_and(|w| {
-            w.trim_matches(|c: char| !c.is_alphanumeric())
-                .ends_with("ed")
-        })
+        .is_some_and(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).ends_with("ed"))
 }
 
 /// Function words that two unrelated lines share ("the", "will"); they say
 /// nothing about which line an item came from.
 const CITE_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you", "has",
-    "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
+    "the", "and", "for", "will", "that", "this", "with", "are", "was", "its", "our", "you",
+    "has", "have", "from", "not", "but", "into", "about", "also", "then", "than", "they",
 ];
 
 fn content_words(text: &str) -> Vec<String> {
@@ -2326,28 +1487,18 @@ pub fn ground_extract_with(
     source: &str,
     names: &[String],
 ) {
-    for list in [
-        &mut extract.actions,
-        &mut extract.decisions,
-        &mut extract.questions,
-    ] {
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
         for item in list.iter_mut() {
             let words = content_words(&item.text);
             let score = |l: &TranscriptLine| overlap(&words, &l.text);
-            let cited = lines
-                .iter()
-                .find(|l| l.label == item.segment)
-                .map_or(0, score);
+            let cited = lines.iter().find(|l| l.label == item.segment).map_or(0, score);
             // Only a citation that shares NO content word with its item moves,
             // and only to a line that clearly matches (two words or more): the
             // model's id stands whenever it is plausible at all.
             if cited > 0 {
                 continue;
             }
-            if let Some(best) = lines
-                .iter()
-                .max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone())))
-            {
+            if let Some(best) = lines.iter().max_by_key(|l| (score(l), std::cmp::Reverse(l.label.clone()))) {
                 if score(best) >= 2 {
                     item.segment = best.label.clone();
                 }
@@ -2383,21 +1534,14 @@ pub fn ground_extract_with(
         let Some(text) = validate_item(source, text.trim_end_matches('.')) else {
             continue;
         };
-        let item = ExtractedItem {
-            text,
-            segment: line.label.clone(),
-        };
+        let item = ExtractedItem { text, segment: line.label.clone() };
         match bucket {
             Bucket::Actions => extract.actions.push(item),
             Bucket::Decisions => extract.decisions.push(item),
             Bucket::Questions => extract.questions.push(item),
         }
     }
-    for list in [
-        &mut extract.actions,
-        &mut extract.decisions,
-        &mut extract.questions,
-    ] {
+    for list in [&mut extract.actions, &mut extract.decisions, &mut extract.questions] {
         list.sort_by(|a, b| a.segment.cmp(&b.segment));
         let mut kept: Vec<ExtractedItem> = Vec::with_capacity(list.len());
         for item in list.drain(..) {
@@ -2602,22 +1746,9 @@ pub fn validate_narrative(source: &str, narrative: &str) -> Option<String> {
 /// did: "The pricing review … is complete" from a transcript that said "this
 /// is the pricing review" claims more than was said.
 const STATUS_CLAIMS: &[&str] = &[
-    "is complete",
-    "is completed",
-    "was completed",
-    "is done",
-    "was done",
-    "is finished",
-    "was finished",
-    "is final",
-    "was finalized",
-    "is finalized",
-    "was a success",
-    "is resolved",
-    "was resolved",
-    "went well",
-    "is wrapped up",
-    "was wrapped up",
+    "is complete", "is completed", "was completed", "is done", "was done", "is finished",
+    "was finished", "is final", "was finalized", "is finalized", "was a success",
+    "is resolved", "was resolved", "went well", "is wrapped up", "was wrapped up",
 ];
 
 /// Word stems that say something is finished, as a person would say it:
@@ -2652,9 +1783,7 @@ pub fn status_supported(source: &str, sentence: &str) -> bool {
     if np.is_empty() {
         np = content_words(&l)
             .into_iter()
-            .filter(|w| {
-                !says_completion(w) && !STATUS_CLAIMS.iter().any(|c| c.contains(w.as_str()))
-            })
+            .filter(|w| !says_completion(w) && !STATUS_CLAIMS.iter().any(|c| c.contains(w.as_str())))
             .collect();
     }
     split_sentences(source).iter().any(|src| {
@@ -2701,7 +1830,10 @@ pub fn split_sentences(text: &str) -> Vec<String> {
             if ABBREVIATIONS.contains(&last.as_str()) {
                 continue;
             }
-            let next_word = chars[i + 1..].iter().find(|c| !c.is_whitespace()).copied();
+            let next_word = chars[i + 1..]
+                .iter()
+                .find(|c| !c.is_whitespace())
+                .copied();
             if matches!(last.as_str(), "a.m" | "p.m")
                 && next_word.is_some_and(|c| c.is_lowercase() || c.is_ascii_digit())
             {
@@ -2736,9 +1868,7 @@ fn drop_unsaid_status(source: &str, narrative: &str) -> String {
         .filter(|s| status_supported(source, s))
         .collect();
     if kept.is_empty() {
-        log::warn!(
-            "summary: every sentence claims a status the meeting never stated — kept as written"
-        );
+        log::warn!("summary: every sentence claims a status the meeting never stated — kept as written");
         return narrative.to_string();
     }
     kept.join(" ")
@@ -2750,19 +1880,8 @@ fn common_gates(source: &str, output: &str) -> Option<()> {
     // INPUT survived; a summary is allowed to drop almost all of it, so the
     // honest question is the other one: how much of what the summary SAYS is
     // actually in the source.
-    // yap-audit-notes-strategy: arms B and E replace the floor with hard name
-    // gates and a lemma-level match; A (and any call outside a run) keeps it.
-    match RUN_STRATEGY.with(Cell::get) {
-        NotesStrategy::A => {
-            if grounded(source, output) < GROUNDEDNESS_FLOOR {
-                return reject("v3_ungrounded").map(|_| ());
-            }
-        }
-        NotesStrategy::B => lemma_gates(source, output)?,
-        // Arm E grounds each item against the segment it CITES (+-1) after
-        // the merge (`ground_items_in_window`), so a failed item can still be
-        // quoted as a commitment line instead of vanishing here.
-        NotesStrategy::E => {}
+    if grounded(source, output) < GROUNDEDNESS_FLOOR {
+        return reject("v3_ungrounded").map(|_| ());
     }
     content_gates(source, output)
 }
@@ -3054,25 +2173,12 @@ pub fn summarize_segments_with(
     client: &dyn SummaryClient,
     speakers: &dyn SpeakerSource,
 ) -> Result<MeetingSummary, SummaryError> {
-    summarize_segments_with_strategy(segments, client, speakers, notes_strategy())
-}
-
-/// yap-audit-notes-strategy — the same, with the notes strategy named
-/// explicitly (the eval runs every arm through this).
-pub fn summarize_segments_with_strategy(
-    segments: &[MeetingSegment],
-    client: &dyn SummaryClient,
-    speakers: &dyn SpeakerSource,
-    strategy: NotesStrategy,
-) -> Result<MeetingSummary, SummaryError> {
     let mut timings = SummaryRunTimings {
         model_load_ms: client.model_load_ms(),
         ..SummaryRunTimings::default()
     };
     let outer = RUN_REJECTIONS.with(|tally| tally.borrow_mut().replace(BTreeMap::new()));
-    let outer_strategy = RUN_STRATEGY.with(|s| s.replace(strategy));
-    let result = summarize_run(segments, client, speakers, &mut timings, strategy);
-    RUN_STRATEGY.with(|s| s.set(outer_strategy));
+    let result = summarize_run(segments, client, speakers, &mut timings);
     timings.rejections = RUN_REJECTIONS
         .with(|tally| std::mem::replace(&mut *tally.borrow_mut(), outer))
         .unwrap_or_default();
@@ -3080,7 +2186,6 @@ pub fn summarize_segments_with_strategy(
         Ok(_) => "ok",
         Err(e) => e.tag(),
     };
-    log::info!("summarize strategy arm={}", strategy.tag());
     log::info!("{}", summary_run_line(&timings));
     result
 }
@@ -3090,9 +2195,7 @@ fn summarize_run(
     client: &dyn SummaryClient,
     speakers: &dyn SpeakerSource,
     timings: &mut SummaryRunTimings,
-    strategy: NotesStrategy,
 ) -> Result<MeetingSummary, SummaryError> {
-    let items_first = strategy == NotesStrategy::E;
     let lines = transcript_lines_with(segments, speakers);
     if lines.is_empty() {
         return Err(SummaryError::NoSegments);
@@ -3106,8 +2209,6 @@ fn summarize_run(
         .join("\n");
 
     let mut extracts = Vec::with_capacity(chunks.len());
-    // Arm E: one timestamped topic label per chunk that produced a valid one.
-    let mut topics: Vec<TopicLabel> = Vec::new();
     let mut truncated_chunks = 0usize;
     let mut truncated = false;
     for chunk in &chunks {
@@ -3116,12 +2217,7 @@ fn summarize_run(
         }
         let labels = chunk.labels();
         let source = chunk.text();
-        let grammar = if items_first {
-            map_grammar_items_first(&labels)
-        } else {
-            map_grammar(&labels)
-        };
-        let Some(grammar) = grammar else {
+        let Some(grammar) = map_grammar(&labels) else {
             continue;
         };
         // #250 round 2: the output budget is sized to THIS chunk (a fixed 288
@@ -3157,22 +2253,8 @@ fn summarize_run(
                 // `parse_map_output` leaves it raw on purpose — it is a parser,
                 // and the source a narrative is grounded against is a decision
                 // for the caller, not for the recovery scan.
-                if items_first {
-                    // Arm E: no MAP narrative at all; the chunk's topic label
-                    // (grammar-shaped, 3-8 words) is what the Summary sees.
-                    extract.narrative = String::new();
-                    if let Some(label) =
-                        recover_topic(&answer.text).and_then(|t| validate_topic(&source, &t))
-                    {
-                        topics.push(TopicLabel {
-                            label,
-                            start_seconds: chunk.lines.first().map_or(0.0, |l| l.start_seconds),
-                        });
-                    }
-                } else {
-                    extract.narrative =
-                        validate_narrative(&source, &extract.narrative).unwrap_or_default();
-                }
+                extract.narrative =
+                    validate_narrative(&source, &extract.narrative).unwrap_or_default();
                 extracts.push(extract);
             }
             // B2: a cancel is not a failed chunk to skip past — the run stops
@@ -3203,15 +2285,11 @@ fn summarize_run(
     // #250 round 4 (R2-B1): KEY POINTS FIRST, from the transcript, then the
     // Summary paragraph written from them (same call). Only when that
     // paragraph does not hold up does the MAP → REDUCE narrative stand in.
-    // Arm E keeps the headline pass for the title and key points only; its
-    // paragraph is never the Summary (that is written last, from the items).
     let mut headline = headline_pass(client, &lines, &names, &merged.narratives);
     if client.cancelled() {
         return Err(SummaryError::Cancelled);
     }
-    let narrative = if items_first {
-        String::new()
-    } else if headline.summary.trim().is_empty() {
+    let narrative = if headline.summary.trim().is_empty() {
         let (narrative, reduce_truncated) =
             reduce_narrative(&merged.narratives, &full_text, client, timings);
         truncated |= reduce_truncated;
@@ -3242,6 +2320,7 @@ fn summarize_run(
         } else {
             narrative
         };
+    let verbatim_refused = narrative.trim().is_empty() && run_rejected("v8_verbatim");
     if headline.title.trim().is_empty() {
         headline.title =
             fallback_title(meeting_started_at(segments).map(|t| t.with_timezone(&chrono::Local)));
@@ -3288,72 +2367,18 @@ fn summarize_run(
         segments,
         &lines,
     );
-    // Arm E: every item is grounded against the segment it CITES (+-1), and
-    // the Summary is written last, in one pass, from what survived.
-    let mut commitments: Vec<CommitmentLine> = Vec::new();
-    // Arm E: "refused as a re-transcript" means the ONE Summary pass was, not
-    // an earlier headline paragraph nobody was going to show.
-    let v8_before = run_rejected_count("v8_verbatim");
-    let narrative = if items_first {
-        let failed_actions = ground_items_in_window(&mut actions, &lines);
-        commitments = commitment_lines(&failed_actions, &lines);
-        let failed_decisions = ground_items_in_window(&mut decisions, &lines).len();
-        let failed_questions = ground_items_in_window(&mut questions, &lines).len();
-        log::info!(
-            "summarize items_first_grounding actions_failed={} decisions_failed={failed_decisions} questions_failed={failed_questions} topics={}",
-            failed_actions.len(),
-            topics.len()
-        );
-        items_first_summary(
-            client,
-            &plain_text,
-            &actions,
-            &decisions,
-            &questions,
-            &topics,
-            timings,
-        )?
-    } else {
-        narrative
-    };
-    if client.cancelled() {
-        return Err(SummaryError::Cancelled);
-    }
-    let verbatim_refused = narrative.trim().is_empty()
-        && if items_first {
-            run_rejected_count("v8_verbatim") > v8_before
-        } else {
-            run_rejected("v8_verbatim")
-        };
-    let markdown = if items_first {
-        render_notes_items_first(
-            &headline,
-            &names,
-            &narrative,
-            &actions,
-            &decisions,
-            &questions,
-            &topics,
-            &commitments,
-            truncated_chunks,
-            chunks.len(),
-            truncated,
-            verbatim_refused,
-        )
-    } else {
-        render_notes_with(
-            &headline,
-            &names,
-            &narrative,
-            &actions,
-            &decisions,
-            &questions,
-            truncated_chunks,
-            chunks.len(),
-            truncated,
-            verbatim_refused,
-        )
-    };
+    let markdown = render_notes_with(
+        &headline,
+        &names,
+        &narrative,
+        &actions,
+        &decisions,
+        &questions,
+        truncated_chunks,
+        chunks.len(),
+        truncated,
+        verbatim_refused,
+    );
     let summary = MeetingSummary {
         markdown,
         narrative,
@@ -3374,9 +2399,7 @@ fn summarize_run(
     // by a bad model run. A meeting that was genuinely quiet lands here too, and
     // that is the right answer for it as well: there is nothing to store, so the
     // row keeps whatever it had and the user is told nothing came back.
-    // Arm E: topic labels and quoted commitment lines are content a reader
-    // can use (the honest fallback copy), so they keep the notes too.
-    if summary.is_empty() && topics.is_empty() && commitments.is_empty() {
+    if summary.is_empty() {
         log::warn!(
             "summary: {} MAP pass(es) answered with no content — refusing to store an empty summary",
             chunks.len()
@@ -4301,11 +3324,7 @@ pub fn point_overlap(a: &str, b: &str) -> f64 {
     let (wa, wb) = (set(a), set(b));
     let small = wa.len().min(wb.len());
     if small == 0 {
-        return if wa.is_empty() && wb.is_empty() {
-            1.0
-        } else {
-            0.0
-        };
+        return if wa.is_empty() && wb.is_empty() { 1.0 } else { 0.0 };
     }
     let shared = wa.iter().filter(|w| wb.contains(w)).count();
     shared as f64 / small as f64
@@ -4322,10 +3341,7 @@ pub fn dedupe_key_points(points: Vec<String>) -> Vec<String> {
         if content_words(&p).is_empty() {
             continue;
         }
-        if kept
-            .iter()
-            .any(|k| point_overlap(k, &p) >= KEY_POINT_OVERLAP_MAX)
-        {
+        if kept.iter().any(|k| point_overlap(k, &p) >= KEY_POINT_OVERLAP_MAX) {
             continue;
         }
         kept.push(p);
@@ -4335,31 +3351,9 @@ pub fn dedupe_key_points(points: Vec<String>) -> Vec<String> {
 
 /// Day, month and relative-date words: a sentence carrying one says WHEN.
 const DATE_WORDS: &[&str] = &[
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-    "january",
-    "february",
-    "march",
-    "april",
-    "june",
-    "july",
-    "august",
-    "september",
-    "october",
-    "november",
-    "december",
-    "today",
-    "tomorrow",
-    "tonight",
-    "week",
-    "month",
-    "quarter",
-    "year",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+    "february", "march", "april", "june", "july", "august", "september", "october",
+    "november", "december", "today", "tomorrow", "tonight", "week", "month", "quarter", "year",
 ];
 
 /// Number words count as numbers ("forty nine dollars").
@@ -4377,23 +3371,11 @@ fn information_score(sentence: &str, names: &[String]) -> usize {
         .filter(|w| !w.is_empty())
         .collect();
     let numbers = crate::polish::digit_runs(sentence).len()
-        + words
-            .iter()
-            .filter(|w| NUMBER_WORDS.contains(w))
-            .count()
-            .min(2);
-    let dates = words
-        .iter()
-        .filter(|w| DATE_WORDS.contains(w))
-        .count()
-        .min(2);
+        + words.iter().filter(|w| NUMBER_WORDS.contains(w)).count().min(2);
+    let dates = words.iter().filter(|w| DATE_WORDS.contains(w)).count().min(2);
     let named = names
         .iter()
-        .filter(|n| {
-            sentence
-                .split(|c: char| !c.is_alphanumeric())
-                .any(|w| w == n.as_str())
-        })
+        .filter(|n| sentence.split(|c: char| !c.is_alphanumeric()).any(|w| w == n.as_str()))
         .count()
         .min(2);
     3 * numbers + 2 * dates + 2 * named + usize::from(content_words(sentence).len() >= 5)
@@ -4592,352 +3574,6 @@ pub fn render_notes_with(
     out.trim_end().to_string()
 }
 
-// ── yap-audit-notes-strategy: arm E, items first and the Summary last ───────
-
-/// Arm E's MAP grammar: [`map_grammar`] with the free-text narrative replaced
-/// by a `topic` of 3-8 words. The item rules (and the id allowlist) are the
-/// same rules, byte for byte.
-pub fn map_grammar_items_first(labels: &[String]) -> Option<String> {
-    let base = map_grammar(labels)?;
-    let narrative = "\"{\" ws \"\\\"narrative\\\"\" ws \":\" ws string ws \",\"";
-    let topic = "\"{\" ws \"\\\"topic\\\"\" ws \":\" ws topic ws \",\"";
-    if !base.contains(narrative) {
-        return None;
-    }
-    let mut out = base.replacen(narrative, topic, 1);
-    out.push_str(concat!(
-        "topic ::= \"\\\"\" tw \" \" tw \" \" tw (\" \" tw)? (\" \" tw)? (\" \" tw)? (\" \" tw)? (\" \" tw)? \"\\\"\"\n",
-        "tw ::= [^\"\\\\ \\t\\n]+\n",
-    ));
-    Some(out)
-}
-
-/// The `topic` value of an arm-E MAP answer, when it closed.
-pub fn recover_topic(raw: &str) -> Option<String> {
-    let raw = strip_fences(raw);
-    let key = "\"topic\"";
-    let at = raw.find(key)? + key.len();
-    let rest = raw[at..].trim_start().strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let mut value = String::new();
-    let mut escaped = false;
-    for c in rest.chars() {
-        if escaped {
-            value.push(c);
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' => escaped = true,
-            '"' => return Some(value),
-            other => value.push(other),
-        }
-    }
-    None
-}
-
-/// A topic label that may be shown: 3-8 words, nothing invented (digits,
-/// contacts, names), grounded at lemma level against its chunk.
-pub fn validate_topic(source: &str, topic: &str) -> Option<String> {
-    let topic = strip_speaker_tag(topic.trim())
-        .trim()
-        .trim_end_matches(['.', ',', ';', ':'])
-        .trim();
-    let words = topic.split_whitespace().count();
-    if !(MIN_TOPIC_WORDS..=MAX_TOPIC_WORDS).contains(&words) {
-        return reject("v11_topic_shape");
-    }
-    if invented_name(source, topic).is_some() {
-        return reject("v10_invented_name");
-    }
-    if lemma_grounded(source, topic) < TITLE_GROUNDEDNESS_FLOOR {
-        return reject("v3_ungrounded_lemma");
-    }
-    content_gates(source, topic)?;
-    Some(topic.to_string())
-}
-
-/// The cited line and its neighbours (+-1), the only text an arm-E item may
-/// be grounded against.
-pub fn cited_window(lines: &[TranscriptLine], segment: &str) -> Option<String> {
-    let at = lines.iter().position(|l| l.label == segment)?;
-    let from = at.saturating_sub(1);
-    let to = (at + 1).min(lines.len() - 1);
-    Some(
-        lines[from..=to]
-            .iter()
-            .map(|l| l.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-}
-
-/// Arm E item gate: keep the items whose text holds up against the CITED
-/// segment +-1 (hard digit/name/contact gates, lemma-level match); return the
-/// ones that did not, in order.
-pub fn ground_items_in_window(
-    items: &mut Vec<SummaryItem>,
-    lines: &[TranscriptLine],
-) -> Vec<SummaryItem> {
-    let mut failed = Vec::new();
-    items.retain(|item| {
-        let ok = cited_window(lines, &item.segment).is_some_and(|window| {
-            lemma_gates(&window, &item.text).is_some()
-                && content_gates(&window, &item.text).is_some()
-        });
-        if !ok {
-            failed.push(item.clone());
-        }
-        ok
-    });
-    failed
-}
-
-/// Failed actions as the transcript's own words: the cited line, its time and
-/// its track (speaker). One line per cited segment.
-pub fn commitment_lines(failed: &[SummaryItem], lines: &[TranscriptLine]) -> Vec<CommitmentLine> {
-    let mut out: Vec<CommitmentLine> = Vec::new();
-    for item in failed {
-        let Some(line) = lines.iter().find(|l| l.label == item.segment) else {
-            continue;
-        };
-        let quote = strip_speaker_tag(line.text.trim()).trim().to_string();
-        if quote.is_empty() || out.iter().any(|c| c.quote == quote) {
-            continue;
-        }
-        out.push(CommitmentLine {
-            quote,
-            start_seconds: line.start_seconds,
-            track: item
-                .speaker
-                .clone()
-                .or_else(|| line.speaker.as_ref().map(|s| s.label().to_string())),
-        });
-    }
-    out
-}
-
-/// Arm E — the ONE Summary pass's input: the topic labels (timestamped, every
-/// chunk) and the surviving items. Never transcript lines.
-pub fn items_first_summary_input(
-    actions: &[SummaryItem],
-    decisions: &[SummaryItem],
-    questions: &[SummaryItem],
-    topics: &[TopicLabel],
-) -> String {
-    let mut out = String::new();
-    let mut section = |heading: &str, rows: Vec<String>| {
-        if rows.is_empty() {
-            return;
-        }
-        out.push_str(heading);
-        out.push_str(":\n");
-        for row in rows {
-            out.push_str("- ");
-            out.push_str(&row);
-            out.push('\n');
-        }
-        out.push('\n');
-    };
-    section(
-        "Topics",
-        topics
-            .iter()
-            .map(|t| format!("[{}] {}", format_offset(t.start_seconds), t.label))
-            .collect(),
-    );
-    let texts =
-        |items: &[SummaryItem]| -> Vec<String> { items.iter().map(|i| i.text.clone()).collect() };
-    section("Action items", texts(actions));
-    section("Decisions", texts(decisions));
-    section("Open questions", texts(questions));
-    out.trim_end().to_string()
-}
-
-/// Arm E — the Summary gate: no invented digits, contacts or names, not a
-/// runaway, and at most [`SUMMARY_VERBATIM_CEILING`] of its 4-grams lifted
-/// from the transcript. No groundedness floor: paraphrase is the point.
-pub fn validate_items_first_summary(transcript: &str, summary: &str) -> Option<String> {
-    let summary = strip_speaker_tag(strip_fences(summary).trim())
-        .trim()
-        .to_string();
-    if summary.is_empty() {
-        return reject("v1_empty");
-    }
-    if summary.split_whitespace().count() > NARRATIVE_RUNAWAY_WORDS {
-        return reject("v2_runaway");
-    }
-    if invented_name(transcript, &summary).is_some() {
-        return reject("v10_invented_name");
-    }
-    content_gates(transcript, &summary)?;
-    let judged = items_first_verbatim_ratio(transcript, &summary);
-    if judged > SUMMARY_VERBATIM_CEILING {
-        log::info!(
-            "summarize narrative_refused reason=v8_verbatim stage=items_first containment={:.2} judged={judged:.2} max={SUMMARY_VERBATIM_CEILING} slack={SUMMARY_VERBATIM_SLACK_NGRAMS}",
-            narrative_containment(transcript, &summary)
-        );
-        return reject("v8_verbatim");
-    }
-    Some(summary)
-}
-
-/// Arm E — the ratio the Summary gate judges: the Summary's distinct word
-/// 4-grams lifted from `transcript` (the [`narrative_containment`] tokens),
-/// less [`SUMMARY_VERBATIM_SLACK_NGRAMS`], over all of its distinct 4-grams.
-/// `0.0` for a Summary under four words.
-pub fn items_first_verbatim_ratio(transcript: &str, summary: &str) -> f64 {
-    fn grams(text: &str) -> std::collections::HashSet<String> {
-        echo_words(text).windows(4).map(|w| w.join(" ")).collect()
-    }
-    let own = grams(summary);
-    if own.is_empty() {
-        return 0.0;
-    }
-    let reference = grams(transcript);
-    let lifted = own.iter().filter(|g| reference.contains(*g)).count();
-    lifted.saturating_sub(SUMMARY_VERBATIM_SLACK_NGRAMS) as f64 / own.len() as f64
-}
-
-/// Arm E — write the Summary in ONE pass from the surviving items and topic
-/// labels. Empty when there is nothing to write from, the pass fails, or the
-/// paragraph fails its gate (the notes then show Topics instead).
-fn items_first_summary(
-    client: &dyn SummaryClient,
-    transcript: &str,
-    actions: &[SummaryItem],
-    decisions: &[SummaryItem],
-    questions: &[SummaryItem],
-    topics: &[TopicLabel],
-    timings: &mut SummaryRunTimings,
-) -> Result<String, SummaryError> {
-    let input = items_first_summary_input(actions, decisions, questions, topics);
-    if input.trim().is_empty() {
-        log::info!("summarize items_first_summary outcome=nothing_to_write");
-        return Ok(String::new());
-    }
-    let req = PolishRequest::summarize(
-        next_id(),
-        SUMMARIZE_REDUCE,
-        SUMMARY_REDUCE_MAX_OUT,
-        REDUCE_DEADLINE_MS,
-        input,
-        None,
-    );
-    let started = Instant::now();
-    let answer = client.generate(&req);
-    let ms = elapsed_ms(started);
-    timings.reduce_passes += 1;
-    timings.reduce_ms = timings.reduce_ms.saturating_add(ms);
-    match answer {
-        Ok(answer) => {
-            let kept = validate_items_first_summary(transcript, &answer.text);
-            log::info!(
-                "summarize items_first_summary outcome={} ms={ms}",
-                if kept.is_some() { "kept" } else { "refused" }
-            );
-            Ok(kept.unwrap_or_default())
-        }
-        Err(SummaryError::Cancelled) => Err(SummaryError::Cancelled),
-        Err(e) => {
-            timings.reduce_failed += 1;
-            log::warn!(
-                "summarize items_first_summary outcome=failed reason={} ms={ms}",
-                e.tag()
-            );
-            Ok(String::new())
-        }
-    }
-}
-
-/// Arm E's notes card: [`render_notes_with`], plus the honest fallback copy —
-/// "Topics" (timestamped labels) when no Summary passed, failed actions as
-/// quoted "Lines that sounded like commitments" (never under "Action items"),
-/// and [`NOTES_FOOTER`] as the last line of every card.
-#[allow(clippy::too_many_arguments)]
-pub fn render_notes_items_first(
-    headline: &Headline,
-    names: &[String],
-    narrative: &str,
-    actions: &[SummaryItem],
-    decisions: &[SummaryItem],
-    questions: &[SummaryItem],
-    topics: &[TopicLabel],
-    commitments: &[CommitmentLine],
-    truncated_chunks: usize,
-    chunks: usize,
-    truncated: bool,
-    verbatim_refused: bool,
-) -> String {
-    let mut body = render_notes_with(
-        headline,
-        names,
-        narrative,
-        actions,
-        decisions,
-        questions,
-        truncated_chunks,
-        chunks,
-        truncated,
-        verbatim_refused,
-    );
-    if body.starts_with("_No summary could be produced") {
-        body.clear();
-    }
-    if narrative.trim().is_empty() && !topics.is_empty() {
-        let mut block = format!("### {TOPICS_HEADING}\n\n");
-        for t in topics {
-            block.push_str(&format!(
-                "- {} ({})\n",
-                t.label,
-                format_offset(t.start_seconds)
-            ));
-        }
-        block.push('\n');
-        // Where the Summary would sit: after the title (and the refusal
-        // sentence, when there is one), before the first list.
-        let at = [
-            "### Key points",
-            "### Action items",
-            "### Decisions",
-            "### Open questions",
-        ]
-        .iter()
-        .filter_map(|h| body.find(h))
-        .min();
-        match at {
-            Some(at) => body.insert_str(at, &block),
-            None => {
-                if !body.is_empty() {
-                    body.push_str("\n\n");
-                }
-                body.push_str(block.trim_end());
-            }
-        }
-    }
-    let mut out = body.trim_end().to_string();
-    if !commitments.is_empty() {
-        if !out.is_empty() {
-            out.push_str("\n\n");
-        }
-        out.push_str(&format!("### {COMMITMENT_LINES_HEADING}\n\n"));
-        for c in commitments {
-            let at = format_offset(c.start_seconds);
-            match &c.track {
-                Some(track) => out.push_str(&format!("- \"{}\" ({track}, {at})\n", c.quote)),
-                None => out.push_str(&format!("- \"{}\" ({at})\n", c.quote)),
-            }
-        }
-        out = out.trim_end().to_string();
-    }
-    if out.is_empty() {
-        out.push_str("_No summary could be produced for this meeting._");
-    }
-    out.push_str("\n\n");
-    out.push_str(NOTES_FOOTER);
-    out
-}
-
 // ── the sidecar session ─────────────────────────────────────────────────────
 
 /// Request ids for this process's summarize sessions.
@@ -4969,8 +3605,7 @@ fn live_sidecars() -> &'static std::sync::Mutex<Vec<u32>> {
 
 /// Stop every live summary sidecar (app quit). Returns how many were signalled.
 pub fn stop_all_sidecars() -> usize {
-    let pids: Vec<u32> =
-        std::mem::take(&mut *live_sidecars().lock().unwrap_or_else(|p| p.into_inner()));
+    let pids: Vec<u32> = std::mem::take(&mut *live_sidecars().lock().unwrap_or_else(|p| p.into_inner()));
     for pid in &pids {
         // SAFETY: plain kill(2) on a pid this process spawned and still owns.
         unsafe {
@@ -5087,10 +3722,7 @@ impl SidecarSession {
                 let _ = self.child.kill();
                 return Err(SummaryError::Cancelled);
             }
-            match self
-                .lines
-                .recv_timeout(left.min(Duration::from_millis(100)))
-            {
+            match self.lines.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(line) => {
                     if let Some(response) = parse_response_for(&line, req.id) {
                         return Ok(response);
