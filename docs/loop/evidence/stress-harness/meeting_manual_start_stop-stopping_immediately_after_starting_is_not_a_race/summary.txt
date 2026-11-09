@@ -1,0 +1,26 @@
+stress-tests: target=meeting_manual_start_stop filter='stopping_immediately_after_starting_is_not_a_race' runs=20 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --test meeting_manual_start_stop stopping_immediately_after_starting_is_not_a_race -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /var/folders/40/3lhzw1zj16v6k87qc5w216gw0000gn/T/tmp.oXHKwe5kpN
+stress-tests: started 8 busy loops: 78057 78058 78059 78060 78061 78062 78063 78064
+run 1/20: pass (1 passed)
+run 2/20: pass (1 passed)
+run 3/20: pass (1 passed)
+run 4/20: pass (1 passed)
+run 5/20: pass (1 passed)
+run 6/20: pass (1 passed)
+run 7/20: pass (1 passed)
+run 8/20: pass (1 passed)
+run 9/20: pass (1 passed)
+run 10/20: pass (1 passed)
+run 11/20: pass (1 passed)
+run 12/20: pass (1 passed)
+run 13/20: pass (1 passed)
+run 14/20: pass (1 passed)
+run 15/20: pass (1 passed)
+run 16/20: pass (1 passed)
+run 17/20: pass (1 passed)
+run 18/20: pass (1 passed)
+run 19/20: pass (1 passed)
+run 20/20: pass (1 passed)
+20/20
