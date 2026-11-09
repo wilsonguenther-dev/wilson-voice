@@ -1,0 +1,26 @@
+stress-tests: target=lifecycle filter='a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off' runs=20 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --test lifecycle a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /Users/wilsonguenther/code/wilson-voice-loop/loop3/INT/docs/loop/evidence/stress-harness/lifecycle-a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off
+stress-tests: started 8 busy loops: 36833 36834 36835 36836 36837 36838 36839 36840
+run 1/20: pass (1 passed)
+run 2/20: pass (1 passed)
+run 3/20: pass (1 passed)
+run 4/20: pass (1 passed)
+run 5/20: pass (1 passed)
+run 6/20: pass (1 passed)
+run 7/20: pass (1 passed)
+run 8/20: pass (1 passed)
+run 9/20: pass (1 passed)
+run 10/20: pass (1 passed)
+run 11/20: pass (1 passed)
+run 12/20: pass (1 passed)
+run 13/20: pass (1 passed)
+run 14/20: pass (1 passed)
+run 15/20: pass (1 passed)
+run 16/20: pass (1 passed)
+run 17/20: pass (1 passed)
+run 18/20: pass (1 passed)
+run 19/20: pass (1 passed)
+run 20/20: pass (1 passed)
+20/20

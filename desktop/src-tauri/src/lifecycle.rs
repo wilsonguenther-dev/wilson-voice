@@ -368,9 +368,19 @@ impl TeardownReport {
                 missed.push(s.name);
             }
         }
-        let join = |v: &[&str]| if v.is_empty() { "-".to_string() } else { v.join(",") };
+        let join = |v: &[&str]| {
+            if v.is_empty() {
+                "-".to_string()
+            } else {
+                v.join(",")
+            }
+        };
         if missed.is_empty() {
-            format!("exit clean closed={} ms={}", join(&done), self.total.as_millis())
+            format!(
+                "exit clean closed={} ms={}",
+                join(&done),
+                self.total.as_millis()
+            )
         } else {
             format!(
                 "exit unclean closed={} missed={} ms={}",
@@ -397,12 +407,173 @@ impl TeardownReport {
 /// within `budget` plus the exempt steps' deadlines plus the cost of any
 /// inline step.
 pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport {
-    let start = Instant::now();
+    run_bounded_with(steps, budget, &SystemQuitClock::new())
+}
+
+/// The time source [`run_bounded_with`] measures deadlines and the budget
+/// against. Production uses [`SystemQuitClock`] (the wall clock and a real
+/// `recv_timeout`); tests use [`FakeQuitClock`], where a step DECLARES its cost
+/// instead of sleeping, so whether a step met its deadline is decided by
+/// arithmetic, never by how busy the machine running the test is
+/// (yap-1107-timing-tests-deterministic).
+pub trait QuitClock: Send + Sync {
+    /// Time since this clock's own epoch.
+    fn now(&self) -> Duration;
+    /// Called right before a step starts (before its thread is spawned).
+    fn begin_step(&self) {}
+    /// Called right after an inline step returns.
+    fn end_inline_step(&self) {}
+    /// Wait for a threaded step's completion message for at most `wait`.
+    fn wait_step(
+        &self,
+        rx: &mpsc::Receiver<bool>,
+        wait: Duration,
+    ) -> Result<bool, mpsc::RecvTimeoutError>;
+}
+
+/// The production [`QuitClock`]: `Instant` and a real `recv_timeout`.
+pub struct SystemQuitClock {
+    epoch: Instant,
+}
+
+impl SystemQuitClock {
+    pub fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+        }
+    }
+}
+
+impl Default for SystemQuitClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QuitClock for SystemQuitClock {
+    fn now(&self) -> Duration {
+        self.epoch.elapsed()
+    }
+    fn wait_step(
+        &self,
+        rx: &mpsc::Receiver<bool>,
+        wait: Duration,
+    ) -> Result<bool, mpsc::RecvTimeoutError> {
+        rx.recv_timeout(wait)
+    }
+}
+
+#[derive(Default)]
+struct FakeQuitState {
+    now: Duration,
+    /// Cost the step in flight has declared so far via [`FakeQuitClock::charge`].
+    pending: Duration,
+}
+
+/// A test [`QuitClock`]. Steps call [`FakeQuitClock::charge`] with the time
+/// they would have taken (or [`FakeQuitClock::wedge`] to hang forever). A step
+/// whose declared cost exceeds its wait is `TimedOut` and fake time advances by
+/// exactly the wait; otherwise it is `Done` and fake time advances by its cost.
+/// The outcome never depends on real scheduling: the runner only polls the
+/// step's channel until either the step finishes or its declared cost has
+/// already passed the deadline.
+///
+/// A test seam only (yap-1108-timing-lifecycle-quit-clock): it is `pub` because
+/// the integration tests under `tests/` cannot see `#[cfg(test)]` items; the
+/// app never builds one. A step must declare its whole cost before it returns
+/// or wedges: [`run_bounded_with`] starts the next step as soon as the declared
+/// cost passes the deadline, so a charge made after that would land on the
+/// next step.
+#[derive(Default)]
+pub struct FakeQuitClock {
+    state: std::sync::Mutex<FakeQuitState>,
+}
+
+impl FakeQuitClock {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::default())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, FakeQuitState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The step in flight "spends" `d` of fake time.
+    pub fn charge(&self, d: Duration) {
+        let mut s = self.lock();
+        s.pending = s.pending.saturating_add(d);
+    }
+
+    /// The step in flight hangs forever: an infinite cost, then the calling
+    /// thread parks for good (the runner abandons it, as it would a real hang).
+    pub fn wedge(&self) {
+        self.charge(Duration::MAX);
+        loop {
+            std::thread::park();
+        }
+    }
+}
+
+impl QuitClock for FakeQuitClock {
+    fn now(&self) -> Duration {
+        self.lock().now
+    }
+    fn begin_step(&self) {
+        self.lock().pending = Duration::ZERO;
+    }
+    fn end_inline_step(&self) {
+        let mut s = self.lock();
+        s.now = s.now.saturating_add(s.pending);
+        s.pending = Duration::ZERO;
+    }
+    fn wait_step(
+        &self,
+        rx: &mpsc::Receiver<bool>,
+        wait: Duration,
+    ) -> Result<bool, mpsc::RecvTimeoutError> {
+        // Settle one result against the declared cost: past the deadline is a
+        // timeout charged at exactly `wait`, whatever the step did after.
+        let settle = |r: Result<bool, mpsc::RecvTimeoutError>| {
+            let mut s = self.lock();
+            if s.pending > wait {
+                s.now = s.now.saturating_add(wait);
+                Err(mpsc::RecvTimeoutError::Timeout)
+            } else {
+                s.now = s.now.saturating_add(s.pending);
+                r
+            }
+        };
+        loop {
+            if self.lock().pending > wait {
+                return settle(Err(mpsc::RecvTimeoutError::Timeout));
+            }
+            // A poll interval, not a deadline: the verdict below is decided by
+            // the declared cost alone.
+            match rx.recv_timeout(Duration::from_millis(5)) {
+                Ok(v) => return settle(Ok(v)),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return settle(Err(mpsc::RecvTimeoutError::Disconnected))
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            }
+        }
+    }
+}
+
+/// [`run_bounded`] against an explicit [`QuitClock`].
+pub fn run_bounded_with(
+    steps: Vec<BoundedStep>,
+    budget: Duration,
+    clock: &dyn QuitClock,
+) -> TeardownReport {
+    let start = clock.now();
     let mut exempt_spent = Duration::ZERO;
     let mut reports = Vec::with_capacity(steps.len());
     for step in steps {
-        let step_start = Instant::now();
-        let charged = start.elapsed().saturating_sub(exempt_spent);
+        let step_start = clock.now();
+        let charged = step_start
+            .saturating_sub(start)
+            .saturating_sub(exempt_spent);
         let left = budget.saturating_sub(charged);
         if left.is_zero() && !step.budget_exempt {
             log::warn!("exit: {} skipped — quit budget spent", step.name);
@@ -413,11 +584,14 @@ pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport 
             });
             continue;
         }
+        clock.begin_step();
         let outcome = if step.inline {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step.run)) {
+            let r = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step.run)) {
                 Ok(()) => StepOutcome::Done,
                 Err(_) => StepOutcome::Panicked,
-            }
+            };
+            clock.end_inline_step();
+            r
         } else {
             let wait = if step.budget_exempt {
                 step.deadline
@@ -437,7 +611,7 @@ pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport 
                     log::warn!("exit: {} could not start a thread: {e}", step.name);
                     StepOutcome::Skipped
                 }
-                Ok(_) => match rx.recv_timeout(wait) {
+                Ok(_) => match clock.wait_step(&rx, wait) {
                     Ok(true) => StepOutcome::Done,
                     Ok(false) => StepOutcome::Panicked,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -452,7 +626,7 @@ pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport 
                 },
             }
         };
-        let elapsed = step_start.elapsed();
+        let elapsed = clock.now().saturating_sub(step_start);
         if step.budget_exempt {
             exempt_spent += elapsed;
         }
@@ -463,7 +637,7 @@ pub fn run_bounded(steps: Vec<BoundedStep>, budget: Duration) -> TeardownReport 
         });
     }
     TeardownReport {
-        total: start.elapsed(),
+        total: clock.now().saturating_sub(start),
         steps: reports,
     }
 }
@@ -685,19 +859,42 @@ mod clean_line_tests {
         let report = TeardownReport {
             total: Duration::from_millis(42),
             steps: vec![
-                StepReport { name: "pill", elapsed: Duration::from_millis(1), outcome: StepOutcome::Done },
-                StepReport { name: "meeting", elapsed: Duration::from_millis(2), outcome: StepOutcome::Done },
+                StepReport {
+                    name: "pill",
+                    elapsed: Duration::from_millis(1),
+                    outcome: StepOutcome::Done,
+                },
+                StepReport {
+                    name: "meeting",
+                    elapsed: Duration::from_millis(2),
+                    outcome: StepOutcome::Done,
+                },
             ],
         };
         assert_eq!(report.clean_line(), "exit clean closed=pill,meeting ms=42");
         let report = TeardownReport {
             total: Duration::from_millis(900),
             steps: vec![
-                StepReport { name: "pill", elapsed: Duration::from_millis(1), outcome: StepOutcome::Done },
-                StepReport { name: "asr", elapsed: Duration::from_millis(800), outcome: StepOutcome::TimedOut },
-                StepReport { name: "db", elapsed: Duration::ZERO, outcome: StepOutcome::Skipped },
+                StepReport {
+                    name: "pill",
+                    elapsed: Duration::from_millis(1),
+                    outcome: StepOutcome::Done,
+                },
+                StepReport {
+                    name: "asr",
+                    elapsed: Duration::from_millis(800),
+                    outcome: StepOutcome::TimedOut,
+                },
+                StepReport {
+                    name: "db",
+                    elapsed: Duration::ZERO,
+                    outcome: StepOutcome::Skipped,
+                },
             ],
         };
-        assert_eq!(report.clean_line(), "exit unclean closed=pill missed=asr,db ms=900");
+        assert_eq!(
+            report.clean_line(),
+            "exit unclean closed=pill missed=asr,db ms=900"
+        );
     }
 }
