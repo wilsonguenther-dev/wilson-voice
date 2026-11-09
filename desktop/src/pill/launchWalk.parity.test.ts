@@ -159,3 +159,47 @@ describe("parity-companions: the launch walk is a matrix row", () => {
     expect(forcedLaunchWalk("?phase=model_loading")).toBeNull();
   });
 });
+
+describe("parity-companions: batch-8 bounce, the captures the sheet needs", () => {
+  it("shoots the two narrow parity rows first, before the full matrix a timebox can cut short", () => {
+    const src = read("../float-main.tsx");
+    const start = src.indexOf("__YAP_PILL_PHASES__ = [");
+    expect(start).toBeGreaterThan(-1);
+    const list = src.slice(start, src.indexOf("];", start));
+    const walk = list.indexOf("matrixLaunchWalkScene()");
+    const visit = list.indexOf("matrixFriendVisitWindowScene()");
+    const phases = list.indexOf("...matrixPhases()");
+    expect(walk).toBeGreaterThan(-1);
+    expect(visit).toBeGreaterThan(-1);
+    expect(phases).toBeGreaterThan(-1);
+    expect(walk).toBeLessThan(phases);
+    expect(visit).toBeLessThan(phases);
+    // each listed exactly once
+    expect(list.split("matrixLaunchWalkScene()").length).toBe(2);
+    expect(list.split("matrixFriendVisitWindowScene()").length).toBe(2);
+  });
+
+  it("the manifest's capture recipe writes every capture name its rows read", () => {
+    const m = JSON.parse(read("../../../docs/loop/evidence/parity-companions.manifest.json")) as {
+      captures: string; states: { id: string; app: { capture: string; width?: number; height?: number } }[];
+      openDefects: { state: string; blockedOn: string }[];
+    };
+    for (const s of m.states) {
+      const cap = s.app.capture;
+      if (cap.startsWith("app/")) {
+        // app/<rowId>__<character>__<dock>__<meeting>.png, and the recipe shoots that row with --only
+        const rowId = cap.slice(4).split("__")[0];
+        expect(m.captures, s.id).toContain("--only " + rowId);
+      } else {
+        // custom-home-<W>x<H>.png comes from smoke-windowed with that W1/H1
+        const hit = /^custom-home-(\d+)x(\d+)\.png$/.exec(cap);
+        expect(hit, s.id).not.toBeNull();
+        expect(m.captures, s.id).toContain("YAP_SMOKE_W1=" + hit![1] + " YAP_SMOKE_H1=" + hit![2]);
+        expect([s.app.width, s.app.height], s.id).toEqual([Number(hit![1]), Number(hit![2])]);
+      }
+    }
+    expect(m.captures).toContain("--build --check");
+    // the reverted pill window is recorded as a blocker, never hidden
+    expect(m.openDefects.find((d) => d.state === "s09-sky-c-day")?.blockedOn).toMatch(/yap-1107-parity-pill/);
+  });
+});

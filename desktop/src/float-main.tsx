@@ -292,6 +292,14 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
   // The matrix reads its phase list from HERE — the pill's own phaseVisual
   // table — so a phase a later item adds is photographed automatically.
   (window as unknown as { __YAP_PILL_PHASES__?: unknown }).__YAP_PILL_PHASES__ = [
+    // yap-1107-parity-companions — the two narrow parity rows go FIRST (three
+    // captures in all): batch 8 stopped the full matrix at its timebox before it
+    // reached them, so the sheet's app column had no launch-walk__yappy or
+    // friend-visit-window__hoot PNG. First, they are shot even by a cut-short run.
+    // The launch walk's first frame (s06), Yappy at the bottom dock.
+    matrixLaunchWalkScene(),
+    // Yappy visiting Hoot inside the open window (s09).
+    matrixFriendVisitWindowScene(),
     ...matrixPhases(),
     ...matrixLicenseScenes(),
     // WF-12 — the language-offer card over an idle pill.
@@ -311,10 +319,6 @@ if (import.meta.env.DEV || __YAP_PILL_MATRIX__) {
     matrixDragBlobScene(),
     // yap-1106-friend-visits — Tidy visiting a resting pill.
     matrixFriendVisitScene(),
-    // yap-1107-parity-companions — the launch walk's first frame (s06), Yappy at the bottom dock.
-    matrixLaunchWalkScene(),
-    // yap-1107-parity-companions — Yappy visiting Hoot inside the open window (s09).
-    matrixFriendVisitWindowScene(),
     // yap-1106-stuck-pill-keeps-its-scene — a stuck, then restarting, engine.
     ...matrixStuckEngineScenes(),
   ];

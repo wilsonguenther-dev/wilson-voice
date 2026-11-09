@@ -321,7 +321,11 @@ function __pillDetect(want) {
       if (want.meeting === "recording" || want.meeting === "saved") { if (fv) bad.push("friend visit drawn during a meeting"); }
       else if (!fv || fv.dataset.friendVisit !== "yappy") bad.push("no [data-friend-visit=yappy] visitor");
       else if (fv.dataset.inWindow !== "true") bad.push("visitor drawn in the corner box, not inside the pill window");
-      else { const w = document.querySelector(".yappy-win"); if (!w || !w.width || !w.height) bad.push("pill window canvas not painted"); }
+      else {
+        // the window canvas: .yappy-win once yap-1107-parity-pill is in, else the plain capsule's .kami-canvas
+        const w = document.querySelector(".yappy-win") || document.querySelector(".kami-canvas");
+        if (!w || !w.width || !w.height) bad.push("pill window canvas not painted");
+      }
     }
     // yap-1107-parity-companions — the launch-walk scene must paint the walk's 196 x 44 canvas.
     if (want.id === "launch-walk") {
