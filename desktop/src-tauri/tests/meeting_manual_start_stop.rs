@@ -11,6 +11,7 @@
 
 mod support;
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -520,12 +521,10 @@ fn the_unavailable_message_says_what_is_missing() {
 #[test]
 fn stopping_a_meeting_does_not_wait_out_a_tick() {
     /// Far longer than production's 1 s, so a fixed-cost stop and a
-    /// waits-for-the-sleep stop cannot be confused on any machine.
-    const SLOW_TICK: Duration = Duration::from_secs(5);
-    /// Generous enough to absorb a loaded CI runner and the real finalize work
-    /// (a wav write and three SQLite statements), and still nowhere near
-    /// `SLOW_TICK`. The defect this guards produces ~5 s here, not 1.5 s.
-    const CEILING: Duration = Duration::from_millis(1_500);
+    /// waits-for-the-sleep stop cannot be confused on any machine — and as long
+    /// as the hang guard, so a park can only time out on its own if the stop
+    /// really was ignored.
+    const SLOW_TICK: Duration = TICK_DEADLINE;
 
     let _guard = support::exclusive();
     support::install_fake_engine();
@@ -534,20 +533,34 @@ fn stopping_a_meeting_does_not_wait_out_a_tick() {
     let db = Arc::new(open_db(&dir));
     let (_seen, f) = sink();
     let c = MeetingController::new(Arc::clone(&db), f).with_tick_interval(SLOW_TICK);
+    let ticks = c.ticker_counters();
 
     c.start(&dir, None).expect("start");
     // Land INSIDE the ticker's first park, which is where the old join blocked.
-    std::thread::sleep(Duration::from_millis(150));
+    // yap-1108-timing-open-m-budgets: the ticker announces the park (counted
+    // under the stop lock, just before the condvar releases it), so this waits
+    // on the event itself instead of sleeping 150 ms and hoping.
+    support::wait_until(
+        "the ticker to park on its first tick",
+        TICK_DEADLINE,
+        || ticks.parks.load(Ordering::Acquire) >= 1,
+    );
 
-    let began = std::time::Instant::now();
     c.stop("user stopped").expect("stop");
-    let took = began.elapsed();
 
-    assert!(
-        took < CEILING,
-        "stop() took {took:?} — it is waiting out the {SLOW_TICK:?} tick instead of \
-         waking the ticker, and this call runs on the macOS main thread for the \
-         tray item and ⌃⌘M"
+    // The property, counted instead of timed (it replaces the old
+    // `stop() < 1.5 s` ceiling, and is stronger): the park ended because
+    // `stop()` NOTIFIED it, not because the tick ran out. A stop that waited
+    // out the tick — the `thread::sleep(tick)` regression, or a lost notify —
+    // shows up as a timeout wake however fast or slow the runner is.
+    let stop_wakes = ticks.stop_wakes.load(Ordering::Acquire);
+    let timeout_wakes = ticks.timeout_wakes.load(Ordering::Acquire);
+    assert_eq!(
+        (stop_wakes, timeout_wakes),
+        (1, 0),
+        "stop() did not wake the parked ticker (stop wakes {stop_wakes}, timeout wakes \
+         {timeout_wakes}) — it is waiting out the {SLOW_TICK:?} tick, and this call runs \
+         on the macOS main thread for the tray item and ⌃⌘M"
     );
     assert!(!c.is_recording());
 }
@@ -564,14 +577,26 @@ fn stopping_immediately_after_starting_is_not_a_race() {
     let db = Arc::new(open_db(&dir));
     let (_seen, f) = sink();
     let c = MeetingController::new(Arc::clone(&db), f).with_tick_interval(Duration::from_secs(30));
+    let ticks = c.ticker_counters();
 
-    for _ in 0..5 {
+    for round in 1..=5u64 {
         c.start(&dir, None).expect("start");
-        let began = std::time::Instant::now();
         c.stop("user stopped").expect("stop");
-        assert!(
-            began.elapsed() < Duration::from_millis(1_500),
-            "an immediate stop waited on the 30 s tick"
+        // yap-1108-timing-open-m-budgets — counted instead of timed (replaces
+        // `stop() < 1.5 s`): every ticker's one `wait` either found the flag
+        // already set (stop beat the thread to its first park — the race this
+        // test is named for) or was woken by the notify. A stop that sat out
+        // the 30 s tick is a timeout wake, on any runner.
+        let timeout_wakes = ticks.timeout_wakes.load(Ordering::Acquire);
+        let ended_by_stop = ticks.stop_wakes.load(Ordering::Acquire)
+            + ticks.stopped_before_park.load(Ordering::Acquire);
+        assert_eq!(
+            timeout_wakes, 0,
+            "an immediate stop waited on the 30 s tick (round {round})"
+        );
+        assert_eq!(
+            ended_by_stop, round,
+            "round {round}: a ticker ended some other way than the stop"
         );
     }
 }
