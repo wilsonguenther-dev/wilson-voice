@@ -372,9 +372,16 @@ export default function YappyPill(
   tapRef.current = () => {
     if (gated) { openGatePurchase("pill"); return; }
     if (blocked) { openPermissions(); return; }
-    invoke("pill_click_toggle").catch(() => {
-      // A refused start (trial over) already raised its own toast backend-side.
-    });
+    // yap-1107-pill-click-always-registers — the pressed shell already showed
+    // on pointer-down (drag.ts); this only times the backend hop, so a slow
+    // intent shows up in the log instead of as a "dead" click.
+    const t0 = performance.now();
+    invoke("pill_click_toggle")
+      .then(() => console.info(`pill click event=intent ok=true ipc_ms=${Math.round(performance.now() - t0)}`))
+      .catch(() => {
+        // A refused start (trial over) already raised its own toast backend-side.
+        console.info(`pill click event=intent ok=false ipc_ms=${Math.round(performance.now() - t0)}`);
+      });
   };
   // …and it is also an INPUT to the frame policy (OS-12 fix 1): a meeting keeps
   // the pill visible for hours, so the canvas parks instead of holding the 10fps
