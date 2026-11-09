@@ -4549,24 +4549,11 @@ button.primary.big {
 .news-briefing-sprite {
   image-rendering: pixelated;
 }
-/* yap-1106-news-duo-delivery — whoever has the turn hops (whole pixels, stepped);
-   reduce motion keeps the pair still side by side and only the words change. */
-.news-briefing-sprite--talking {
-  animation: news-duo-hop 0.5s steps(2, jump-none) infinite alternate;
-}
-@keyframes news-duo-hop {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-2px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .news-briefing-sprite--talking {
-    animation: none;
-  }
-}
+/* yap-1106-news-duo-delivery — whoever has the turn talks: yap-1107-parity-news
+   draws the pair as ONE duo canvas (news.html §02 #duo), so the speaker's mouth
+   opens and closes in whole frames inside it (NewsBriefing.tsx PairSprite)
+   instead of a hop that would lift both friends; reduce motion keeps the pair
+   still and only the words change. */
 .news-briefing-says {
   display: flex;
   flex-direction: column;
@@ -4658,4 +4645,327 @@ button.primary.big {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-pill);
   font-size: 0.8rem;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   yap-1107-parity-news — Yappy News measured against the approved page
+   (design-2026-11-06/news.html). Every number below is read off that page's
+   CSS: §01 .ob (onboarding step), §02 .bcard (Home briefing card). Colours
+   are the --news-* tokens in tokens.css. Declared last so they win over the
+   first-pass news rules above at equal specificity.
+   ══════════════════════════════════════════════════════════════════ */
+
+/* §01 — the onboarding card widens to the page's 760 px sheet and gives its
+   padding to the step's own body and footer, as .ob does. */
+.onboard-card:has(.news-onb) {
+  width: min(var(--news-onb-w), 100%);
+  padding: 0;
+  overflow: hidden;
+  background: var(--news-onb-bg);
+  border-radius: var(--news-onb-radius);
+}
+.onboard-card:has(.news-onb) .onboard-progress {
+  display: none;
+}
+.news-onb-body {
+  padding: 28px 36px 24px;
+  display: grid;
+  gap: 18px;
+  color: var(--news-ink);
+}
+.news-onb-step {
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.news-onb-row {
+  display: grid;
+  grid-template-columns: var(--news-onb-yappy) 1fr;
+  gap: 14px;
+  align-items: center;
+}
+.news-onb-yappy {
+  display: block;
+  image-rendering: pixelated;
+}
+.onboard-step h1.news-onb-title {
+  margin: 0;
+  font: 400 26px/1.15 var(--font-mono);
+  color: var(--news-ink);
+}
+.news-onb-lede {
+  margin: 6px 0 0;
+  font-size: 13px;
+  /* the page's .note inherits body 15px/1.55: two lines at 20.15 px make the
+     row 76.17 px tall (bounced at 5.5% off with the app's own line height) */
+  line-height: 1.55;
+  /* batch-2 bounce (heading row 72 vs 76): the page sets this lede in IBM Plex
+     Sans, which wraps it to two lines in the 602 px column; the app's native SF
+     is narrower and fit it on one, so the row fell back to Yappy's 72 px. A
+     measure of 38em (494 px) breaks it into the page's two lines in either
+     face, making the row 29.9 + 6 + 2 x 20.15 = 76.2 px as on the page. */
+  max-width: 38em;
+  text-wrap: pretty;
+  color: var(--news-ink-2);
+}
+.news-interests--onboarding {
+  margin: 0;
+  gap: 18px;
+}
+.news-interests--onboarding .news-group {
+  gap: 0;
+}
+.news-interests--onboarding .news-chips button.chip {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 17px;
+  border: 1px solid var(--news-line);
+  background: var(--news-chip-bg);
+  font: 500 14px/32px var(--font-body);
+  color: var(--news-ink);
+}
+.news-interests--onboarding .news-chips button.chip.selected {
+  background: var(--news-chip-on-bg);
+  border-color: var(--news-chip-on-bg);
+  color: var(--news-chip-on-ink);
+  font-weight: 500;
+}
+.news-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 38px;
+  margin: 0;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  background: var(--news-field-bg);
+  font-size: 14px;
+  color: var(--news-ink-3);
+}
+.news-field:focus-within {
+  border-color: var(--news-ink-3);
+}
+.news-field[disabled] {
+  opacity: 0.6;
+}
+.news-field-label {
+  flex: none;
+  margin-right: 4px;
+}
+.news-field-token {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  background: var(--news-token-bg);
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink);
+  cursor: pointer;
+}
+.news-field-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  color: var(--news-ink);
+}
+.news-field-input::placeholder {
+  color: var(--news-ink-3);
+}
+.news-field-add {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  color: var(--news-ink-3);
+}
+.news-onb-privacy {
+  margin: 0;
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.onboard-actions.news-onb-foot {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 36px;
+  border-top: 1px solid var(--news-line);
+  background: var(--news-onb-foot-bg);
+}
+.news-onb-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  background: var(--news-chip-bg);
+  font: 500 14px/34px var(--font-body);
+  color: var(--news-ink);
+}
+.onboard-actions .news-onb-btn--primary {
+  background: var(--news-chip-on-bg);
+  border-color: var(--news-chip-on-bg);
+  color: var(--news-chip-on-ink);
+}
+.news-onb-btn:disabled {
+  opacity: 0.5;
+}
+
+/* §02 — the briefing card (.bcard): white, 12 px radius, 14 px padding. */
+.card.news-briefing {
+  background: var(--news-card-bg);
+  border: 1px solid var(--news-line);
+  border-radius: 12px;
+  padding: 14px;
+  gap: 12px;
+  color: var(--news-ink);
+}
+.news-briefing .news-briefing-head {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  gap: 14px;
+  align-items: center;
+}
+.news-briefing .news-briefing-pair {
+  gap: 0;
+  align-items: flex-end;
+}
+.news-briefing .news-briefing-says {
+  background: var(--news-say-bg);
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  padding: 8px 11px;
+  font-size: 13px;
+  /* the page's .bsay inherits body line-height 1.55 (20.15 px a line): the
+     bubble's four lines make .bhead 98.56 px tall (batch-1 bounce: header h
+     17% off with the app's 1.45) */
+  line-height: 1.55;
+  color: var(--news-ink-2);
+  gap: 0;
+}
+/* the screen-reader title is a 1 px box the parity MEASURE still reads: it
+   takes the bubble's own size and colour so it adds no stray font size (the
+   UA h3 is 1.17em = 15.2 px, which is not on the page). */
+.news-briefing .news-briefing-says h3 {
+  font: inherit;
+  color: inherit;
+}
+.news-briefing .news-briefing-says b {
+  font-weight: 500;
+  color: var(--news-ink);
+}
+.news-briefing-when {
+  font: 400 12px var(--font-mono);
+  line-height: 1.55;
+  color: var(--news-ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* "8:02 AM" and "10:41 PM" take the same 8 monospace cells, so the time
+   column (and the bubble beside it) keeps one width all day. */
+.news-briefing .news-briefing-clock {
+  display: inline-block;
+  min-width: 8ch;
+  text-align: right;
+}
+/* §02 .q — the amber tag after the time: 500 11px mono, --news-quote-ink on --news-quote-bg,
+   radius 6, padding 2/6 (batch-1 bounce: these two colours and the 11 px
+   were missing from the header). */
+.news-briefing .news-briefing-paper {
+  font: 500 11px var(--font-mono);
+  color: var(--news-quote-ink);
+  background: var(--news-quote-bg);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+.news-briefing .news-briefing-stories {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.news-briefing .news-briefing-story {
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--news-line);
+  border-radius: 10px;
+  background: var(--news-story-bg);
+}
+.news-briefing .news-briefing-tag {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font: 500 10px var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--news-red);
+}
+.news-briefing .news-briefing-story h4 {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--news-ink);
+}
+.news-briefing .news-briefing-line {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--news-ink-2);
+}
+.news-briefing .news-briefing-source {
+  font: 400 10px var(--font-mono);
+  color: var(--news-ink-3);
+}
+/* yap-1107-news-no-off-topic-stories added a "why this story" line the page
+   does not draw; it wears the story's source style (10 px mono, ink-3) so a
+   card that carries it adds no size or colour off the approved palette. */
+.news-briefing .news-briefing-why {
+  font: 400 10px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.news-briefing .news-briefing-foot,
+.news-briefing .news-briefing-topics {
+  gap: 6px;
+}
+.news-briefing .news-briefing-meta {
+  margin-right: 4px;
+  font: 400 12px var(--font-mono);
+  color: var(--news-ink-3);
+}
+.news-briefing .news-briefing-chip {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--news-chip-on-bg);
+  border-radius: 13px;
+  background: var(--news-chip-on-bg);
+  font: 500 12px/24px var(--font-body);
+  color: var(--news-chip-on-ink);
+}
+.news-briefing button.news-briefing-chip--add {
+  border-color: var(--news-line);
+  background: var(--news-chip-bg);
+  color: var(--news-ink);
+}
+.news-briefing .news-briefing-foot p {
+  font: 400 12px var(--font-mono);
+  /* the page's .meta inherits body line-height 1.55: 18.6 px, so the wrapped
+     cadence line makes .bchips 26 + 6 + 18.6 = 50.6 px tall (batch-2 bounce:
+     topics 26 vs 50.6) */
+  line-height: 1.55;
+  color: var(--news-ink-3);
+}
+/* "Hide for today" is part of the cadence line on the page (.meta text): same
+   face, size and colour; it stays a real button with the global focus ring. */
+.news-briefing .news-briefing-foot p button.link {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+}
+@media (max-width: 720px) {
+  .news-briefing .news-briefing-stories {
+    grid-template-columns: 1fr;
+  }
 }
