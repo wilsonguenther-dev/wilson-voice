@@ -54,13 +54,6 @@ export type SegItem =
 export interface SegInput {
   /** The float's phase (YappyPill's `gate`): LivePhase plus listening-locked / blind. */
   phase: string;
-  /**
-   * yap-1107-parity-companions — Yappy visiting for a milestone (companions.html
-   * s09, "Yappy visits for your 100th take"): the finished take's segment reads
-   * "✓ 100th take" instead of the word count (pill/visitorInWindow.ts
-   * visitorSegment). Only the done state carries it.
-   */
-  milestone?: string | null;
   /** Words in the take that just pasted (done). */
   words?: number;
   /** Decode progress (transcribing): chunk of `of`. */
@@ -128,8 +121,6 @@ export function segmentFor(i: SegInput): SegItem[] {
       if (!i.lowPower) return [];
       return i.lowPowerLabel === false ? [{ kind: "icon", icon: "batt" }] : [{ kind: "icon", icon: "batt" }, { kind: "text", text: LOW_POWER_LABEL }];
     case "done": {
-      const milestone = (i.milestone ?? "").trim();
-      if (milestone) return [{ kind: "icon", icon: "check" }, { kind: "text", text: milestone }];
       const fixed = Math.max(0, Math.round(i.fixedWords ?? 0));
       if (fixed > 0) return [{ kind: "icon", icon: "check" }, { kind: "text", text: fixedWordsLine(fixed) }, { kind: "cta", text: FIXED_SHOW_CTA }];
       const n = Math.max(0, Math.round(i.words ?? 0));

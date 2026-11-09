@@ -53,9 +53,8 @@ describe("meetings stay Hoot's job", () => {
     expect(m.hoot.present).toBe(true);
     expect(m.hoot.visiting).toBe(false);
     expect(m.cast.main).toBe("hoot");
-    // His own headphones carry the recording light (yap-1107-parity-companions:
-    // his whole sprite at 1:1, companions.html s04), on his right ear cup.
-    expect(m.cup).toEqual({ ...SCENE_LAYOUT.hootCup });
+    // His headphones carry the recording light, at the main spot.
+    expect(m.cup).toEqual({ ...SCENE_LAYOUT.mainCup });
     expect(m.recLight.on).toBe(true);
   });
 

@@ -19,18 +19,12 @@
  */
 import type { FriendId } from "../sprites/friends";
 
-/* yap-1107-parity-companions — the approved launch storyboard (companions.html
- * s06, `PK.pill({ h: 52, win: { w: 196, h: 44 } })`, and #walkPlay 392 x 88 at
- * 2x) shows the walk in a 196 x 44 window. The page fills it by stretching a
- * 176-wide world 1.39x; the app keeps every sprite at a whole-number scale and
- * draws a 196-wide world instead, so the window matches the box exactly and
- * nothing is fractional. Mirrors --launch-walk-w / --launch-walk-h (tokens.css). */
-export const SCENE_W = 196;
+export const SCENE_W = 176;
 export const SCENE_H = 44;
 /** Ground line (walk.js GY). */
 export const GROUND_Y = 30;
 /** Yappy's centre; he never moves — the world does. */
-export const YAPPY_X = SCENE_W / 2;
+export const YAPPY_X = 88;
 /** walk.js DIST: scene px of ground over the whole load (eight houses ~65 px apart). */
 export const WALK_DIST = 520;
 /** He waits at the office door from here until the engine reports ready. */

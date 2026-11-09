@@ -17,7 +17,7 @@
  * (fillRect + fillStyle + globalAlpha), so tests can count the pixels.
  */
 import { drawFriendFrame, friendManifest, type FrameKind, type FriendManifest } from "../sprites/friends";
-import type { PixelCtx, SpriteOpt } from "../sprites/art";
+import type { PixelCtx } from "../sprites/art";
 import type { LivePhase } from "./live";
 import { FRIEND_POSES, PILL_FRIENDS, type PillFriendId } from "./characters/friends";
 import { MAX_LIFT, PILL_SCENE, chickBox, liftBudget, type FitBox } from "./characterFit";
@@ -109,23 +109,11 @@ export function offsetCtx(o: PixelCtx, dx: number, dy: number): PixelCtx {
   };
 }
 
-/**
- * yap-1107-parity-companions — what the occupant wears in the pill stage.
- * The approved Companions page (s04, "Hoot in the pill") draws Hoot BARE while
- * he listens (`hootWorld({ bare: true })`) and puts his headphones on only for
- * a meeting he records himself. Every other friend draws as approved (no opt).
- */
-export function occupantSpriteOpt(id: string | null | undefined, meeting = false): SpriteOpt | undefined {
-  if (id === "hoot" && !meeting) return { bare: true };
-  return undefined;
-}
-
 let warned = new Set<string>();
 
 /**
  * Paint the pill's occupant for this frame. Returns false (and paints nothing)
  * when `id` is not a pill friend, so the stage draws Yappy as before.
- * `meeting` (a meeting is recording) puts Hoot's headphones on.
  */
 export function drawOccupant(
   o: PixelCtx,
@@ -134,7 +122,6 @@ export function drawOccupant(
   pose: { hop: number; blink: number; lift?: number },
   tMs: number,
   reduceMotion: boolean,
-  meeting = false,
 ): boolean {
   if (!isPillFriend(id)) return false;
   const m = friendManifest(id);
@@ -147,7 +134,7 @@ export function drawOccupant(
   }
   const f = occupantFrame(m, phase, pose.blink, tMs, reduceMotion);
   const at = occupantPlacement(m, pose.hop, pose.lift ?? MAX_LIFT);
-  return drawFriendFrame(offsetCtx(o, at.x, at.y), id, f.kind, f.index, occupantSpriteOpt(id, meeting));
+  return drawFriendFrame(offsetCtx(o, at.x, at.y), id, f.kind, f.index);
 }
 
 /** Test seam: forget which ids already logged a missing-art warning. */

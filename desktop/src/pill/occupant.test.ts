@@ -18,7 +18,7 @@ import { drawFriendFrame, friendManifest, type FriendManifest } from "../sprites
 import { ALL_LIVE_PHASES } from "./live";
 import { MAX_LIFT, OPEN_CAPSULE, PILL_SCENE, REST_CAPSULE, chickBox, pillCamera } from "./characterFit";
 import { PILL_FRIENDS } from "./characters/friends";
-import { OCCUPANT_BOTTOM, drawOccupant, isPillFriend, occupantBoxFor, occupantEnvelope, occupantFrame, occupantPlacement, occupantSpriteOpt, resetOccupantWarnings } from "./occupant";
+import { OCCUPANT_BOTTOM, drawOccupant, isPillFriend, occupantBoxFor, occupantEnvelope, occupantFrame, occupantPlacement, resetOccupantWarnings } from "./occupant";
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf8") as string;
 const manifest = (id: string): FriendManifest => {
@@ -73,8 +73,7 @@ describe("who is painted in the one pill (yap-1106-main-character-switch)", () =
         expect(drawOccupant(scene, id, phase, { hop: 0, blink: 0 }, 0, false), `${id}/${phase}`).toBe(true);
         const f = occupantFrame(m, phase, 0, 0, false);
         const direct = new Raster(m.w, m.h);
-        // yap-1107-parity-companions — Hoot listens bare (companions.html s04).
-        expect(drawFriendFrame(direct, id, f.kind, f.index, occupantSpriteOpt(id))).toBe(true);
+        expect(drawFriendFrame(direct, id, f.kind, f.index)).toBe(true);
         const at = occupantPlacement(m, 0);
         let painted = 0;
         for (let y = 0; y < m.h; y++) {

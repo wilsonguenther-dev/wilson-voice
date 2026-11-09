@@ -323,11 +323,6 @@
   /* yap-1106-friend-visits — a visiting friend's box and entrance. */
   --friend-visit-box: 28px;
   --friend-visit-in: 0.2s;
-  /* yap-1107-parity-companions — the launch walk's window, measured off the
-     approved companions.html s06 storyboard (196 x 44 CSS px). Mirrors
-     SCENE_W / SCENE_H in pill/launchWalk.ts. */
-  --launch-walk-w: 196px;
-  --launch-walk-h: 44px;
 
   /* The two springs. --spring-pill is the pill's grow/settle curve and
      --spring-pop is its overshoot; both are declared here so the chrome can

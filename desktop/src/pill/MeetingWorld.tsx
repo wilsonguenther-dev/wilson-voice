@@ -92,14 +92,6 @@ function drawMainFriend(o: CanvasRenderingContext2D, id: string, acting: boolean
   c.imageSmoothingEnabled = false;
   c.clearRect(0, 0, m.w, m.h);
   drawFriendFrame(c, id, acting ? "action" : "idle");
-  o.imageSmoothingEnabled = false;
-  if (id === "hoot") {
-    // yap-1107-parity-companions — Hoot records it himself: his whole sprite
-    // at 1:1 with his OWN headphones (companions.html s04), no extra band.
-    const hm = SCENE_LAYOUT.hootMain;
-    o.drawImage(buf, hm.x, hm.y, m.w, m.h);
-    return true;
-  }
   const { x, y, size } = SCENE_LAYOUT.main;
   const w = Math.max(1, Math.round((size * m.w) / Math.max(m.w, m.h)));
   const h = Math.max(1, Math.round((size * m.h) / Math.max(m.w, m.h)));

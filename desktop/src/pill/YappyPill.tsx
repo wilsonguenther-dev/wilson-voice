@@ -17,7 +17,6 @@ import { drawChick as drawChickArt } from "../sprites/art";
 import { drawDeskHD, drawNotepadHD, growPadInk } from "../sprites/props";
 import { YAPPY_CHATTER, YAPPY_PHASE_ART } from "./characters/yappy";
 import { drawOccupant, occupantEnvelope } from "./occupant";
-import { cameraView, currentPillVisitor, paintPillVisitor, rectInside, setVisitorInWindow, subscribePillVisitor, visitorStamp, type PillVisitor } from "./visitorInWindow";
 import { usePillDrag, reportPillHitbox, extendPillHitbox } from "./drag";
 import MeetingBadge from "./MeetingBadge";
 import GovernorChip from "./GovernorChip";
@@ -412,22 +411,6 @@ export default function YappyPill(
   // parking is only safe if something un-parks it when the meeting ends.
   const meetingRef = useRef(false);
   const wakeRef = useRef<() => void>(() => {});
-  // yap-1107-parity-companions — the visiting friend FriendVisit put on screen
-  // (pill/visitorInWindow.ts). The draw loop paints it INSIDE the window beside
-  // the occupant (companions.html s09); the segment reads the milestone.
-  const [visitor, setVisitor] = useState<PillVisitor | null>(() => currentPillVisitor());
-  const visitorRef = useRef<PillVisitor | null>(visitor);
-  visitorRef.current = visitor;
-  useEffect(() => {
-    const unsub = subscribePillVisitor((v) => {
-      setVisitor(v);
-      visitorRef.current = v;
-      // the page's bubble with the visit ("that's a hundred! — Yappy")
-      if (v && v.line) sayRef.current(v.line);
-      wakeRef.current();
-    });
-    return () => { unsub(); setVisitorInWindow(false); };
-  }, []);
   // yap-1106-stuck-pill-keeps-its-scene — the scene reducer, read by the
   // mount-once draw loop through refs like the meeting flag. `fullRepaintRef`
   // is assigned inside that loop's effect (it owns the sky cache).
@@ -558,7 +541,7 @@ export default function YappyPill(
     // (sprites/art.snapshot.test.ts) pixel-checks the code the pill runs.
     function drawChick(cx: number, feetY: number, A: SP) { drawChickArt(octx, cx, feetY, A); }
 
-    function drawScene(A: SP, visitorOn: PillVisitor | null = null) {
+    function drawScene(A: SP) {
       octx.clearRect(0, 0, PW, PH);
       const w = A.world;
       // yap-1106-pill-sky — the whole backdrop in ONE blit (no drifting clouds:
@@ -573,13 +556,7 @@ export default function YappyPill(
       // a lift budget (a smaller hop) so he stays whole at the bigger scale.
       // yap-1106-main-character-switch — a friend in the pill stands in Yappy's
       // box (pill/occupant.ts); Yappy (or no friend) is the chick as before.
-      // yap-1107-parity-companions — Hoot listens bare and wears his headphones only while a meeting records.
-      if (!drawOccupant(octx, occupantRef.current, gateRef.current, A, performance.now(), reduce, meetingRef.current)) drawChick(cx, feet, clampChickPose(A, A.lift));
-      // yap-1107-parity-companions — the visitor stands beside whoever sits in
-      // the pill, centred 26 art px right of them on the same feet line, whole
-      // at 1:1 (companions.html line 289). Only when the caller checked that the
-      // window's camera shows the whole stamp.
-      if (visitorOn) paintPillVisitor(octx, visitorOn.friend, cx, feet, A.blink > 0);
+      if (!drawOccupant(octx, occupantRef.current, gateRef.current, A, performance.now(), reduce)) drawChick(cx, feet, clampChickPose(A, A.lift));
       // receptionist desk + a little pixel TYPEWRITER — yap-1106-pill-props-detail:
       // wood grain + edge highlight, carriage, return levers, keys that light in
       // sequence, a bouncing page, and a mug + pencils on the left.
@@ -1030,8 +1007,7 @@ export default function YappyPill(
       // integrate(yap-1107-pill-matches-artifact-size): drawScene now runs after the
       // camera, so a side dock never reached it; keep the cached sky current here so
       // the tall room's sky.look and <html data-sky> stay set (as before the move).
-      // yap-1107-parity-companions — the tall side room draws no visitor: FriendVisit keeps its corner box.
-      if (sd && sideLay && sideLay.dock === sd) { sky.current(performance.now()); setVisitorInWindow(false); drawSide(sd, sideLay, scenePose, openV); return; }
+      if (sd && sideLay && sideLay.dock === sd) { sky.current(performance.now()); drawSide(sd, sideLay, scenePose, openV); return; }
       const tierOpen = (wantProp === "desk") ? 1.16 : (wantProp === "pad") ? 1.05 : 1;
       // bigger open capsule so the chick + grass read larger
       // yap-1107-parity-pill — the resting capsule is the approved 72 x 28 nub (characterFit REST_CAPSULE): whole on 2x, head kept in view below.
@@ -1091,7 +1067,6 @@ export default function YappyPill(
         // integrate(yap-1107-parity-pill): this branch draws no scene, so keep the
         // cached sky current here (as the side dock does) and <html data-sky> set.
         sky.current(performance.now());
-        setVisitorInWindow(false);
         reportPillHitbox(lay.char.x, lay.char.y, lay.char.w, lay.char.h);
         syncCapsuleBox(lay.char.x, lay.char.y, lay.char.w, lay.char.h, "scene");
         syncSideStop(null);
@@ -1154,14 +1129,7 @@ export default function YappyPill(
           loggedScale = { cell: cam.blit.cell, lift: cam.lift, dpr: DPR };
           console.info(scaleEvent({ cell: cam.blit.cell, lift: cam.lift }, winSize, DPR));
         }
-        // yap-1107-parity-companions — a visitor is painted into this window only
-        // when its whole 1:1 stamp is inside what the camera shows (no cropped
-        // character); otherwise FriendVisit keeps it in its corner box.
-        const vis = visitorRef.current;
-        const vStamp = vis ? visitorStamp(vis.friend, FX - (scenePose.prop === "desk" ? CHICK_DESK_SHIFT : 0), GY) : null;
-        const vOn = vis && vStamp && rectInside(vStamp, cameraView(cam.blit, wr.r * DPR)) ? vis : null;
-        setVisitorInWindow(vOn !== null);
-        drawScene({ ...scenePose, lift: cam.lift }, vOn);
+        drawScene({ ...scenePose, lift: cam.lift });
         const blit = cam.blit;
         wctx.drawImage(os, blit.src.x, blit.src.y, blit.src.w, blit.src.h, blit.dst.x, blit.dst.y, blit.dst.w, blit.dst.h);
         // sparkles (done) inside the window — 2 CSS px squares, snapped to whole device px
@@ -1288,7 +1256,6 @@ export default function YappyPill(
     lowPower,
     lowPowerLabel,
     fixedWords,
-    milestone: visitor ? visitor.segment : null,
   });
   segInfoRef.current = { cls: segClassFor(gate, segItems), items: segItems };
   useEffect(() => {

@@ -66,21 +66,6 @@ export const SCENE_LAYOUT = {
   main: { x: 76, y: 7, size: 24 },
   /** That friend's right ear cup — the recording light. */
   mainCup: { x: 101, y: 15, w: 4, h: 6 },
-  /**
-   * yap-1107-parity-companions — Hoot in the pill records the meeting himself
-   * (companions.html s04, "Meeting: Hoot records it himself, headphones on"):
-   * the page stamps his whole 40 x 40 sprite at 1:1 where Yappy stands
-   * (`FR.stamp(o, "hoot", cx - 20, feet - 38)`), wearing the sprite's OWN
-   * headphones. Whole-number scale (never the 24 px squeeze), centred on
-   * Yappy's cx 88. Moved +14 x / -4 y with the rest of yap-1107-parity-pill's
-   * 140 x 36 layout, so y is -4: the sprite's rows 0-6 are empty (his
-   * headband starts at row 7, his shadow ends at row 38), so every painted
-   * pixel lands on rows 3-34, inside the 36-row buffer; only empty rows clip.
-   * parityCompanions.test.ts measures that painted box, not the 40 x 40 cell.
-   */
-  hootMain: { x: 68, y: -4, size: 40 },
-  /** His own right ear cup (sprite cx + 10, cy - 8, 4 x 7) — the recording light. */
-  hootCup: { x: 98, y: 11, w: 4, h: 7 },
 } as const;
 
 /**
@@ -215,7 +200,7 @@ export function meetingScene(i: MeetingSceneInput): MeetingSceneModel {
   const handover = i.handover === true;
   const pose: YappyMeetingPose = i.dictating ? "notepad" : isGlancing(s, i) ? "glance" : "listening";
   const cast = meetingCast(i.occupant);
-  const cup = cast.main === "yappy" ? SCENE_LAYOUT.cup : cast.main === "hoot" ? SCENE_LAYOUT.hootCup : SCENE_LAYOUT.mainCup;
+  const cup = cast.main === "yappy" ? SCENE_LAYOUT.cup : SCENE_LAYOUT.mainCup;
   return {
     sky: skyPhase(s),
     sun,

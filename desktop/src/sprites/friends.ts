@@ -249,10 +249,9 @@ export function frameSpec(m: FriendManifest, kind: FrameKind, index = 0): FrameS
 
 /**
  * Draw one frame of a friend at the context's origin, in art pixels (scale
- * with crisp.ts). Returns false and draws nothing for an unknown id. `extra`
- * is merged over the frame's own sprite options.
+ * with crisp.ts). Returns false and draws nothing for an unknown id.
  */
-export function drawFriendFrame(o: PixelCtx, id: string, kind: FrameKind, index = 0, extra?: SpriteOpt): boolean {
+export function drawFriendFrame(o: PixelCtx, id: string, kind: FrameKind, index = 0): boolean {
   const m = friendManifest(id);
   if (!m) {
     console.warn(`sprites friend_frame_unknown id=${String(id).slice(0, 32)} kind=${kind}`);
@@ -262,9 +261,7 @@ export function drawFriendFrame(o: PixelCtx, id: string, kind: FrameKind, index 
   const h = H(o);
   m.base?.under?.(h);
   s.under?.(h);
-  // yap-1107-parity-companions — `extra` (e.g. Hoot's `bare`: no headphones
-  // while he listens in the pill, companions.html s04) layers over the spec's opt.
-  FRIENDS[m.id].draw(o, h, s.f, extra ? { ...(s.opt ?? {}), ...extra } : s.opt);
+  FRIENDS[m.id].draw(o, h, s.f, s.opt);
   s.over?.(h);
   m.base?.over?.(h);
   return true;
