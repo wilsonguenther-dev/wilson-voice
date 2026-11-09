@@ -1,7 +1,7 @@
 # Every click on the Yappy pill registers — measurement note
 
 Item yap-1107-pill-click-always-registers (Wilson 2026-11-07: "the Yappy pill doesn't always want to click").
-Written by the coder from the code; the numbers marked INTEGRATOR come from the built app.
+Written by the coder from the code; the measured numbers come from the commands under "How the evidence is made".
 
 ## Causes found (measured from code, before -> after)
 
@@ -19,31 +19,31 @@ Clicks during warm-up (recorder arming) were already honoured by the take machin
 
 The click rule stays as approved in WF-01: under 4 pt of travel and under 300 ms is a click. A still press held 300 ms or longer is still not a click; flagged for Wilson rather than changed.
 
-## Rects in points (INTEGRATOR)
+## How the evidence is made (batch 2 retry)
 
-Run the built app, hover then click the pill at rest (no card showing), and copy the `pill hitbox` line from the log. `rects=` lists every published hit rect in top-left screen points, capsule first (drag.ts `sendCapsule`); `screen_rect=` is their union. Note that fb-02 pads any rect smaller than 24 pt to 24 pt (`MIN_HIT_PT`), so a capsule drawn under 24 pt tall would show a clickable rect taller than drawn: record it if so. Compare it with the drawn capsule measured from a 2x capture (`scripts/pill-matrix.mjs`, canvas capsule bounds / 2). Fill in:
+Batch 1 bounced because acceptances 1, 4 and 5 asked the merge seat to drive the built app by hand, which a headless seat cannot. Every line below is now produced by a command that needs only the bundle the merge seat already builds, no app window and no GUI:
 
-| Rect | x | y | w | h |
-|------|---|---|---|---|
-| Window frame (outer, pt) | | | | |
-| Drawn capsule (pt) | | | | |
-| Clickable (hitbox, pt) before | | | | |
-| Clickable (hitbox, pt) after | | | | |
+```
+T=$(mktemp -d)
+node scripts/pill-matrix.mjs --pill-click --out "$T"; echo "exit $?"
+cp "$T"/rects.md "$T"/rects.json "$T"/clicks.csv "$T"/pressed-*.png "$T"/artifact-press-row.png docs/loop/evidence/pill-click/
+YAP_PILL_CLICK_MODEL_CSV="$PWD/docs/loop/evidence/pill-click/take-model.csv" cargo test --manifest-path desktop/src-tauri/Cargo.toml fifty_
+rm -rf "$T"
+```
 
-Pass = every side within 1 pt. No `data-tauri-drag-region` exists in desktop/src (grep), and `set_ignore_cursor_events` is only driven by `update_interactive`.
+Pass = `--pill-click` exits 0 and `rects.md` ends "Clicks: 50/50 registered ... Findings: 0", and both `fifty_` tests pass.
 
-## Pressed latency (INTEGRATOR)
+| File | Acceptance | What it shows |
+|------|------------|---------------|
+| `rects.md`, `rects.json` | 1 | Per dock (bottom, left, right), Yappy at rest: window frame, the DRAWN capsule (painted canvas pixels, alpha 128 or more, read at 2x), and the CLICKABLE rect the NSPanel gets (the published capsule rect through `pad_to_min` + `hitbox_cells`) before (old per-field rounding) and after, with the gap on every side in points. A side more than 1 pt off is a `rect-side-off` finding and fails the run. |
+| `clicks.csv` | 2, 4 | 50 clicks at seeded points (seed 1107) inside the painted capsule: `i,x,y,click_ms,state_before,state_after,latency_ms,in_hitbox,toggles_sent,ok`. Each click must be inside the hit rects, set the pressed shell during the pointer-down itself, paint it by the next frame under 50 ms, and send exactly one `pill_click_toggle`, so idle and recording alternate. |
+| `take-model.csv` | 3, 4 | The backend half: the same 50-click idea through the one take machine and the click queue against a simulated recorder (warm-up 180 ms, stop 120 ms, decoding 600 ms), clicks landing in every window. Every click is the next start or stop in order, none dropped. |
+| `pressed-before__<dock>.png`, `pressed-after__<dock>.png` | 5 | The pill at 2x as a press painted it before this item (nothing changed: the rest pill) and after (`&pressed=1`, the shell at 96 percent). |
+| `artifact-press-row.png` | 5 | The approved pill.html motion-table row "Press anywhere on the pill — Shell scales to 96 percent while pressed", cropped at 2x, to sit beside the two captures. |
 
-Grep the webview console log for `pill press event=pressed_visual`; every line must read `over_budget=false` (under 50 ms).
+What this does NOT prove: the scene is headless Chrome, not the app's WKWebView inside the NSPanel. The panel's own click-through and first-mouse are Rust (float_pill.rs `accept_first_mouse`, `update_interactive`) and are covered by its tests. For Wilson's own check on the real app there is still the on-device harness, `swift scripts/pill-click-50.swift --rect <first entry of rects= in the "pill hitbox" log line> --front com.apple.TextEdit --log <Yap log> --seed 1107` (CGEvent clicks, frontmost-app check before each); it needs a logged-in GUI session, so no loop seat runs it.
 
-## 50 clicks (INTEGRATOR)
-
-`swift scripts/pill-click-50.swift --rect <first entry of rects= from the log> --front com.apple.TextEdit --log <Yap log> --seed 1107`
-writes `clicks.csv` here (i, x, y, click_ms, state_before, state_after, latency_ms, ok). Pass = 50/50 ok.
-
-## Captures (INTEGRATOR)
-
-Pressed state before/after at 2x: `float.html?...&pressed=1` through scripts/pill-matrix.mjs (after) vs the base branch (before: no pressed state), next to the pill.html crop of the motion table row "Press anywhere on the pill — Shell scales to 96 percent while pressed."
+Notes for reading the table: fb-02 pads any rect smaller than 24 pt to 24 pt (`MIN_HIT_PT`), so a capsule drawn under 24 pt would show a taller clickable rect; the scene applies the same padding. No `data-tauri-drag-region` exists in desktop/src, and `set_ignore_cursor_events` is only driven by `update_interactive`.
 
 ## Approved sentences kept
 
