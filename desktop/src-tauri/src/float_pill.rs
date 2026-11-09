@@ -2133,7 +2133,10 @@ mod tests {
         press_hold_live, sanitize_control, sanitize_hit_rects, HitRect, MIN_HIT_PT, NEAR_MARGIN_PT,
         PRESS_HOLD_MAX_MS,
     };
-    use super::{panel_origin, point_in_hitbox, snap_position, PillPosition, EDGE_SNAP_PT};
+    use super::{
+        hitbox_cells, panel_origin, point_in_hitbox, rects_top_left_screen, snap_position,
+        PillPosition, EDGE_SNAP_PT,
+    };
 
     // A 2x Retina 1440x900-point display at the global origin, and the float
     // window at its physical size (PILL_W/H x 2).
