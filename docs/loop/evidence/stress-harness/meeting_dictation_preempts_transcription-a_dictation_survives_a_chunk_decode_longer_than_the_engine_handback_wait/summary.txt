@@ -1,0 +1,26 @@
+stress-tests: target=meeting_dictation_preempts_transcription filter='a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait' runs=20 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --test meeting_dictation_preempts_transcription a_dictation_survives_a_chunk_decode_longer_than_the_engine_handback_wait -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /var/folders/40/3lhzw1zj16v6k87qc5w216gw0000gn/T/tmp.w3E4DU7oSN
+stress-tests: started 8 busy loops: 73255 73256 73257 73258 73259 73260 73261 73262
+run 1/20: pass (1 passed)
+run 2/20: pass (1 passed)
+run 3/20: pass (1 passed)
+run 4/20: pass (1 passed)
+run 5/20: pass (1 passed)
+run 6/20: pass (1 passed)
+run 7/20: pass (1 passed)
+run 8/20: pass (1 passed)
+run 9/20: pass (1 passed)
+run 10/20: pass (1 passed)
+run 11/20: pass (1 passed)
+run 12/20: pass (1 passed)
+run 13/20: pass (1 passed)
+run 14/20: pass (1 passed)
+run 15/20: pass (1 passed)
+run 16/20: pass (1 passed)
+run 17/20: pass (1 passed)
+run 18/20: pass (1 passed)
+run 19/20: pass (1 passed)
+run 20/20: pass (1 passed)
+20/20

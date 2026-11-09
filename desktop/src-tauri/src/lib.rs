@@ -18350,10 +18350,22 @@ mod tests {
         let dir = temp_dir("yv70-stuck");
         let model = stub_model_in(&dir);
 
-        let manager = exit_manager(|| {
+        // yap-1108-timing-open-m-budgets — the wedge is REAL now: the decode
+        // cannot end before WEDGED_DECODE (or the test's own release below),
+        // so a teardown that returns at all while it runs did not wait it out.
+        // That is the property the old `elapsed < 2 s` bound (against a 3 s
+        // decode) approximated; the bound below is the decode itself, so only
+        // a teardown that really waited the decode out can trip it.
+        const WEDGED_DECODE: Duration = Duration::from_secs(60);
+        // The stub polls this between slices. `cancellable: false` keeps it
+        // away from the manager (no cancel hook), so only this test can end the
+        // decode early — and only after the teardown has returned.
+        let release = Arc::new(AtomicBool::new(false));
+        let stub_release = Arc::clone(&release);
+        let manager = exit_manager(move || {
             Box::new(SlowStubEngine {
-                decode: Duration::from_secs(3),
-                cancel: Arc::new(AtomicBool::new(false)),
+                decode: WEDGED_DECODE,
+                cancel: Arc::clone(&stub_release),
                 // No cancel hook: nothing can end this decode early.
                 cancellable: false,
             })
@@ -18362,7 +18374,7 @@ mod tests {
         let state = exit_state(&dir, manager.clone());
 
         let m = manager.clone();
-        std::thread::spawn(move || {
+        let take = std::thread::spawn(move || {
             let _ = m.transcribe(vec![0.1; 16], None, None);
         });
         wait_until("the take to be in flight", || manager.status().transcribing);
@@ -18386,13 +18398,18 @@ mod tests {
             "a stuck lease is reported, not hidden"
         );
         assert!(
-            elapsed < Duration::from_secs(2),
-            "Cmd-Q must not wait out a wedged decode, took {elapsed:?}"
+            elapsed < WEDGED_DECODE,
+            "Cmd-Q must not wait out a wedged decode, took {elapsed:?} against a \
+             {WEDGED_DECODE:?} wedge"
         );
         assert!(
             elapsed >= Duration::from_millis(150),
             "…but it must actually have given the lease its budget, took {elapsed:?}"
         );
+
+        // Let the wedged decode go so its thread ends with the test.
+        release.store(true, Ordering::SeqCst);
+        let _ = take.join();
 
         drop(state);
         let _ = std::fs::remove_dir_all(&dir);
@@ -20373,11 +20390,23 @@ mod retry_engine_tests {
         assert!(!m.is_busy(), "the lease is released at the timeout");
 
         let mut phases = Vec::new();
-        let (result, wall) = retry(&m, Duration::from_secs(5), &mut phases);
+        let idle_waits_before = m.idle_waits();
+        let (result, _wall) = retry(&m, Duration::from_secs(5), &mut phases);
         assert_eq!(err_of(result), transcription::ENGINE_STUCK);
+        // yap-1108-timing-open-m-budgets — "fail fast" as a count, not a
+        // stopwatch: the retry has exactly two places it can wait (the
+        // queue's `wait_until_idle`, and the decode's `recv_timeout` behind
+        // the Decoding phase). Neither was entered, so it cannot have sat out
+        // any part of the 5 s deadline — on any runner. The old `wall < 1 s`
+        // only said the same thing when the runner was not starved.
+        assert_eq!(
+            m.idle_waits() - idle_waits_before,
+            0,
+            "fail fast, not at the deadline: the retry entered the engine queue wait"
+        );
         assert!(
-            wall < Duration::from_secs(1),
-            "fail fast, not at the deadline: {wall:?}"
+            !phases.contains(&RetryPhase::Decoding),
+            "fail fast, not at the deadline: the retry waited on a decode: {phases:?}"
         );
         assert_eq!(m.engine_loads(), 1, "engine_loads_during must be 0");
         assert!(
