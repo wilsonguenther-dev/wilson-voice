@@ -113,6 +113,10 @@ fn scripted() -> StubModel {
 
 #[test]
 fn summarize_e2e_speaker_attributed() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = segments_on_tracks(&TURNS);
     let summary = summarize_segments_with(&segments, &scripted(), &enrolled())
         .expect("the fixture summarizes");
@@ -222,6 +226,10 @@ fn summarize_e2e_speaker_attributed() {
 /// source that names a line, from the meeting's saved/corrected names.
 #[test]
 fn a_track_index_never_names_and_names_come_only_from_corrected_speakers() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     // Both shapes, because they take different branches and only one of them
     // produces a label at all. The IRL fixture above is single-track, so every
     // kind resolves to `ClusterTrackA` and the source declines — a test built
