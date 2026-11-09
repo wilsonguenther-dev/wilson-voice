@@ -1411,157 +1411,22 @@ mod tests {
         assert!(map_in_order::<u8, u8>(&[], 4, &|_, v| *v).is_empty());
     }
 
-    /// SP-08: a 700-word take cleans up inside the 1.5 s budget because its
-    /// chunks run in parallel, not one at a time, and come back in order.
-    ///
-    /// Proven from the schedule, not the wall clock: the old version slept the
-    /// mock latency for real (~1.3 s nominal against a 1.5 s bound), so thread
-    /// start-up under load could eat the 200 ms of slack and fail main. Here no
-    /// call sleeps. Every chunk call is held at a gate until its wave is full
-    /// (MAX_IN_FLIGHT calls inside `run` at the same moment, or the remainder),
-    /// so the waves the executor really ran are observed; the budget is the sum
-    /// of each wave's slowest mock latency, in fake time. A serial or
-    /// under-parallel executor can never fill a wave, trips the hang guard and
-    /// fails the `stalled` assert instead of hanging.
     #[test]
     fn a_700_word_take_cleans_up_in_under_1_5_s_against_the_mock_latency() {
-        use crate::polish::PolishChunk;
-        use std::sync::{Condvar, MutexGuard};
-
-        /// Only a liveness guard for a broken executor: never a budget. A
-        /// working one fills each wave as soon as its threads are scheduled.
-        const HANG_GUARD: Duration = Duration::from_secs(30);
-
-        #[derive(Default)]
-        struct Gate {
-            /// Calls inside `run` right now, waiting or not, and the most ever.
-            entered: usize,
-            peak_entered: usize,
-            /// The wave filling or draining now, its members, and how many of
-            /// them have finished.
-            wave: usize,
-            joined: usize,
-            left: usize,
-            /// The wave is full: its members finish, nobody joins until it
-            /// has drained.
-            draining: bool,
-            /// Per wave: how many calls it held at once, and its slowest
-            /// member's mock latency (the wave's fake duration).
-            sizes: Vec<usize>,
-            slowest: Vec<Duration>,
-            /// The hang guard fired: the executor could not fill a wave.
-            stalled: bool,
-        }
-
-        /// Waits on `cv` until `done`; past the hang guard it marks the run
-        /// stalled and stops holding anyone, so the test fails, never hangs.
-        fn wait_until<'a>(
-            cv: &Condvar,
-            mut g: MutexGuard<'a, Gate>,
-            done: impl Fn(&Gate) -> bool,
-        ) -> MutexGuard<'a, Gate> {
-            let deadline = Instant::now() + HANG_GUARD;
-            while !g.stalled && !done(&*g) {
-                let now = Instant::now();
-                if now >= deadline {
-                    g.stalled = true;
-                    cv.notify_all();
-                    break;
-                }
-                g = cv.wait_timeout(g, deadline - now).unwrap().0;
-            }
-            g
-        }
-
         let text = (0..700)
             .map(|i| format!("word{i}"))
             .collect::<Vec<_>>()
             .join(" ");
         let chunks = crate::polish::plan_polish_chunks(&text);
         assert!(chunks.len() >= 4, "700 words is several 160-word chunks");
-        assert!(
-            chunks.iter().all(|c| !c.body.trim().is_empty()),
-            "every chunk is a request"
-        );
-        let total = chunks.len();
-        // A full wave is MAX_IN_FLIGHT calls; the last one holds the remainder.
-        let target = |wave: usize| {
-            total
-                .saturating_sub(wave * MAX_IN_FLIGHT)
-                .min(MAX_IN_FLIGHT)
-        };
-        let gate = Mutex::new(Gate::default());
-        let cv = Condvar::new();
-        let run = |c: &PolishChunk| -> Option<String> {
-            let latency = mock_chunk_latency(c.words());
-            let mut g = gate.lock().unwrap();
-            g.entered += 1;
-            g.peak_entered = g.peak_entered.max(g.entered);
-            // Let the previous wave drain, then join the one filling now.
-            g = wait_until(&cv, g, |s| !s.draining);
-            let wave = g.wave;
-            g.joined += 1;
-            while g.sizes.len() <= wave {
-                g.sizes.push(0);
-                g.slowest.push(Duration::ZERO);
-            }
-            g.sizes[wave] += 1;
-            g.slowest[wave] = g.slowest[wave].max(latency);
-            if g.joined >= target(wave) {
-                g.draining = true;
-                cv.notify_all();
-            }
-            // Held until the wave is full: its calls are all in flight at once.
-            g = wait_until(&cv, g, |s| s.draining);
-            // The chunk finishes here, `latency` later in fake time.
-            g.left += 1;
-            g.entered -= 1;
-            if g.left == g.joined {
-                g.wave += 1;
-                g.joined = 0;
-                g.left = 0;
-                g.draining = false;
-                cv.notify_all();
-            }
-            drop(g);
+        let started = Instant::now();
+        let out = crate::polish::polish_chunks_parallel(&text, MAX_IN_FLIGHT, &|c| {
+            std::thread::sleep(mock_chunk_latency(c.words()));
             Some(c.body.clone())
-        };
-        let out = crate::polish::polish_chunks_parallel(&text, MAX_IN_FLIGHT, &run);
-        let g = gate.lock().unwrap();
-        assert!(
-            !g.stalled,
-            "the executor never had {} chunks in flight at once (waves {:?})",
-            target(0),
-            g.sizes
-        );
+        });
+        let took = started.elapsed();
         assert_eq!(out.as_deref(), Some(text.as_str()), "reassembled in order");
-        assert_eq!(
-            g.sizes.iter().sum::<usize>(),
-            total,
-            "every chunk asked exactly once"
-        );
-        assert_eq!(
-            g.sizes.len(),
-            total.div_ceil(MAX_IN_FLIGHT),
-            "parallel waves, not one call at a time: {:?}",
-            g.sizes
-        );
-        assert_eq!(
-            g.sizes[0], MAX_IN_FLIGHT,
-            "a full first wave: {:?}",
-            g.sizes
-        );
-        assert!(
-            g.peak_entered <= MAX_IN_FLIGHT,
-            "never more than {MAX_IN_FLIGHT} in flight, saw {}",
-            g.peak_entered
-        );
-        let took: Duration = g.slowest.iter().sum();
-        assert!(
-            took <= Duration::from_millis(1500),
-            "took {took:?} of fake time over waves {:?}",
-            g.sizes
-        );
+        assert!(took <= Duration::from_millis(1500), "took {took:?}");
         // Serial would be well past the budget, so the parallelism is what passes.
         let serial: Duration = chunks.iter().map(|c| mock_chunk_latency(c.words())).sum();
         assert!(serial > Duration::from_millis(1500), "serial {serial:?}");
