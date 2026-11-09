@@ -99,6 +99,10 @@ fn scripted() -> StubModel {
 
 #[test]
 fn summarize_e2e_over_the_yv90_lecture_fixture() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let Some(root) = corpus() else { return };
     let meta: FixtureMeta = serde_json::from_str(
         &std::fs::read_to_string(root.join(LECTURE).join("meta.json")).expect("fixture meta"),
@@ -179,6 +183,10 @@ fn summarize_e2e_over_the_yv90_lecture_fixture() {
 /// `tests/summarize_empty_is_never_stored.rs`.
 #[test]
 fn a_total_map_failure_is_an_error_not_a_placeholder_summary() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let segments = support::segments();
 
     let dead = StubModel::new(|_| Err(wilson_voice_lib::summarize::SummaryError::Protocol));
@@ -218,6 +226,10 @@ fn a_total_map_failure_is_an_error_not_a_placeholder_summary() {
 #[test]
 #[ignore]
 fn summarize_e2e_real_sidecar() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let Some(root) = corpus() else { return };
     let binary = std::env::var("YAP_POLISH_BIN")
         .map(PathBuf::from)

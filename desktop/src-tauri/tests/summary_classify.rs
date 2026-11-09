@@ -51,6 +51,10 @@ const NOTE: &str = "did not fit the model";
 
 #[test]
 fn the_real_runs_misfiled_lines_are_reclassified() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for (from, text, want) in [
         (Actions, "Jeisil will send the updated pricing doc to the team by Friday", Some(Actions)),
@@ -76,6 +80,10 @@ fn the_real_runs_misfiled_lines_are_reclassified() {
 
 #[test]
 fn the_fixture_notes_file_each_line_under_the_right_heading() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| misfiled_map(req)))
     });
@@ -129,6 +137,10 @@ fn round2_real_map(req: &PolishRequest) -> String {
 
 #[test]
 fn skipped_lines_are_backfilled_and_swapped_citations_corrected() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let model = StubModel::with_headline(|req| {
         Ok(reduce_or_headline(req).unwrap_or_else(|| round2_real_map(req)))
     });
@@ -157,6 +169,10 @@ fn skipped_lines_are_backfilled_and_swapped_citations_corrected() {
 
 #[test]
 fn backfill_never_adds_a_line_without_a_clear_marker() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let quiet: &[&str] = &[
         "I will say the numbers looked fine this quarter.",
         "Pricing came up again for the consulting tier.",
@@ -178,6 +194,10 @@ fn backfill_never_adds_a_line_without_a_clear_marker() {
 /// a marker — even one that opens with a pleasantry — still stands.
 #[test]
 fn a_pleasantry_the_model_files_as_a_decision_is_dropped() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
@@ -217,6 +237,10 @@ fn a_pleasantry_the_model_files_as_a_decision_is_dropped() {
 /// an addressee or filler word ("Good morning everyone", "Great, thanks all").
 #[test]
 fn a_real_line_that_opens_with_a_pleasantry_word_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         // The reviewers' probes.
@@ -268,6 +292,10 @@ fn a_real_line_that_opens_with_a_pleasantry_word_is_kept() {
 /// which EVERY clause is a greeting, thanks or goodbye.
 #[test]
 fn a_line_with_substance_next_to_a_greeting_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         // review-opus, 0baec25
@@ -307,6 +335,10 @@ fn a_line_with_substance_next_to_a_greeting_is_kept() {
 /// nobody's decision, question or task.
 #[test]
 fn small_talk_is_dropped_from_every_bucket() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         "Thanks Jeisil, and thanks Wilson for pulling the numbers together.",
@@ -331,6 +363,10 @@ fn small_talk_is_dropped_from_every_bucket() {
 /// moves to May" under decisions, and the stored notes had no "May" at all.
 #[test]
 fn a_decision_after_a_thank_you_reaches_the_stored_notes() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let lines: &[&str] = &[
         "Okay, quick sync on the launch for the Drivia consulting tier.",
         "Thanks everyone, the launch moves to May.",
@@ -366,6 +402,10 @@ fn a_decision_after_a_thank_you_reaches_the_stored_notes() {
 /// filler. Each is kept in the bucket(s) the reviewer named.
 #[test]
 fn a_decision_inside_gratitude_or_next_week_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for (text, buckets) in [
         ("Appreciate the team pushing the launch to May.", &[Decisions, Actions][..]),
@@ -404,6 +444,10 @@ fn a_decision_inside_gratitude_or_next_week_is_kept() {
 /// stored notes had no Decisions section.
 #[test]
 fn an_appreciate_decision_reaches_the_stored_notes_without_a_backfill() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     let lines: &[&str] = &[
         "Okay, quick sync on the launch for the Drivia consulting tier.",
         "Appreciate the team pushing the launch to May.",
@@ -441,6 +485,10 @@ fn an_appreciate_decision_reaches_the_stored_notes_without_a_backfill() {
 /// on the courtesy list (joining, coming, the time, help, hosting, …).
 #[test]
 fn a_gratitude_wrapped_decision_with_no_date_or_name_is_kept() {
+    // yap-audit-notes-strategy: this file pins arm A (MAP -> REDUCE); arm E is tests/summary_items_first.rs.
+    wilson_voice_lib::summarize::set_notes_strategy_override(Some(
+        wilson_voice_lib::summarize::NotesStrategy::A,
+    ));
     use Bucket::*;
     for text in [
         // review-opus, f8fb110 — each returned None from Decisions.
