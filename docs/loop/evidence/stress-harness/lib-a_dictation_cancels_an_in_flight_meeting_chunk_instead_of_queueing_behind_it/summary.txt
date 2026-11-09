@@ -1,0 +1,26 @@
+stress-tests: target=lib filter='transcription::tests::a_dictation_cancels_an_in_flight_meeting_chunk_instead_of_queueing_behind_it' runs=20 threads=8 loaders=8
+stress-tests: cargo test --features custom-protocol --lib transcription::tests::a_dictation_cancels_an_in_flight_meeting_chunk_instead_of_queueing_behind_it -- --test-threads=8
+stress-tests: CARGO_TARGET_DIR=/Users/wilsonguenther/code/wilson-voice-loop/target-loop2
+stress-tests: logs in /var/folders/40/3lhzw1zj16v6k87qc5w216gw0000gn/T/tmp.5NvxpnMRfB
+stress-tests: started 8 busy loops: 75698 75699 75700 75701 75702 75703 75704 75705
+run 1/20: pass (1 passed)
+run 2/20: pass (1 passed)
+run 3/20: pass (1 passed)
+run 4/20: pass (1 passed)
+run 5/20: pass (1 passed)
+run 6/20: pass (1 passed)
+run 7/20: pass (1 passed)
+run 8/20: pass (1 passed)
+run 9/20: pass (1 passed)
+run 10/20: pass (1 passed)
+run 11/20: pass (1 passed)
+run 12/20: pass (1 passed)
+run 13/20: pass (1 passed)
+run 14/20: pass (1 passed)
+run 15/20: pass (1 passed)
+run 16/20: pass (1 passed)
+run 17/20: pass (1 passed)
+run 18/20: pass (1 passed)
+run 19/20: pass (1 passed)
+run 20/20: pass (1 passed)
+20/20

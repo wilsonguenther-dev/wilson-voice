@@ -776,6 +776,9 @@ struct Inner {
     /// "how long since" comparison read it. `None` (always, in the app) is the
     /// wall clock, exactly as before. See [`TranscriptionManager::set_idle_clock`].
     idle_clock: Mutex<Option<Arc<ManualLeaseClock>>>,
+    /// yap-1108-timing-open-m-budgets — times [`TranscriptionManager::wait_until_idle`]
+    /// was entered. Bookkeeping only; see [`TranscriptionManager::idle_waits`].
+    idle_waits: AtomicU64,
     /// yap-1108-timing-idle-watcher-clock — idle-watcher evaluations completed
     /// (bumped once per tick, AFTER `unload_if_idle` returns). The sync point
     /// a test waits on after moving the idle clock, instead of sleeping and
@@ -897,6 +900,7 @@ impl TranscriptionManager {
                 ),
                 lease_clock: Mutex::new(None),
                 idle_clock: Mutex::new(None),
+                idle_waits: AtomicU64::new(0),
                 idle_ticks: AtomicU64::new(0),
             }),
         };
@@ -1440,6 +1444,7 @@ impl TranscriptionManager {
     /// engine: it never takes the engine off anyone and never loads a second
     /// one, it only waits its turn.
     pub fn wait_until_idle(&self, max: Duration) -> bool {
+        self.inner.idle_waits.fetch_add(1, Ordering::AcqRel);
         let started = Instant::now();
         loop {
             if !self.is_busy() {
@@ -1450,6 +1455,14 @@ impl TranscriptionManager {
             }
             std::thread::sleep(ENGINE_IDLE_POLL);
         }
+    }
+
+    /// yap-1108-timing-open-m-budgets — how many times this manager entered
+    /// [`Self::wait_until_idle`]. A test seam: it lets "the retry failed fast"
+    /// be asserted as "no wait was entered" rather than timed against a
+    /// wall-clock ceiling. The app never reads it.
+    pub fn idle_waits(&self) -> u64 {
+        self.inner.idle_waits.load(Ordering::Acquire)
     }
 
     /// Load off the main thread. Tauri commands call this so a cold load never
@@ -3406,6 +3419,11 @@ mod tests {
             Duration::from_millis(50),
             decodes.clone(),
         );
+        // yap-1108-timing-open-m-budgets — lease timeouts run on the #374
+        // manual clock, which this test never advances: no lease can time out
+        // because the runner was starved, so the only way the chunk ends is
+        // the dictation's cancel (or its own 10 s decode, which fails below).
+        m.set_lease_clock(ManualLeaseClock::new());
 
         let meeting = {
             let m = m.clone();
@@ -3413,19 +3431,24 @@ mod tests {
         };
         wait_for_a_decode_in_flight(&m);
 
-        let started = Instant::now();
         let dictated = m.transcribe(vec![0.2; 16_000], None, None);
-        let waited = started.elapsed();
+        // Counted the moment the dictation is back: only a decode that RAN TO
+        // THE END bumps `decodes`, so 1 here is the dictation alone — the
+        // in-flight chunk was cancelled, never waited out. This replaces the
+        // old `waited < 2 s` wall bound and is stronger: a dictation that
+        // queued behind the 10 s chunk would find it completed (2) however
+        // fast or slow the runner is, and one that preempted it cannot.
+        let completed_when_the_dictation_returned = decodes.load(Ordering::Acquire);
 
         assert_eq!(
             dictated.as_deref(),
             Ok("the take came back"),
             "the dictation was lost to a decode the geometry itself sanctions"
         );
-        assert!(
-            waited < Duration::from_secs(2),
-            "the dictation waited {waited:?} — it queued behind the chunk instead \
-             of preempting it"
+        assert_eq!(
+            completed_when_the_dictation_returned, 1,
+            "{completed_when_the_dictation_returned} decodes ran to completion by the time \
+             the dictation returned — it queued behind the chunk instead of preempting it"
         );
         assert_eq!(
             meeting.join().expect("meeting thread").unwrap_err(),

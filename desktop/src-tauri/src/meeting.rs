@@ -1276,6 +1276,8 @@ pub struct MeetingJournal {
     dropped: AtomicU64,
     /// TEST SEAM — see [`MeetingJournal::pause_handle`].
     writer_pause: Arc<AtomicBool>,
+    /// TEST SEAM — see [`MeetingJournal::writer_audio_received`].
+    writer_audio_received: Arc<AtomicU64>,
     keep: bool,
     /// The held `<id>.meeting.lock` — see [`MEETING_LOCK_EXT`]. `None` only if
     /// the lock could not be taken, which leaves recording intact and only
@@ -1322,6 +1324,8 @@ impl MeetingJournal {
         let lock = take_journal_lock(&journal_lock_path(dir, &id));
         let (tx, rx) = mpsc::sync_channel::<JournalMsg>(depth.max(1));
         let writer_pause = Arc::new(AtomicBool::new(false));
+        let writer_audio_received = Arc::new(AtomicU64::new(0));
+        let wreceived = Arc::clone(&writer_audio_received);
         let pending_index: Vec<PendingIndex> = (0..tracks)
             .map(|_| Arc::new(Mutex::new(Vec::new())))
             .collect();
@@ -1336,7 +1340,9 @@ impl MeetingJournal {
         let Ok(writer) = thread::Builder::new()
             .name("wv-meeting-journal".into())
             .spawn(move || {
-                meeting_writer_loop(&wdir, &wspills, &wmarker, &windexes, rx, &wpause, &wpending)
+                meeting_writer_loop(
+                    &wdir, &wspills, &wmarker, &windexes, rx, &wpause, &wpending, &wreceived,
+                )
             })
         else {
             log::warn!("YV91 meeting journal off (writer thread)");
@@ -1352,6 +1358,7 @@ impl MeetingJournal {
             writer: Some(writer),
             dropped: AtomicU64::new(0),
             writer_pause,
+            writer_audio_received,
             keep: false,
             lock,
         })
@@ -1393,6 +1400,18 @@ impl MeetingJournal {
     /// ([`WRITER_PAUSE_CAP`]) so a forgotten un-park can never wedge a build.
     pub fn pause_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.writer_pause)
+    }
+
+    /// TEST SEAM (yap-1108-timing-open-m-budgets). Audio blocks the writer
+    /// thread has taken off the queue so far. Read-only bookkeeping: the app
+    /// never looks at it and the hand-off is unchanged.
+    ///
+    /// It is what lets a test prove "`append` never waited" without a stopwatch:
+    /// a FULL bounded queue can only take a blocking send after the writer
+    /// receives, so an `append` that returned while a parked writer's count
+    /// stood still did not wait for the writer — on any machine, at any load.
+    pub fn writer_audio_received(&self) -> u64 {
+        self.writer_audio_received.load(Ordering::Acquire)
     }
 
     /// Hand one track's 16 kHz frames to the writer. Never blocks.
@@ -1561,6 +1580,7 @@ fn write_all_index_records(files: &mut [Option<std::fs::File>], pending: &[Pendi
 /// The meeting journal's writer thread. Creates the spills, writes the marker
 /// FIRST (that pair is the crash signal), then appends audio and index records
 /// with a BATCHED flush (finding #12: a timer, not every callback).
+#[allow(clippy::too_many_arguments)]
 fn meeting_writer_loop(
     dir: &Path,
     spills: &[PathBuf],
@@ -1569,6 +1589,7 @@ fn meeting_writer_loop(
     rx: mpsc::Receiver<JournalMsg>,
     pause: &AtomicBool,
     pending_index: &[PendingIndex],
+    audio_received: &AtomicU64,
 ) {
     if let Err(e) = std::fs::create_dir_all(dir) {
         log::warn!("YV91 meeting journal off (recovery dir): {e}");
@@ -1633,6 +1654,7 @@ fn meeting_writer_loop(
         }
         match rx.recv_timeout(JOURNAL_FLUSH_INTERVAL) {
             Ok(JournalMsg::Audio { track, samples }) => {
+                audio_received.fetch_add(1, Ordering::AcqRel);
                 let Some(file) = files.get_mut(track) else {
                     continue;
                 };

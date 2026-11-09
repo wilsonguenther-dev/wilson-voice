@@ -41,6 +41,7 @@
 //! rather than a notification observer with a lifetime of its own.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -459,6 +460,30 @@ struct Active {
 struct TickerStop {
     stopped: Mutex<bool>,
     woken: Condvar,
+    /// yap-1108-timing-open-m-budgets — shared with the controller, see
+    /// [`TickerCounters`].
+    counters: Arc<TickerCounters>,
+}
+
+/// TEST SEAM (yap-1108-timing-open-m-budgets): how the meeting ticker's parks
+/// ended, counted across every meeting one controller runs. Bookkeeping only —
+/// the park, the notify and the 1 Hz emit are unchanged.
+///
+/// It lets the stop-latency tests assert the property itself ("stop WOKE the
+/// ticker; it did not wait out a tick") instead of timing `stop()` against a
+/// wall-clock ceiling a starved runner can miss.
+#[derive(Debug, Default)]
+pub struct TickerCounters {
+    /// Parks entered. Bumped while the stop lock is held, just before the
+    /// condvar releases it, so a `stop()` issued after a test sees this move
+    /// lands on a thread that is already waiting.
+    pub parks: AtomicU64,
+    /// Parks ended by `stop()`'s notify, before the tick ran out.
+    pub stop_wakes: AtomicU64,
+    /// Parks that ran the whole tick out (a normal tick).
+    pub timeout_wakes: AtomicU64,
+    /// `wait` calls that found the stop flag already set and never parked.
+    pub stopped_before_park: AtomicU64,
 }
 
 impl TickerStop {
@@ -488,13 +513,24 @@ impl TickerStop {
             return false;
         };
         if *guard {
+            self.counters
+                .stopped_before_park
+                .fetch_add(1, Ordering::AcqRel);
             return false;
         }
+        self.counters.parks.fetch_add(1, Ordering::AcqRel);
         match self
             .woken
             .wait_timeout_while(guard, tick, |stopped| !*stopped)
         {
-            Ok((g, _)) => !*g,
+            Ok((g, timeout)) => {
+                if timeout.timed_out() {
+                    self.counters.timeout_wakes.fetch_add(1, Ordering::AcqRel);
+                } else {
+                    self.counters.stop_wakes.fetch_add(1, Ordering::AcqRel);
+                }
+                !*g
+            }
             Err(_) => false,
         }
     }
@@ -523,6 +559,8 @@ pub struct MeetingController {
     probe: Arc<dyn EnergyProbe>,
     tick: Duration,
     active: Mutex<Option<Active>>,
+    /// yap-1108-timing-open-m-budgets — see [`TickerCounters`].
+    ticker_counters: Arc<TickerCounters>,
 }
 
 impl MeetingController {
@@ -533,6 +571,7 @@ impl MeetingController {
             probe: Arc::new(SystemProbe),
             tick: TICK_INTERVAL,
             active: Mutex::new(None),
+            ticker_counters: Arc::new(TickerCounters::default()),
         }
     }
 
@@ -549,6 +588,13 @@ impl MeetingController {
     pub fn with_tick_interval(mut self, tick: Duration) -> Self {
         self.tick = tick;
         self
+    }
+
+    /// yap-1108-timing-open-m-budgets — the ticker's park/wake counts for
+    /// every meeting this controller has run. Tests only; see
+    /// [`TickerCounters`].
+    pub fn ticker_counters(&self) -> Arc<TickerCounters> {
+        Arc::clone(&self.ticker_counters)
     }
 
     /// yap-fx-06 — the one way into the live-meeting slot, and it never says
@@ -677,7 +723,10 @@ impl MeetingController {
             if pill_visible { "visible" } else { "hidden" }
         );
 
-        let stop = Arc::new(TickerStop::default());
+        let stop = Arc::new(TickerStop {
+            counters: Arc::clone(&self.ticker_counters),
+            ..TickerStop::default()
+        });
         let probes = TickProbes {
             system_audio: capture.system_audio_probe(),
             call_audio: capture.call_audio_probe(),
