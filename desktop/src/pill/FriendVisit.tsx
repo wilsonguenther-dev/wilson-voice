@@ -67,6 +67,7 @@ import { DEFAULT_CHATTER_MODE, type ChatterMode } from "./chatter";
 import { drawFriendFrame, friendManifest, pickFrame } from "../sprites/friends";
 import { FRIENDS } from "../sprites/art";
 import { crispPlan, domBuffer, paintCrisp } from "../sprites/crisp";
+import { publishPillVisitor, subscribeVisitorInWindow, visitorInWindow, visitorSegment } from "./visitorInWindow";
 
 const LEDGER_KEY = "yap.friends.visits";
 /** Fallback only: the last take count the pill knew, for when get_insights fails. */
@@ -191,6 +192,10 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   const takeStatsRef = useRef<TakeStats>(EMPTY_TAKE_STATS);
   const visitRef = useRef<Visit | null>(null);
   const ctxRef = useRef({ meetingQuiet, occupant, quiet, chatter });
+  // yap-1107-parity-companions — YappyPill paints the visitor INSIDE the pill
+  // window when it fits whole (companions.html s09); this box then stays empty.
+  const [inWindow, setInWindow] = useState(() => visitorInWindow());
+  useEffect(() => subscribeVisitorInWindow(setInWindow), []);
   // Synced first, so every effect below (and every listener) reads this render.
   useEffect(() => {
     ctxRef.current = { meetingQuiet, occupant, quiet, chatter };
@@ -311,22 +316,34 @@ export function FriendVisit({ meetingRecording, meetingNotesReady, occupant, for
   // Paint while on screen, and only then.
   // A pinned matrix visitor obeys the quiet rule too, so the meeting photo proves it.
   const who: VisitorId | null = silent ? null : forced ?? (visit ? visit.friend : null);
+  // yap-1107-parity-companions — hand the visitor to the pill window. A pinned
+  // matrix Yappy is the page's own example: the 100th-take milestone
+  // ("that's a hundred! — Yappy", segment "✓ 100th take").
+  const visitEvent: string | null = forced ? (forced === "yappy" ? "milestone" : null) : visit ? visit.event : null;
+  const visitTakes = forced ? 100 : takesRef.current?.takes() ?? 0;
+  const visitLine = visitEvent ? milestoneLine(visitEvent as Visit["event"], visitTakes) : null;
+  const visitSegment = visitorSegment(visitEvent, visitTakes);
+  useEffect(() => {
+    publishPillVisitor(who ? { friend: who, event: visitEvent, line: visitLine, segment: visitSegment } : null);
+  }, [who, visitEvent, visitLine, visitSegment]);
+  useEffect(() => () => publishPillVisitor(null), []);
   useEffect(() => {
     const cv = canvasRef.current;
-    if (!who || !cv) return undefined;
+    if (!who || !cv || inWindow) return undefined;
     const reduced = prefersReducedMotion();
     const t0 = performance.now();
     paintVisitor(cv, who, 0, reduced);
     if (reduced || forced) return undefined;
     const id = window.setInterval(() => paintVisitor(cv, who, performance.now() - t0, false), FRAME_MS);
     return () => clearInterval(id);
-  }, [who, forced]);
+  }, [who, forced, inWindow]);
 
   if (!who) return null;
   return (
     <div
       className="friend-visit"
       data-friend-visit={who}
+      data-in-window={inWindow ? "true" : undefined}
       data-visit-event={visit && !forced ? visit.event : undefined}
       data-visit-line={visit && !forced ? milestoneLine(visit.event, takesRef.current?.takes() ?? 0) ?? undefined : undefined}
       aria-hidden="true"

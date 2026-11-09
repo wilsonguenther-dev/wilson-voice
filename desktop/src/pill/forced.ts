@@ -444,3 +444,60 @@ export function matrixFriendVisitScene(): MatrixOfferRow {
     label: v.label,
   };
 }
+
+/**
+ * yap-1107-parity-companions — the launch walk's first storyboard frame
+ * (companions.html s06, "Starting · 0%": Yappy steps out of his house) as a
+ * matrix row: `float.html?phase=model_loading&walk=0` (see `forcedLaunchWalk`
+ * in launchWalk.ts). The approved page draws the walk only for Yappy, at the
+ * bottom dock, with no meeting (a meeting suppresses the walk), so the row is
+ * photographed only there — `characters`, `docks` and `meetings` narrow the
+ * matrix loops (scripts/pill-matrix.mjs). The capture is
+ * launch-walk__yappy__bottom__none.png, the app column of the parity sheet.
+ */
+export interface MatrixNarrowRow extends MatrixOfferRow {
+  characters: readonly string[];
+  docks: readonly string[];
+  meetings: readonly string[];
+}
+
+/**
+ * yap-1107-parity-companions — the page's own visit (companions.html s09 line
+ * 297, "Yappy visits for your 100th take"): Hoot sits in the pill, Yappy stands
+ * beside him INSIDE the open window, the done segment reads "✓ 100th take".
+ * `float.html?phase=done&pill=hoot&friend=yappy`; the pinned Yappy visitor is
+ * the milestone (FriendVisit.tsx). Bottom dock; meetings none (the visitor in
+ * the window, capture friend-visit-window__hoot__bottom__none.png, the app
+ * column of the parity sheet) and recording (the quiet rule: no visitor).
+ */
+export function matrixFriendVisitWindowScene(): MatrixNarrowRow {
+  const v = phaseVisual("done");
+  return {
+    phase: "done",
+    id: "friend-visit-window",
+    phaseId: PHASE_ID.done,
+    query: "friend=yappy",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+    characters: ["hoot"],
+    docks: ["bottom"],
+    meetings: ["none", "recording"],
+  };
+}
+
+export function matrixLaunchWalkScene(): MatrixNarrowRow {
+  const v = phaseVisual("model-loading");
+  return {
+    phase: "model-loading",
+    id: "launch-walk",
+    phaseId: PHASE_ID["model-loading"],
+    query: "walk=0",
+    offer: "",
+    tone: v.tone,
+    label: v.label,
+    characters: ["yappy"],
+    docks: ["bottom"],
+    meetings: ["none"],
+  };
+}
