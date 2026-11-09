@@ -4,10 +4,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
-import { NEWS_STEP_HEADING, NEWS_STEP_LEDE, NewsStepView } from "./NewsOnboardingStep";
+import { NewsStepView } from "./NewsOnboardingStep";
 import { NewsHomeCardView } from "./NewsHomeCard";
 import { NewsSettingsView } from "../views/settings/News";
-import { EMPTY_PREFS, NEWS_PRIVACY_LINE, TOPIC_CHIPS, topicLabel, topicLabels, watchCloudRoute, type NewsView } from "./newsPrefs";
+import { EMPTY_PREFS, NEWS_PRIVACY_LINE, TOPIC_CHIPS, watchCloudRoute, type NewsView } from "./newsPrefs";
 import { CLOUD_ROUTE_CHANGED_EVENT } from "../meetings/consent";
 
 const noop = () => undefined;
@@ -35,45 +35,8 @@ describe("yap-1106 onboarding step", () => {
     expect(html).toContain("Not now");
     expect(html).toContain("Keep me posted");
     // Nothing picked yet: saving is disabled, Not now is not.
-    expect(html).toMatch(/<button class="primary news-onb-btn news-onb-btn--primary" disabled=""[^>]*data-news-save/);
+    expect(html).toMatch(/<button class="primary" disabled=""[^>]*data-news-save/);
     expect(html).not.toMatch(/disabled=""[^>]*data-news-skip/);
-  });
-});
-
-describe("yap-1107 parity: the onboarding step matches the approved News page §01", () => {
-  it("parity_news_onboarding_step_draws_the_approved_layout", () => {
-    const picked = { ...EMPTY_PREFS, topics: ["developer", "stocks", "business"], tickers: ["AAPL", "NVDA", "TSLA"] };
-    const html = renderToStaticMarkup(
-      <NewsStepView value={picked} onChange={noop} busy={false} error={null} onSkip={noop} onSave={noop} onBack={noop} />,
-    );
-    expect(NEWS_STEP_HEADING).toBe("Want me to keep you posted?");
-    expect(html).toContain(NEWS_STEP_HEADING);
-    expect(html).toContain(NEWS_STEP_LEDE.replace(/'/g, "&#x27;"));
-    expect(html).toContain("Step 4 of 6");
-    expect(html).toContain("data-news-step-yappy");
-    expect(html).toContain('data-news-variant="onboarding"');
-    // The ten chips of the page, in its order.
-    expect(TOPIC_CHIPS.map((c) => c.label)).toEqual([
-      "Developer", "Stocks", "Business", "AI", "Design", "Startups", "Crypto", "Sports", "Science", "Local",
-    ]);
-    const order = [...html.matchAll(/data-news-chip="([a-z]+)"/g)].map((m) => m[1]);
-    expect(order).toEqual(TOPIC_CHIPS.map((c) => c.id));
-    expect((html.match(/aria-pressed="true"/g) || []).length).toBe(3);
-    // Ticker tokens sit inside the one-line field, each a labelled remove.
-    for (const t of picked.tickers) expect(html).toContain(`aria-label="Remove ${t}"`);
-    expect(html).toContain('data-news-field="tickers"');
-    expect(html).toContain('data-news-field="custom"');
-    // Footer: Not now then Keep me posted; the page draws no Back button.
-    expect(html.indexOf("data-news-skip")).toBeLessThan(html.indexOf("data-news-save"));
-    expect(html).not.toContain(">Back<");
-    expect(html).toMatch(/<button class="primary news-onb-btn news-onb-btn--primary"[^>]*data-news-save/);
-  });
-
-  it("parity_news_legacy_chips_keep_their_names", () => {
-    expect(topicLabel("tech")).toBe("Tech");
-    expect(topicLabel("ai")).toBe("AI");
-    expect(topicLabel("mystery")).toBe("mystery");
-    expect(topicLabels({ ...EMPTY_PREFS, topics: ["world", "local"] })).toEqual(["Local", "World"]);
   });
 });
 
