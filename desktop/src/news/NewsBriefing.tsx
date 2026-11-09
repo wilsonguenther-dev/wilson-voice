@@ -13,9 +13,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppCtx } from "../appShell";
-import { FRIENDS } from "../sprites/art";
-import { domBuffer, paintCrisp } from "../sprites/crisp";
-import { TOPIC_CHIPS, cadenceOf, loadNews, type NewsCadence, type NewsRefreshOutcome, type NewsView } from "./newsPrefs";
+import { FRIENDS, H } from "../sprites/art";
+import { crispPlan, domBuffer } from "../sprites/crisp";
+import { cadenceOf, topicLabel, loadNews, type NewsCadence, type NewsRefreshOutcome, type NewsView } from "./newsPrefs";
 import {
   QUOTE_CHECK_MS,
   buildBriefing,
@@ -42,22 +42,96 @@ import { duoAt, duoTurns, skippedArrival, type DuoFrame, type DuoTurn } from "./
 
 export type BriefingPhase = "loading" | "ready" | "empty" | "error";
 
-/** The pair, drawn at a whole-number scale (2x on the design page). */
-const PAIR_BOX = { w: 92, h: 84 };
+/**
+ * The pair, drawn at a whole-number scale (2x on the design page).
+ * yap-1107-parity-news (batch-2 bounce: "duo sprite 104 vs 208"): the approved
+ * card (news.html §02 #duo) draws Cinder + Yappy as ONE 104x44 art canvas —
+ * Yappy stamped at (2,6), Cinder at (54,2), the paper between them at (44,30)
+ * — shown at 208x88 CSS px. Two separate 104x88 canvases measured as two
+ * 104-wide sprites against the page's one 208-wide sprite, so the pair is now
+ * the same single canvas, composited exactly as the page composites it.
+ */
+export const DUO_ART = { w: 104, h: 44 } as const;
+export const DUO_SCALE = 2;
+export const PAIR_BOX = { w: DUO_ART.w * DUO_SCALE, h: DUO_ART.h * DUO_SCALE };
+/** Where each friend's art box sits inside the duo art canvas (art px, news.html §02). */
+export const DUO_AT = { yappy: { x: 2, y: 6 }, cinder: { x: 54, y: 2 } } as const;
+/** The folded paper Cinder hands over: sprite-art pixels, copied from news.html §02. */
+const DUO_PAPER: readonly { fill: string; x: number; y: number; w: number; h: number }[] = [
+  { fill: "#c9c3ad", x: 44, y: 30, w: 12, h: 9 },
+  { fill: "#fffdf5", x: 45, y: 30, w: 10, h: 8 },
+  { fill: "#4a4f5c", x: 46, y: 32, w: 8, h: 1 },
+  { fill: "#4a4f5c", x: 46, y: 34, w: 6, h: 1 },
+];
+/** How often the speaker's mouth opens and closes while it has the turn (ms). */
+const DUO_MOUTH_MS = 250;
 
-function PairSprite({ name, talking = false }: { name: "cinder" | "yappy"; talking?: boolean }) {
+/** Paint the duo art canvas into `canvas` at the 208x88 box. Returns false (and logs once) on failure. */
+export function paintDuo(canvas: HTMLCanvasElement, talking: "cinder" | "yappy" | null, mouthOpen: boolean, dprRaw: number | undefined | null): boolean {
+  try {
+    const plan = crispPlan(PAIR_BOX.w, PAIR_BOX.h, DUO_ART.w, DUO_ART.h, dprRaw);
+    if (canvas.width !== plan.backingW) canvas.width = plan.backingW;
+    if (canvas.height !== plan.backingH) canvas.height = plan.backingH;
+    canvas.style.width = `${plan.cssW}px`;
+    canvas.style.height = `${plan.cssH}px`;
+    canvas.style.imageRendering = "pixelated";
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      console.warn("sprites paint-failed name=news-duo reason=no-2d-context");
+      return false;
+    }
+    const art = domBuffer(DUO_ART.w, DUO_ART.h);
+    const actx = art.image.getContext("2d");
+    if (!actx) throw new Error("no-2d-context");
+    actx.imageSmoothingEnabled = false;
+    for (const name of ["yappy", "cinder"] as const) {
+      const sprite = FRIENDS[name];
+      const buf = domBuffer(sprite.w, sprite.h);
+      const open = talking === name && mouthOpen;
+      sprite.draw(buf.ctx, H(buf.ctx), name === "yappy" && open ? 2 : 0, name === "cinder" ? { talk: open, t: 0 } : undefined);
+      actx.drawImage(buf.image, DUO_AT[name].x, DUO_AT[name].y);
+    }
+    for (const r of DUO_PAPER) {
+      actx.fillStyle = r.fill;
+      actx.fillRect(r.x, r.y, r.w, r.h);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, plan.backingW, plan.backingH);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(art.image, 0, 0, DUO_ART.w, DUO_ART.h, plan.dx, plan.dy, DUO_ART.w * plan.scale, DUO_ART.h * plan.scale);
+    return true;
+  } catch (e) {
+    console.warn(`sprites paint-failed name=news-duo reason=${e instanceof Error ? e.name : "unknown"}`);
+    return false;
+  }
+}
+
+function PairSprite({ talking = null }: { talking?: "cinder" | "yappy" | null }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    paintCrisp<HTMLCanvasElement>(c, FRIENDS[name], 0, undefined, PAIR_BOX, window.devicePixelRatio, domBuffer, name);
-  }, [name]);
+    let open = talking !== null;
+    paintDuo(c, talking, open, window.devicePixelRatio);
+    // Whoever has the turn talks (mouth open/closed, whole frames); reduce
+    // motion keeps the pair still and only the words change.
+    if (talking === null || prefersReducedMotion()) return;
+    const id = window.setInterval(() => {
+      open = !open;
+      paintDuo(c, talking, open, window.devicePixelRatio);
+    }, DUO_MOUTH_MS);
+    return () => window.clearInterval(id);
+  }, [talking]);
   return (
     <canvas
       ref={ref}
-      className={talking ? "news-briefing-sprite news-briefing-sprite--talking" : "news-briefing-sprite"}
-      data-news-sprite={name}
-      data-news-talking={talking ? "yes" : undefined}
+      className="news-briefing-sprite"
+      width={PAIR_BOX.w}
+      height={PAIR_BOX.h}
+      style={{ width: PAIR_BOX.w, height: PAIR_BOX.h }}
+      data-news-sprite="duo"
+      data-news-pair="cinder yappy"
+      data-news-talking={talking ?? undefined}
       aria-hidden="true"
     />
   );
@@ -87,6 +161,21 @@ function prefersReducedMotion(): boolean {
 
 function timeLabel(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * yap-1107-parity-news — the approved card's header ends in "8:02 AM ·" plus a
+ * small amber tag (news.html §02 `.q`, #a06a00 on #fff4d6, 11 px mono). The page
+ * tags its made-up stories "sample stories"; real stories are not samples, so
+ * the app's tag names which paper Cinder brought: the refresh runs after 6 AM
+ * and after 4 PM (§03), so a briefing made from 6 AM until 4 PM is the morning
+ * paper and any other is the evening paper. Same place, size and colours, a
+ * true word, and both labels are 13 characters so the header's width (and the
+ * bubble's four lines, .bhead 98.56 px) does not move with the hour.
+ */
+export function paperLabel(ms: number): "morning paper" | "evening paper" {
+  const h = new Date(ms).getHours();
+  return h >= 6 && h < 16 ? "morning paper" : "evening paper";
 }
 
 export function NewsBriefingView({
@@ -123,17 +212,19 @@ export function NewsBriefingView({
   const live = phase === "ready" && lines && duo && duo.frame.stage !== "done" ? duo : null;
   const turn = live && live.frame.stage === "turns" && live.frame.turn >= 0 ? (live.turns[live.frame.turn] ?? null) : null;
   const storyCount = live ? Math.ceil(live.turns.length / 2) : 0;
-  const chipLabel = (id: string) => TOPIC_CHIPS.find((c) => c.id === id)?.label ?? id;
+  const chipLabel = topicLabel;
   return (
     <section className="card news-briefing" data-news-briefing={phase} aria-labelledby="news-briefing-title" aria-busy={phase === "loading"}>
       <header className="news-briefing-head">
         <div className="news-briefing-pair">
-          <PairSprite name="cinder" talking={turn?.who === "cinder"} />
-          <PairSprite name="yappy" talking={turn?.who === "yappy"} />
+          <PairSprite talking={turn ? turn.who : null} />
         </div>
         <div className="news-briefing-says">
-          <h3 id="news-briefing-title">
-            Yappy News{briefing && stories.length > 0 ? <span className="muted"> · {timeLabel(briefing.deliveredMs)}</span> : null}
+          {/* yap-1107-parity-news — the approved card draws no title; the
+              heading stays for screen readers and the time moves to the
+              header's third column, as on the page. */}
+          <h3 id="news-briefing-title" className="sr-only">
+            Yappy News{briefing && stories.length > 0 ? ` · ${paperLabel(briefing.deliveredMs)} · ${timeLabel(briefing.deliveredMs)}` : ""}
           </h3>
           {phase === "loading" && <p className="muted">Yappy is reading the news…</p>}
           {phase === "empty" && (
@@ -167,17 +258,31 @@ export function NewsBriefingView({
               Skip to the stories
             </button>
           )}
+          {/* One line of speech for both, as the page's .bsay draws it: the
+              bubble wraps like the artifact instead of two short paragraphs. */}
           {lines && phase === "ready" && !live && (
-            <>
-              <p data-news-says="cinder">
+            <p data-news-said="pair">
+              <span data-news-says="cinder">
                 <b>Cinder:</b> “{lines.cinder}”
-              </p>
-              <p data-news-says="yappy">
+              </span>{" "}
+              <span data-news-says="yappy">
                 <b>Yappy:</b> “{lines.yappy}”
-              </p>
-            </>
+              </span>
+            </p>
           )}
         </div>
+        <span className="news-briefing-when" aria-hidden="true" data-news-briefing-when>
+          {briefing && stories.length > 0 ? (
+            <>
+              <span className="news-briefing-clock">{timeLabel(briefing.deliveredMs)}</span> ·{" "}
+              <span className="news-briefing-paper" data-news-paper>
+                {paperLabel(briefing.deliveredMs)}
+              </span>
+            </>
+          ) : (
+            ""
+          )}
+        </span>
       </header>
 
       {phase === "ready" && stories.length > 0 && (
@@ -223,7 +328,7 @@ export function NewsBriefingView({
 
       <footer className="news-briefing-foot">
         <div className="news-briefing-topics" aria-label="Your topics">
-          <span className="muted tiny">Your topics</span>
+          <span className="muted tiny news-briefing-meta">Your topics</span>
           {topics.map((t) => (
             <span key={t} className="news-briefing-chip">
               {chipLabel(t)}
@@ -234,7 +339,7 @@ export function NewsBriefingView({
               {t}
             </span>
           ))}
-          <button type="button" className="link" onClick={onEditTopics} data-news-edit-topics>
+          <button type="button" className="news-briefing-chip news-briefing-chip--add" onClick={onEditTopics} data-news-edit-topics>
             + Add
           </button>
         </div>
