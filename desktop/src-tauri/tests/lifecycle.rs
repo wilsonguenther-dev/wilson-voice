@@ -9,9 +9,34 @@ use std::os::unix::net::UnixListener;
 use std::time::{Duration, Instant};
 
 use wilson_voice_lib::lifecycle::{
-    self, activation_action, handoff_to_running, quit_plan, run_bounded, ActivationSource,
-    BoundedStep, HandoffVerdict, MainWindowState, QuitStep, StepOutcome, WindowAction,
+    self, activation_action, handoff_to_running, quit_plan, run_bounded, run_bounded_with,
+    ActivationSource, BoundedStep, FakeQuitClock, HandoffVerdict, MainWindowState, QuitStep,
+    StepOutcome, TeardownReport, WindowAction,
 };
+
+/// Runs the quit on a [`FakeQuitClock`] (yap-1108-timing-lifecycle-quit-clock):
+/// whether each step met its deadline, and the reported total, are decided by
+/// the costs the steps declare, never by how loaded the runner is. The quit
+/// runs on a helper thread under a generous REAL watchdog so a regression that
+/// blocks on a wedged step (which parks forever) FAILS here instead of hanging
+/// CI. The watchdog is not a timing bound: a healthy fake quit returns in
+/// milliseconds of real time.
+fn quit_on_fake_clock(
+    steps: Vec<BoundedStep>,
+    budget: Duration,
+    clock: &std::sync::Arc<FakeQuitClock>,
+) -> TeardownReport {
+    let clock = clock.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("fake-quit".into())
+        .spawn(move || {
+            let _ = tx.send(run_bounded_with(steps, budget, &*clock));
+        })
+        .expect("spawn the fake quit");
+    rx.recv_timeout(Duration::from_secs(60))
+        .expect("the quit returned: the runner must abandon a wedged step, never wait on it")
+}
 
 fn hidden() -> MainWindowState {
     MainWindowState {
@@ -126,21 +151,25 @@ fn quit_plan_orders_the_pill_out_first_and_checkpoints_last() {
 fn a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off() {
     let order = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<&'static str>::new()));
     let finalize_cost = lifecycle::QUIT_BUDGET + Duration::from_millis(300);
+    // yap-1107-timing-tests-deterministic: the finalize DECLARES its cost on a
+    // fake quit clock instead of sleeping it, so a loaded runner cannot push a
+    // healthy step past its deadline. Same budget, same assertions.
+    let clock = FakeQuitClock::new();
     let steps = quit_plan()
         .into_iter()
         .map(|s| {
             let order = order.clone();
+            let clock = clock.clone();
             s.bounded(move || {
                 if s == QuitStep::MeetingStop {
-                    std::thread::sleep(finalize_cost); // a very long meeting's spill
+                    clock.charge(finalize_cost); // a very long meeting's spill
                 }
                 order.lock().push(s.name());
             })
         })
         .collect();
-    let t = Instant::now();
-    let report = run_bounded(steps, lifecycle::QUIT_BUDGET);
-    let took = t.elapsed();
+    let report = quit_on_fake_clock(steps, lifecycle::QUIT_BUDGET, &clock);
+    let took = report.total;
     for s in quit_plan() {
         assert_eq!(
             report.outcome_of(s.name()),
@@ -167,18 +196,24 @@ fn a_meeting_finalize_longer_than_the_whole_quit_budget_is_never_cut_off() {
 /// after it still runs.
 #[test]
 fn a_wedged_exempt_step_is_bounded_by_its_own_deadline_and_the_rest_still_run() {
+    let clock = FakeQuitClock::new();
+    let wedge = clock.clone();
     let steps = vec![
-        BoundedStep::new("meeting_stop", Duration::from_millis(400), false, || {
-            std::thread::sleep(Duration::from_secs(10))
-        })
+        BoundedStep::new(
+            "meeting_stop",
+            Duration::from_millis(400),
+            false,
+            move || {
+                wedge.wedge();
+            },
+        )
         .exempt_from_budget(),
         BoundedStep::new("db_checkpoint", Duration::from_millis(150), false, || {}),
     ];
-    let t = Instant::now();
     // A budget SMALLER than the exempt step's deadline: charged, it would
     // leave nothing for the checkpoint.
-    let report = run_bounded(steps, Duration::from_millis(200));
-    let took = t.elapsed();
+    let report = quit_on_fake_clock(steps, Duration::from_millis(200), &clock);
+    let took = report.total;
     assert_eq!(
         report.outcome_of("meeting_stop"),
         Some(StepOutcome::TimedOut)
@@ -270,6 +305,8 @@ fn a_step_that_misses_its_deadline_is_skipped_and_quit_stays_bounded() {
         let order = order.clone();
         move || order.lock().push(name)
     };
+    let clock = FakeQuitClock::new();
+    let wedge = clock.clone();
     let steps = vec![
         BoundedStep::new(
             "pill_order_out",
@@ -277,9 +314,14 @@ fn a_step_that_misses_its_deadline_is_skipped_and_quit_stays_bounded() {
             true,
             o("pill"),
         ),
-        BoundedStep::new("meeting_stop", Duration::from_millis(150), false, || {
-            std::thread::sleep(Duration::from_secs(10)) // a wedged meeting stop
-        }),
+        BoundedStep::new(
+            "meeting_stop",
+            Duration::from_millis(150),
+            false,
+            move || {
+                wedge.wedge(); // a wedged meeting stop
+            },
+        ),
         BoundedStep::new("explodes", Duration::from_millis(150), false, || {
             panic!("boom")
         }),
@@ -290,12 +332,11 @@ fn a_step_that_misses_its_deadline_is_skipped_and_quit_stays_bounded() {
             o("ckpt"),
         ),
     ];
-    let t = Instant::now();
-    let report = run_bounded(steps, Duration::from_millis(3_000));
+    let report = quit_on_fake_clock(steps, Duration::from_millis(3_000), &clock);
     assert!(
-        t.elapsed() < Duration::from_millis(1_000),
+        report.total < Duration::from_millis(1_000),
         "{:?}",
-        t.elapsed()
+        report.total
     );
     assert_eq!(report.outcome_of("pill_order_out"), Some(StepOutcome::Done));
     assert_eq!(
@@ -315,23 +356,25 @@ fn a_step_that_misses_its_deadline_is_skipped_and_quit_stays_bounded() {
 
 #[test]
 fn the_whole_quit_never_exceeds_its_budget_when_every_step_hangs() {
+    let clock = FakeQuitClock::new();
     let steps = quit_plan()
         .into_iter()
         .filter(|s| !s.on_main_thread())
         .map(|s| {
-            BoundedStep::new(s.name(), s.deadline(), false, || {
-                std::thread::sleep(Duration::from_secs(30))
-            })
+            let c = clock.clone();
+            BoundedStep::new(s.name(), s.deadline(), false, move || c.wedge())
         })
         .collect();
     let budget = Duration::from_millis(600);
-    let t = Instant::now();
-    let report = run_bounded(steps, budget);
+    let report = quit_on_fake_clock(steps, budget, &clock);
     assert!(
-        t.elapsed() < budget + Duration::from_millis(200),
+        report.total < budget + Duration::from_millis(200),
         "{:?}",
-        t.elapsed()
+        report.total
     );
+    // On the fake clock there is no scheduler overshoot to allow for, so the
+    // property the name states holds exactly: never past the budget.
+    assert!(report.total <= budget, "{:?}", report.total);
     assert!(report
         .steps
         .iter()
