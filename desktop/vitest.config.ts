@@ -127,6 +127,12 @@ export const PURE_MODULES: Record<string, CoverageFloor> = {
   // yap-1106-friend-visits — floors set below the authored test's reach (no run allowed); the integrator raises them to the measured value.
   "pill/friendVisits.ts": { lines: 95, branches: 85, functions: 95, statements: 95 },
   "pill/press.ts": { lines: 100, branches: 100, functions: 100, statements: 100 },
+  // yap-1107-parity-companions — the visitor-in-the-pill-window placement, camera and quiet-rule store
+  // (visitorInWindow.test.ts drives every export); floor provisional, the integrator re-measures and may only raise it.
+  "pill/visitorInWindow.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
+  // yap-1107-parity-pill — the pill shell's segment items, capsule sizes and bounds (shellSegment.test.ts drives every
+  // export); floor provisional, the integrator re-measures and may only raise it.
+  "pill/shellSegment.ts": { lines: 90, branches: 80, functions: 90, statements: 90 },
   "pill/characterFit.ts": { lines: 100, branches: 95, functions: 100, statements: 100 },
   // yap-1106-pill-vertical-dock-world — floor set by the batch-11 integrator from the measured run (100 / 98.46 / 100 / 100).
   "pill/vdock.ts": { lines: 100, branches: 98, functions: 100, statements: 100 },
