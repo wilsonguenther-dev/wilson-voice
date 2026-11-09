@@ -159,8 +159,9 @@ describe("visitorInWindow: the hand-off between FriendVisit and the pill window"
 
   it("the pill paints the visitor in the window and the corner box steps aside", () => {
     expect(YAPPY_PILL_SRC).toContain("paintPillVisitor(octx, visitorOn.friend, cx, feet");
-    expect(YAPPY_PILL_SRC).toContain("rectInside(vStamp, cameraView(cam.blit, wr.r * DPR))");
-    expect(YAPPY_PILL_SRC).toContain("milestone: visitor ? visitor.segment : null");
+    // the stadium's rounded ends (radius (capH - 2) / 2 CSS px) come off the view
+    expect(YAPPY_PILL_SRC).toContain("rectInside(vStamp, cameraView(cam.blit, ((capH - 2) / 2) * DPR))");
+    expect(YAPPY_PILL_SRC).toContain("drawScene({ ...scenePose, lift: cam.lift }, vOn)");
     expect(FRIEND_VISIT_SRC).toContain("publishPillVisitor(who ?");
     expect(FRIEND_VISIT_SRC).toContain('data-in-window={inWindow ? "true" : undefined}');
     expect(FLOAT_CSS).toMatch(/\.friend-visit\[data-in-window="true"\]\s*\{\s*display:\s*none;\s*\}/);
