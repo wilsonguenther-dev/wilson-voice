@@ -27,13 +27,42 @@ use std::time::Duration;
 
 use wilson_voice_lib::meeting::{
     fan_out_block, meeting_capture_active, session_turnstile, take_context, ExternalStream,
-    MeetingSession, MeetingState, SessionConfig, TakeContext,
+    MeetingSession, MeetingState, SessionConfig, TakeContext, MEETING_QUEUE_DEPTH,
 };
 use wilson_voice_lib::rtring::CaptureAnchor;
 
 const RATE: u32 = 16_000;
-/// 100 ms callbacks, so "minute 40" is expressible in a fast test.
-const BLOCK: usize = RATE as usize / 10;
+/// 500 ms blocks, so "minute 40" is expressible in a fast test.
+///
+/// Why not 100 ms (what this file used until fix-main-red-3): this test is an
+/// UNPACED producer. A real device hands the consumer one block per callback
+/// period; this loop hands over the whole meeting in a few milliseconds. Every
+/// block becomes one message on the journal's bounded queue
+/// (`MEETING_QUEUE_DEPTH`), and `MeetingJournal::append` is a `try_send` that
+/// — by design, finding #12 — DROPS a chunk the writer thread has not made
+/// room for and splices silence for it on finalize, which finalizes the
+/// meeting as `Partial`. At 100 ms the scenario was 650 blocks against a
+/// 512-deep queue, so whether it passed depended on the writer thread getting
+/// scheduled mid-burst: green on an idle laptop, red on a loaded CI runner
+/// (run 42456384907, `left: Partial right: Complete`). The drop path has its
+/// own deterministic tests (`a_dropped_chunk_becomes_a_splice_instead_of_a_silent_offset`,
+/// `a_full_ring_is_counted_not_dropped_silently`); THIS test is about the
+/// dictation fan-out, so it must never be able to reach that path. With the
+/// whole scenario at or under the queue depth, a `try_send` cannot fail no
+/// matter how late the writer runs — see `_SCENARIO_FITS_THE_QUEUE`.
+const BLOCK: usize = RATE as usize / 2;
+/// Host-clock length of one block, so the anchors agree with the sample count
+/// (the splice planner's wall-clock rule would otherwise read a stall).
+const BLOCK_NS: u64 = 1_000_000_000 * BLOCK as u64 / RATE as u64;
+/// Thirty seconds of meeting before the hotkey, and thirty after it.
+const MEETING_BLOCKS: u64 = 30 * RATE as u64 / BLOCK as u64;
+/// The five-second dictation take.
+const DICTATION_BLOCKS: u64 = 5 * RATE as u64 / BLOCK as u64;
+/// Compile-time guard for the ordering argument on [`BLOCK`]: every block of
+/// the scenario fits the journal queue at once, so no chunk can be dropped by
+/// a writer thread that has not run yet.
+const _SCENARIO_FITS_THE_QUEUE: () =
+    assert!((2 * MEETING_BLOCKS + DICTATION_BLOCKS) as usize <= MEETING_QUEUE_DEPTH);
 
 /// The active-meeting slot is process-global, so these tests take turns.
 fn turn() -> std::sync::MutexGuard<'static, ()> {
@@ -52,7 +81,7 @@ fn tmpdir(tag: &str) -> PathBuf {
 
 fn anchor(block_index: u64) -> Vec<CaptureAnchor> {
     vec![CaptureAnchor {
-        host_ns: block_index * 100_000_000,
+        host_ns: block_index * BLOCK_NS,
         sample_index: block_index * BLOCK as u64,
         frames: BLOCK as u32,
         sample_rate: RATE,
@@ -89,7 +118,7 @@ fn a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap() {
 
     let mut index = 0u64;
     // Thirty seconds of meeting before anybody touches the hotkey.
-    for _ in 0..300 {
+    for _ in 0..MEETING_BLOCKS {
         fan_out_block(&block(index), &anchor(index), None, None);
         index += 1;
     }
@@ -99,14 +128,14 @@ fn a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap() {
     // The hotkey: a dictation take runs for five seconds, on the same stream.
     let mut take: Vec<f32> = Vec::new();
     let first_dictation_block = index;
-    for _ in 0..50 {
+    for _ in 0..DICTATION_BLOCKS {
         fan_out_block(&block(index), &anchor(index), Some(&mut take), None);
         index += 1;
     }
     let during = session.capture().samples();
 
     // …and thirty more seconds of meeting after it ends.
-    for _ in 0..300 {
+    for _ in 0..MEETING_BLOCKS {
         fan_out_block(&block(index), &anchor(index), None, None);
         index += 1;
     }
@@ -115,19 +144,22 @@ fn a_dictation_taken_mid_meeting_leaves_the_meeting_without_a_gap() {
     // The meeting kept every sample, at the same rate, throughout.
     assert_eq!(
         during - before,
-        50 * BLOCK as u64,
+        DICTATION_BLOCKS * BLOCK as u64,
         "the meeting lost samples while a dictation was armed"
     );
     assert_eq!(
         after - during,
-        300 * BLOCK as u64,
+        MEETING_BLOCKS * BLOCK as u64,
         "the meeting lost samples after the dictation ended (a reset would show here)"
     );
-    assert_eq!(session.capture().blocks() - blocks_before, 350);
+    assert_eq!(
+        session.capture().blocks() - blocks_before,
+        DICTATION_BLOCKS + MEETING_BLOCKS
+    );
 
     // The dictation take got its own audio — the frames from its window, and
     // only those.
-    assert_eq!(take.len(), 50 * BLOCK);
+    assert_eq!(take.len(), DICTATION_BLOCKS as usize * BLOCK);
     assert!(
         (take[0] - first_dictation_block as f32 / 1_000.0).abs() < 1e-6,
         "the take starts at the block the hotkey was pressed on"
