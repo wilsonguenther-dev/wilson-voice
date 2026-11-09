@@ -922,6 +922,11 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
     all.insert(
         "src/transcription.rs",
         BTreeMap::from([
+            // yap-1108-timing-idle-watcher-clock — 1 (new, x2): the 1 ms step of
+            // `wait_for_a_fresh_idle_tick` (waits on the idle watcher's tick
+            // counter) and a 1 ms advance of the test's ManualLeaseClock, both
+            // in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
+            (1, 2),
             // yap-1106-engine-owner — 2:2->4: the teardown-order test's stub
             // engine (`#[cfg(test)] mod tests`) spins in 2 ms test-only waits.
             (2, 4),
@@ -929,7 +934,10 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // loader test in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
             (5, 3),
             (10, 2),
-            (20, 2),
+            // yap-1108-timing-idle-watcher-clock — 20:2->1: the idle-unload
+            // test's 20 ms wall-clock poll is gone (it now advances an injected
+            // idle clock and waits on a watcher tick).
+            (20, 1),
             // yap-1106-retry-failed-dictation — ENGINE_IDLE_POLL (50 ms): a queued
             // retry re-checks `is_busy` on the single engine until the live take
             // hands it back, bounded by the clip-scaled retry deadline. Background
@@ -941,12 +949,21 @@ fn short_timer_allowlist() -> BTreeMap<&'static str, BTreeMap<u64, usize>> {
             // passed to `effective_window_timeout` in `#[cfg(test)] mod tests`
             // (a value under test, never slept on).
             (50, 6),
+            // yap-1108-timing-idle-watcher-clock — 79 (new): the idle-unload
+            // test advances its fake idle clock 1 ms short of the 80 ms timeout
+            // to prove the watcher keeps the engine. A fake-clock step in
+            // `#[cfg(test)] mod tests`, never slept on.
+            (79, 1),
             (80, 1),
             (120, 1),
             // yap-1106-launch-walk — 150:1->2: the slowed fake loader's 150 ms load
             // in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
             (150, 2),
-            (200, 1),
+            // yap-1108-timing-idle-watcher-clock — 200:1->2: the warm-engine
+            // test's control advances its fake idle clock a full 200 ms window
+            // to prove an unused engine does unload. Fake-clock step in
+            // `#[cfg(test)] mod tests`, never slept on.
+            (200, 2),
             // yap-1106-sp-04-one-engine-preempt — 300:1->2 and 400:3->4: the
             // preempt tests' `live_counting_manager` fake-engine decode durations
             // in `#[cfg(test)] mod tests`. Test-only; no production wakeup.
