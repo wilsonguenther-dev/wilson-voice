@@ -126,8 +126,9 @@ export const CLOCK_REACH_PT = 12;
 export const CHARACTER_REST: Readonly<{ w: number; h: number }> = REST_CAPSULE;
 /**
  * Yappy's widest open capsule, rounded up: the panel envelope. yap-1107-pill-matches-artifact-size:
- * OPEN_CAPSULE is now the artifact's 228 x 54 (265 x 63 at the desk tier x 1.16); the envelope keeps
- * its old 236 x 60 x 1.16 size so the window, hit targets and dock math do not move.
+ * OPEN_CAPSULE is now 228 x 53 (the artifact's 228 x 52; yap-1107-parity-pill), and a prop tier only
+ * widens it (openCapsuleFor: 265 x 53 at the desk tier x 1.16); the envelope keeps its old
+ * 236 x 60 x 1.16 size so the window, hit targets and dock math do not move.
  */
 export const CHARACTER_OPEN = { w: 274, h: 70 } as const;
 /**
@@ -144,13 +145,15 @@ export const HINT_W = 192;
 export const HINT_LINE_H = 14;
 /**
  * The clock row. yap-1106-pill-rec-headphones-hoot-tape: no red dot any more —
- * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 112 x 40: sun, time,
- * Hoot at the tape, Yappy in headphones) + call-audio mark + stop. 40 tall is
- * the scene at a whole-number scale, and still clears the bubble row above
- * (vertically centred on the 22 pt capsule: -9 vs the bubble's -10).
+ * the meeting scene (MeetingWorld, SCENE_W x SCENE_H = 140 x 36: sun, time,
+ * Hoot at the tape, Yappy in headphones) + call-audio mark + stop.
+ * yap-1107-parity-pill: pill.html mtgPill / #timer is a 202 x 44 shell (4 px
+ * padding, the 140 x 36 window, then the 50 px rec segment: 6 + 8 + 6 + 24 + 6)
+ * — was 208 x 40, 9 percent short. "after" keeps the scene plus the word
+ * "Saved" (140 + 72, as 112 + 72 before).
  */
-export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 208, after: 184 };
-export const CLOCK_H = 40;
+export const CLOCK_W: Record<Exclude<MeetingMode, "none">, number> = { recording: 202, after: 212 };
+export const CLOCK_H = 44;
 /**
  * yap-1107-one-pill-during-meeting — dictating mid-meeting, the clock leaves
  * the scene and "shrinks into a small stack next to stop" (Pill artifact,
@@ -269,7 +272,7 @@ export function pillLayout(input: PillInput): PillLayout {
       bubble: char, hint: char, clock: null, shell: null, sceneCharacter: false, progress: null, card: null, anchor: { x: w / 2, y: h / 2 },
     };
   }
-  // yap-1106-pill-vertical-dock-world — a side dock is a TALL shell (64 x 188
+  // yap-1106-pill-vertical-dock-world — a side dock is a TALL shell (64 x 216
   // open, a 30 x 40 tab at rest), flush to the screen edge; every slot (the
   // clock, the progress row, the bubble, the hint, a card) opens INWARD beside
   // it, so nothing ever reaches across the screen edge side.
@@ -357,6 +360,11 @@ function sideLayout(key: string, input: PillInput, character: LayoutCharacter, e
   rows.push({ name: "hint", w: HINT_W, h: lines * HINT_LINE_H });
   const colH = rows.reduce((a, r) => a + r.h, 0) + SLOT_GAP * (rows.length - 1);
   let y = colH < env.h ? (env.h - colH) / 2 : 0;
+  // yap-1107-parity-pill — the clock is the 44 px meeting segment (pill.html
+  // mtgPill) and the resting tab is the approved 30 x 40 (#vdock vtab), so at
+  // rest the clock is taller than the tab: centre the tab on it (2 px each
+  // way), so the shell stays ONE band exactly the clock's height.
+  if (rows[0]?.name === "clock" && rows[0].h > env.h) y = (env.h - rows[0].h) / 2;
   const placed: Partial<Record<(typeof rows)[number]["name"], Box>> = {};
   for (const r of rows) {
     const x = r.name === "clock" ? (left ? env.w : -r.w) : inX(r.w);
