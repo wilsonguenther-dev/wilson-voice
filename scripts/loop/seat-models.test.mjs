@@ -183,3 +183,11 @@ test('11. both kill switches make seatTier return null', () => {
   assert.equal(load({ ...MAP, enabled: false }).seatTier('acceptance:A:yap24-01'), null)
   assert.equal(load(MAP, { args: { seatModels: false } }).seatTier('acceptance:A:yap24-01'), null)
 })
+
+test('12. per-item Sonnet builders are revoked (owner ruling 2026-11-12): itemBuilders is refused, code seats are floor', () => {
+  assert.equal(MAP.itemBuilders, undefined, 'the real seat-models.json carries no itemBuilders')
+  const tagged = { ...MAP, itemBuilders: { model: 'sonnet', effort: 'high', require: { build: ['itemId', 'status'], fix: ['itemId', 'fixed'] } } }
+  assert.ok(seatModelProblems(tagged, TEMPLATE).some((p) => p.includes('"itemBuilders" is revoked')))
+  for (const seat of ['build', 'fix', 'fix-round', 'fix-land', 'drain', 'land-sweeper', 'main-verify']) assert.ok(OPUS_FLOOR.includes(seat), `${seat} is in OPUS_FLOOR`)
+  for (const seat of Object.keys(MAP.seats)) assert.ok(!OPUS_FLOOR.includes(seat), `${seat} is a mechanical seat, not a code seat`)
+})

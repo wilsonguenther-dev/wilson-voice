@@ -25,6 +25,9 @@ export function seatModelProblems(map, template) {
   if (!map || typeof map !== 'object' || Array.isArray(map)) return ['seat-models.json: must be a JSON object']
   const known = new Set(['enabled', 'escalate', 'opusOnly', 'seats'])
   for (const k of Object.keys(map)) if (!k.startsWith('_') && !known.has(k)) out.push(`seat-models.json: unknown key "${k}"`)
+  // Owner ruling 2026-11-12: ALL code building is Opus. Per-item builder tiering (`itemBuilders` here plus an item key
+  // `builder: 'sonnet'`, added 2026-10-26 on the unmerged branch loop/harness-2026-10-27) is revoked. Refuse it by name.
+  for (const k of ['itemBuilders', 'builders']) if (map[k] !== undefined) out.push(`seat-models.json: "${k}" is revoked (owner ruling 2026-11-12) — every build and fix seat runs on opus, whatever an item is tagged`)
   if (typeof map.enabled !== 'boolean') out.push('seat-models.json: "enabled" must be true or false')
   const esc = map.escalate
   if (!esc || esc.model !== 'opus') out.push('seat-models.json: escalate.model must be "opus" — the quality floor is an opus re-run')
